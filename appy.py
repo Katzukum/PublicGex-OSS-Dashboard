@@ -11,9 +11,61 @@ DB_CONNECTION_STR = "sqlite:///gex_data.db"
 eel.init('web')
 
 # --- Event/Notification Server ---
-def run_event_server(port=5005):
-    """Background thread to listen for events from data collector.
 
+# --- 0DTE Optimization Helpers ---
+
+SENSITIVITY_MAP = {
+    "SPY": 0.0020,  # 0.20%
+    "SPX": 0.0020,  # 0.20%
+    "QQQ": 0.0035,  # 0.35% (Tech is noisier)
+    "NDX": 0.0030,  # 0.30%
+    "IWM": 0.0015,  # 0.15%
+    "DEFAULT": 0.0025
+}
+
+def calculate_0dte_trend_score(spot, flip, symbol):
+    """
+    Calculates a score between -1 and 1 based on distance from flip.
+    Uses symbol-specific sensitivity from SENSITIVITY_MAP.
+    """
+    if not flip or flip == 0:
+        return 0
+    
+    sensitivity = SENSITIVITY_MAP.get(symbol, SENSITIVITY_MAP["DEFAULT"])
+    
+    # Calculate raw percentage distance
+    dist_pct = (spot - flip) / flip
+    
+    # Scale score: distance / sensitivity
+    # Example: If dist is 0.2% and sensitivity is 0.2%, score is 1.0
+    score = dist_pct / sensitivity
+    
+    # Clamp between -1 and 1
+    return max(-1.0, min(1.0, score))
+
+def get_decay_multiplier(total_gamma, total_theta):
+    """
+    Returns a multiplier (1.0 to 1.25) to boost 'Grind Up' confidence
+    if Time Decay (Theta) is the dominant force.
+    """
+    if total_gamma == 0: return 1.0
+    
+    # Calculate Theta/Gamma Ratio
+    # High Ratio = Time is the main driver (Mid-day drift)
+    # Low Ratio = Price Action is the main driver (Open/Close)
+    # Note: Theta is usually negative, take abs
+    ratio = abs(total_theta / total_gamma)
+    
+    # Thresholds: If Theta is > 2x Gamma, we are in "Charm Zone"
+    if ratio > 2.0: 
+        return 1.25 # Boost confidence by 25%
+    elif ratio > 1.5:
+        return 1.10
+        
+    return 1.0
+
+def run_event_server(port=5005):
+    """
     Listens on a local TCP socket for JSON messages from external scripts
     (like publicData.py) and forwards them to the frontend via Eel.
 
@@ -211,81 +263,75 @@ def get_dashboard_data(symbol: str = "SPY") -> dict:
 
 @eel.expose
 def get_market_overview() -> dict:
-    """Calculates the Market Regime Compass (Trend vs. Volatility).
-
-    Aggregates weighted GEX and Trend scores from multiple symbols (defined in
-    settings.json) to produce two unified market sentiment vectors:
-    1. Traders Market (SPY/QQQ/IWM)
-    2. Whale Market (SPX/NDX/IWM)
-
-    Returns:
-        A dictionary containing:
-            - compass_traders (dict): Compass state for Traders Market.
-            - compass_whale (dict): Compass state for Whale Market.
-            - components (list): Per-symbol contribution details (Union of all).
-            - tilt (list): Effective GEX data.
-    """
     try:
-        # Load settings
         import json
+        import math
+        
         with open('settings.json') as f:
             settings = json.load(f)
         
-        weights_traders = settings.get('weights', {})
+        # Defaults if keys missing in settings
+        weights_traders = settings.get('weights', {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2})
         weights_whale = settings.get('weights_whale', {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20})
         
         overview_data = {
             "compass_traders": {},
             "compass_whale": {},
-            "components": [], # Will be populated with unique symbols from both
+            "components": [],
             "tilt": []
         }
         
         def _calculate_compass_state(target_weights, conn):
-            """Helper to calculate compass state for a given set of weights."""
             x_score_sum = 0
             y_score_sum = 0
             total_weight = 0
             components = []
             
-            # Format composition string for tooltip (e.g. "SPY: 50%, QQQ: 30%")
-            comp_strs = []
-            for s, w in target_weights.items():
-                comp_strs.append(f"{s}: {int(w*100)}%")
+            # Formatting composition string
+            comp_strs = [f"{s}: {int(w*100)}%" for s, w in target_weights.items()]
             composition_str = ", ".join(comp_strs)
             
             for symbol, weight in target_weights.items():
-                query = text("""
-                    SELECT * FROM gex_snapshots 
-                    WHERE symbol = :symbol 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                """)
+                # Fetch latest snapshot
+                query = text("SELECT * FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC LIMIT 1")
                 row = conn.execute(query, {"symbol": symbol}).fetchone()
                 
                 if row:
-                    net_gex = row.total_net_gex
-                    spot = row.spot_price
+                    # Safe Extraction
+                    net_gex = getattr(row, 'total_net_gex', 0)
+                    spot = getattr(row, 'spot_price', 0)
                     flip = getattr(row, 'flip_strike', 0)
                     eff_gex = getattr(row, 'effective_gex', 0)
                     
-                    # Logic
+                    # Greeks (Default to 0 if column missing/null)
+                    total_gamma = getattr(row, 'total_gamma', 0) or 0
+                    total_theta = getattr(row, 'total_theta', 0) or 0
+                    
+                    # --- 1. TREND SCORE (Y-AXIS) ---
+                    # Uses the 0DTE sensitivity logic
                     if flip and flip > 0:
                         dist_pct = ((spot - flip) / flip) * 100
-                        trend_score = max(-1, min(1, dist_pct / 0.5))
-                        vol_score = 1 if net_gex > 0 else -1
-                        
-                        x_score_sum += vol_score * weight
-                        y_score_sum += trend_score * weight
-                        total_weight += weight
-                        
-                        regime_label = "Bullish" if trend_score > 0 else "Bearish"
-                        if abs(trend_score) < 0.2: regime_label = "Neutral"
+                        trend_score = calculate_0dte_trend_score(spot, flip, symbol)
                     else:
                         dist_pct = 0
-                        regime_label = "No Flip Data"
-                        eff_gex = 0 # Default if row missing attributes
-                        net_gex = 0
+                        trend_score = 0 # Neutral if no flip found
+                    
+                    # --- 2. VOL SCORE (X-AXIS) ---
+                    # IMPROVEMENT: Add slight scaling so it's not purely binary
+                    # but keep it simple: Positive = Stability, Negative = Velocity
+                    vol_score = 1.0 if net_gex > 0 else -1.0
+                    
+                    # --- 3. CHARM / THETA BOOST ---
+                    decay_boost = get_decay_multiplier(total_gamma, total_theta)
+                    
+                    # Add to aggregates
+                    x_score_sum += vol_score * weight
+                    y_score_sum += trend_score * weight
+                    total_weight += weight
+                    
+                    # Regime Label for individual component
+                    regime_label = "Bullish" if trend_score > 0 else "Bearish"
+                    if abs(trend_score) < 0.2: regime_label = "Neutral"
 
                     components.append({
                         "symbol": symbol,
@@ -293,29 +339,64 @@ def get_market_overview() -> dict:
                         "flip_strike": flip,
                         "distance_pct": dist_pct,
                         "net_gex": net_gex,
-                        "effective_gex": eff_gex, # Pass effective gex too
-                        "regime": regime_label
+                        "effective_gex": eff_gex, 
+                        "regime": regime_label,
+                        "decay_boost": decay_boost
                     })
             
-            final_vol = x_score_sum / total_weight if total_weight > 0 else 0
-            final_trend = y_score_sum / total_weight if total_weight > 0 else 0
-            
-            # Label Logic
-            import math
+            # --- FINAL COMPASS CALCULATION ---
+            if total_weight > 0:
+                final_vol = x_score_sum / total_weight
+                final_trend = y_score_sum / total_weight
+                
+                # Weighted average of the boost
+                weighted_boost = sum([c['decay_boost'] * target_weights.get(c['symbol'], 0) for c in components])
+                avg_decay_boost = weighted_boost / total_weight
+            else:
+                final_vol, final_trend, avg_decay_boost = 0, 0, 1.0
+
+            # Magnitude
             magnitude = math.sqrt(final_vol**2 + final_trend**2)
-            inner_ring_threshold = 0.25
+            
+            # Determine Quadrant
             is_pos_gex = final_vol > 0
             is_bull_trend = final_trend > 0
             
-            if is_pos_gex and is_bull_trend:
-                base_lbl, base_strat, base_icon = "GRIND UP", "Buy Calls / Sell Put Spreads.", "🟢"
-            elif is_pos_gex and not is_bull_trend:
-                base_lbl, base_strat, base_icon = "SUPPORT / CHOP", "'Bear Trap.' Buy dips.", "⚪"
-            elif not is_pos_gex and is_bull_trend:
-                base_lbl, base_strat, base_icon = "MELT UP", "Buy Calls, tighten stops.", "🟡"
-            else:
-                base_lbl, base_strat, base_icon = "CRASH / FLUSH", "Buy Puts / Sell Rips.", "🔴"
+            # --- STRATEGY LOGIC ---
+            base_lbl, base_strat, base_icon = "", "", ""
+            
+            # IMPROVEMENT: Apply Theta Boost to ANY Positive Gamma regime
+            # Theta burn helps "Grind Up" AND "Support/Chop" (Pinned markets)
+            if is_pos_gex and avg_decay_boost > 1.1:
+                magnitude *= avg_decay_boost
+            
+            # Cap magnitude at 1.1 (allow slight overflow for visual effect, but prevent breakage)
+            magnitude = min(magnitude, 1.1)
 
+            if is_pos_gex:
+                if is_bull_trend:
+                    base_lbl = "GRIND UP"
+                    base_strat = "Buy Calls / Sell Put Spreads."
+                    base_icon = "🟢"
+                    if avg_decay_boost > 1.1: base_lbl += " (THETA BURN)"
+                else:
+                    base_lbl = "SUPPORT / CHOP"
+                    base_strat = "'Bear Trap.' Iron Condors / Buy Dips."
+                    base_icon = "⚪"
+                    if avg_decay_boost > 1.1: base_lbl += " (PINNED)"
+            else:
+                # Negative Gamma
+                if is_bull_trend:
+                    base_lbl = "MELT UP"
+                    base_strat = "Buy Calls. Unanchored upside."
+                    base_icon = "🟡"
+                else:
+                    base_lbl = "CRASH / FLUSH"
+                    base_strat = "Buy Puts / Sell Rips."
+                    base_icon = "🔴"
+
+            # Inner Ring Check
+            inner_ring_threshold = 0.25
             if magnitude < inner_ring_threshold:
                 label = f"{base_icon} WEAK {base_lbl}"
                 strategy = f"{base_strat} (Low Confidence)"
@@ -341,11 +422,8 @@ def get_market_overview() -> dict:
             whale_state = _calculate_compass_state(weights_whale, conn)
             overview_data["compass_whale"] = whale_state
             
-            # 3. Merge Unique Components for Pillars/Tilt
-            # Use a dictionary keyed by symbol to ensure uniqueness
+            # 3. Merge Unique Components for Table/Tilt Chart
             merged_comps = {}
-            
-            # Helper to add to merged dict
             def add_comps(comp_list):
                 for c in comp_list:
                     merged_comps[c['symbol']] = c
@@ -362,23 +440,21 @@ def get_market_overview() -> dict:
                     "net_gex": data['net_gex'],
                     "regime": data['regime']
                 })
-                
+                # Add Tilt Data
                 overview_data["tilt"].append({
                     "symbol": data['symbol'], 
                     "net_gex": data.get('effective_gex', 0)
                 })
 
-        # --- Broadcast to NinjaTrader (Focus on Traders/Settings Compass for now or send both?) ---
-        # For backward compatibility, we can send the traders data as the primary
+        # Broadcast
         try:
             from ninjatrader_broadcaster import send_regime_update
-            # We construct a backward-compatible payload if needed, or just send the new one
-            # NinjaTrader likely expects 'compass' key. Let's send Traders as default.
             broadcast_payload = overview_data.copy()
+            # Default to Traders for simple clients
             broadcast_payload['compass'] = overview_data['compass_traders'] 
             send_regime_update(broadcast_payload)
         except Exception as e:
-            print(f"NinjaTrader broadcast error (non-blocking): {e}")
+            print(f"NinjaTrader broadcast error: {e}")
 
         return overview_data
 

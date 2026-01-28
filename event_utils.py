@@ -30,7 +30,7 @@ def send_event(event_type: str, payload: dict, port: int = 5005) -> None:
         json_msg = json.dumps(message)
         
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(2) # Short timeout to avoid blocking data collector
+            s.settimeout(5) # Increased timeout to 5s to handle load
             s.connect(('127.0.0.1', port))
             s.sendall(json_msg.encode('utf-8'))
             

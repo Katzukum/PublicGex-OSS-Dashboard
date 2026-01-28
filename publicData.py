@@ -2,7 +2,7 @@ import os
 import time
 import logging
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Any
 
 from dotenv import load_dotenv
@@ -81,6 +81,8 @@ class GexSnapshot(Base):
     flip_strike = Column(Float)
     regime = Column(String)
     effective_gex = Column(Float)
+    total_gamma = Column(Float, default=0.0)
+    total_theta = Column(Float, default=0.0)
 
 class RateLimiter:
     """Simple blocking rate limiter to respect API tokens."""
@@ -114,7 +116,7 @@ def send_event_to_backend(payload, port=5005):
         import socket
         import json
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(1)
+            s.settimeout(5)
             s.connect(('127.0.0.1', port))
             message = json.dumps(payload).encode('utf-8')
             s.sendall(message)
@@ -267,20 +269,49 @@ def get_instrument_type(symbol: str):
         return InstrumentType.INDEX
     return InstrumentType.EQUITY
 
+def get_target_expiration(symbol: str) -> date:
+    """Calculates the target expiration date based on the 0DTE strategy.
+    
+    - SPX/NDX/SPY/QQQ: Targets Today (0DTE).
+    - IWM: Targets the next Friday (Liquidity Rule).
+    """
+    today = date.today()
+    
+    # 1. SPY / QQQ / IWM -> Always target Today (0DTE)
+    if symbol in ['SPY', 'QQQ', 'IWM']:
+        return today
+        
+    # 2. SPX / NDX -> Target the nearest Friday (to capture liquidity/weekly structure)
+    if symbol in ['SPX', 'NDX', 'SPXW', 'NDXP']:
+        # Monday=0, Sunday=6
+        # If today is Friday (4), we want today.
+        # If today is Sat(5), we want next Fri.
+        # If today is Mon(0), we want this Fri.
+        days_ahead = 4 - today.weekday()
+        if days_ahead < 0: # It's Saturday/Sunday, aim for next Friday
+            days_ahead += 7
+        return today + timedelta(days=days_ahead)
+    
+    # Default fallback
+    return today
+
 def get_0dte_expiration(client, symbol: str) -> Optional[str]:
     rate_limiter.wait()
+    target_date = get_target_expiration(symbol)
+    logger.info(f"Targeting expiration {target_date} for {symbol}")
+    
     try:
         itype = get_instrument_type(symbol)
         req = OptionExpirationsRequest(instrument=OrderInstrument(symbol=symbol, type=itype))
         resp = client.get_option_expirations(req)
         exp_list = extract_all_options(resp) # Use new extractor here too
 
-        today = date.today()
         for exp in exp_list:
             exp_str = exp if isinstance(exp, str) else get_val(exp, ['expirationDate', 'date', 'expiration_date'])
             if not isinstance(exp_str, str): continue
             try:
-                if datetime.strptime(exp_str, "%Y-%m-%d").date() == today:
+                # Compare against our calculated target date
+                if datetime.strptime(exp_str, "%Y-%m-%d").date() == target_date:
                     return exp_str
             except ValueError:
                 continue
@@ -433,6 +464,11 @@ def process_symbol(client, session: Session, symbol: str):
     total_net_gex = 0.0
     total_call_gex = 0.0
     total_put_gex = 0.0
+    
+    # New Theta/Gamma accumulation
+    total_gamma_sum = 0.0
+    total_theta_sum = 0.0
+    
     effective_gex = 0.0 # +/- 2% GEX
     gex_by_strike = {} # For Flip Point Calc
     batch_data = []
@@ -465,6 +501,17 @@ def process_symbol(client, session: Session, symbol: str):
             # API returns strings usually, cast to float
             gamma = float(greek_data.get('gamma') or 0)
             delta = float(greek_data.get('delta') or 0)
+            theta = float(greek_data.get('theta') or 0)
+
+            # Accumulate raw Gamma (absolute magnitude usually matters for regime, but here we sum raw)
+            # Actually, standard practice for "Total Gamma" exposure is sum of Gamma * OI * Spot possibly?
+            # Or just sum of raw Gamma? Implemenntation Plan said "Sum gamma (absolute sum)".
+            # Let's sum raw gamma for now as per common GEX dashboards, or usually it's Net Gamma.
+            # Plan said "Sum gamma (absolute sum) and theta".
+            # Checking "Respect the Clock": "if total_gamma is massive..."
+            # Usually we want the RAW sum of gamma to see total liquidity providing.
+            total_gamma_sum += gamma * oi * 100 # Weighted by OI
+            total_theta_sum += theta * oi * 100
 
             # Calc GEX
             raw_gex = gamma * oi * spot_price * 100
@@ -568,7 +615,9 @@ def process_symbol(client, session: Session, symbol: str):
             max_put_gex_strike=max_put_gex_strike,
             flip_strike=calculate_flip_point(gex_by_strike),
             regime="Sentiment",
-            effective_gex=effective_gex
+            effective_gex=effective_gex,
+            total_gamma=total_gamma_sum,
+            total_theta=total_theta_sum
         ))
         session.commit()
         logger.info(f"Saved {len(batch_data)} records for {symbol}. Net GEX: ${total_net_gex:,.2f}")

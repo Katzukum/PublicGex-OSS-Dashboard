@@ -297,10 +297,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             gammaLevels.Clear();
             
             // Find key manually but robustly
+            // Find key manually but robustly
             int keyIdx = json.IndexOf("\"" + levelsKey + "\"");
             if (keyIdx < 0) 
             {
-               Print($"OpenGamma: Key '{levelsKey}' not found.");
+               Print($"OpenGamma: Key '{levelsKey}' not found in JSON.");
                return; 
             }
             
@@ -353,6 +354,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
+            
+            Print($"OpenGamma: Parsed {gammaLevels.Count} levels for {levelsKey}");
         }
         
         private void ParseGammaLevelObject(string objJson)
@@ -533,7 +536,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                         float yTop = y - height / 2;
                         
                         if (y < ChartPanel.Y || y > ChartPanel.Y + ChartPanel.H)
+                        {
+                            // Log only the first few to avoid spam
+                            if (levelsCopy.IndexOf(level) < 3) 
+                                Print($"OpenGamma Render: Level {level.FuturesPrice} (Y={y}) is off-screen (Panel: {ChartPanel.Y}-{ChartPanel.Y+ChartPanel.H})");
                             continue;  // Skip if off-screen
+                        }
                         
                         // Calculate width based on GEX magnitude (max 40% of screen)
                         // Use Math.Max(10, ...) to ensure very small bars are at least visible
