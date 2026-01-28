@@ -12,7 +12,7 @@ This dashboard bridges the gap between raw option chain data (from Public.com) a
 
 ## 🌟 Features
 
-*   **Real-Time Gamma Analysis**: Fetches 0DTE option chains and calculates Net GEX instantly.
+*   **Real-Time Gamma Analysis**: Fetches 0DTE option chains and calculates Net GEX.
 *   **Gamma Flip Detection**: Identifies the precise strike price where market stability flips.
 *   **Market Compass**: Visualizes Trend vs. Volatility to categorize the market regime (Grind Up, Melt Up, Chop, Crash).
 *   **NinjaTrader Integration**: Includes a custom C# indicator (`OpenGamma.cs`) to plot levels and regimes directly on your charts.
