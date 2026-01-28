@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenGamma | Avant-Garde</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+        rel="stylesheet">
+
+    <!-- Plotly -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+    <!-- Tailwind CSS (via CDN for Playground) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        border: "hsl(240 20% 15%)", /* Matching CSS var */
+                        input: "hsl(240 20% 12%)",
+                        ring: "hsl(265 89% 66%)",
+                        background: "hsl(240 20% 4%)",
+                        foreground: "hsl(210 20% 98%)",
+                        primary: {
+                            DEFAULT: "hsl(265 89% 66%)",
+                            foreground: "hsl(210 20% 98%)",
+                        },
+                        secondary: {
+                            DEFAULT: "hsl(190 90% 50%)",
+                            foreground: "hsl(240 20% 4%)",
+                        },
+                        muted: {
+                            DEFAULT: "hsl(240 10% 12%)",
+                            foreground: "hsl(240 10% 60%)",
+                        }
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    }
+                }
+            }
+        }
+    </script>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body class="bg-background text-foreground antialiased overflow-hidden">
+
+    <!-- App Layout -->
+    <div class="sidebar-layout">
+
+        <!-- SIDEBAR -->
+        <aside class="sidebar-container h-screen backdrop-blur-xl z-20">
+            <!-- Brand -->
+            <div class="mb-10 flex items-center gap-3 px-2">
+                <div
+                    class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-secondary flex items-center justify-center shadow-[0_0_20px_hsla(265,89%,66%,0.3)]">
+                    <span class="text-xl font-bold text-white">⚡</span>
+                </div>
+                <div>
+                    <h1 class="font-bold tracking-tight text-lg">OPENGAMMA</h1>
+                    <p class="text-[10px] text-muted-foreground uppercase tracking-widest">Quantum Dashboard</p>
+                </div>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="flex-1 space-y-2">
+                <button onclick="switchView('overview')" id="nav-overview" class="w-full nav-btn active">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z">
+                        </path>
+                    </svg>
+                    Overview
+                </button>
+                <button onclick="switchView('dashboard')" id="nav-dashboard" class="w-full nav-btn">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z">
+                        </path>
+                    </svg>
+                    Analytics
+                </button>
+                <button onclick="switchView('analysis')" id="nav-analysis" class="w-full nav-btn">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01">
+                        </path>
+                    </svg>
+                    Strike Map
+                </button>
+                <button onclick="switchView('activity')" id="nav-activity" class="w-full nav-btn">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                    Live Feed
+                </button>
+            </nav>
+
+            <!-- Bottom Action -->
+            <div class="mt-auto pt-6 border-t border-white/5 space-y-4">
+                <div class="flex items-center justify-between px-2">
+                    <span class="text-xs text-muted-foreground">Status</span>
+                    <span class="flex items-center gap-2 text-xs font-mono text-emerald-400"><span
+                            class="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span> ONLINE</span>
+                </div>
+                <button onclick="switchView('settings')" id="nav-settings"
+                    class="w-full nav-btn justify-center bg-white/5 hover:bg-white/10">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z">
+                        </path>
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                    </svg>
+                    Configuration
+                </button>
+            </div>
+        </aside>
+
+        <!-- MAIN AREA -->
+        <main class="main-content relative scroll-smooth">
+
+            <!-- Global Header overlay -->
+            <header
+                class="flex items-center justify-between mb-8 sticky top-0 z-10 py-2 bg-background/50 backdrop-blur-md -mx-4 px-4">
+                <div class="flex flex-col">
+                    <h2 id="pageTitle" class="text-2xl font-light text-white tracking-tight">Market Overview</h2>
+                    <p id="pageDesc" class="text-xs text-muted-foreground">Real-time gamma exposure analysis</p>
+                </div>
+
+                <div class="flex items-center gap-4">
+                    <div class="relative group">
+                        <select id="symbolSelector" onchange="loadSymbol()"
+                            class="bg-black/20 border border-white/10 text-white text-sm rounded-lg focus:ring-primary focus:border-primary block p-2.5">
+                            <option>LOADING...</option>
+                        </select>
+                    </div>
+                    <div id="lastUpdate"
+                        class="text-xs font-mono text-muted-foreground border border-white/5 px-3 py-2 rounded-lg bg-black/20">
+                        --:--</div>
+                </div>
+            </header>
+
+            <!-- VIEWS -->
+
+            <!-- 1. OVERVIEW -->
+            <div id="view-overview" class="view-section space-y-6">
+                <!-- Top Row: Compass + Pillars -->
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    <!-- Compass Card -->
+                    <div
+                        class="glass-panel p-6 rounded-3xl relative overflow-hidden group min-h-[400px] flex flex-col xl:col-span-1">
+                        <div class="widget-header">
+                            <span class="widget-title">Regime Compass</span>
+                            <div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+                        </div>
+
+                        <div class="flex-1 relative flex items-center justify-center" id="signalCompass">
+                            <!-- Background Grid -->
+                            <div
+                                class="absolute inset-0 grid grid-cols-2 grid-rows-2 opacity-20 border border-white/5 rounded-2xl">
+                                <div
+                                    class="border-r border-b border-white/10 flex p-2 text-[8px] text-emerald-500 font-bold tracking-widest uppercase">
+                                    Melt Up</div>
+                                <div
+                                    class="border-b border-white/10 flex justify-end p-2 text-[8px] text-emerald-500 font-bold tracking-widest uppercase">
+                                    Grind Up</div>
+                                <div
+                                    class="border-r border-white/10 flex items-end p-2 text-[8px] text-red-500 font-bold tracking-widest uppercase">
+                                    Crash</div>
+                                <div
+                                    class="flex items-end justify-end p-2 text-[8px] text-red-500 font-bold tracking-widest uppercase">
+                                    Support</div>
+                            </div>
+
+                            <!-- The Puck -->
+                            <div id="compassPuck"
+                                class="absolute w-8 h-8 rounded-full border-2 border-white shadow-[0_0_30px_white] z-20 transition-all duration-700 ease-out bg-transparent backdrop-invert">
+                            </div>
+
+                            <!-- Label -->
+                            <h2 id="signalTitle"
+                                class="absolute bottom-10 text-5xl font-black text-transparent bg-clip-text bg-gradient-to-b from-white to-white/10 blur-[1px] opacity-80 z-10 tracking-tighter">
+                                LOADING</h2>
+                        </div>
+                    </div>
+
+                    <!-- Right Column -->
+                    <div class="xl:col-span-2 space-y-6">
+                        <!-- Pillars / Distances -->
+                        <div class="glass-panel p-6 rounded-3xl">
+                            <div class="widget-header">
+                                <span class="widget-title">Gamma Levels (Distance to Flip)</span>
+                            </div>
+                            <div id="pillarsContainer" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
+                        </div>
+
+                        <!-- Tilt Chart -->
+                        <div class="glass-panel p-6 rounded-3xl h-[240px] flex flex-col">
+                            <div class="widget-header">
+                                <span class="widget-title">Market Tilt (Net GEX)</span>
+                            </div>
+                            <div id="tiltChart" class="flex-1 w-full"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 2. DASHBOARD / ANALYTICS -->
+            <div id="view-dashboard" class="view-section hidden space-y-6">
+                <!-- KPI Cards -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="glass-panel p-5 rounded-2xl">
+                        <p class="text-[10px] text-muted-foreground uppercase tracking-widest mb-1">Spot Price</p>
+                        <div id="kpiSpot" class="text-3xl font-mono font-bold text-white glow-primary">---</div>
+                    </div>
+                    <div class="glass-panel p-5 rounded-2xl">
+                        <p class="text-[10px] text-muted-foreground uppercase tracking-widest mb-1">Net Exposure</p>
+                        <div id="regimeText" class="text-2xl font-mono font-bold text-white">---</div>
+                        <div class="h-1 w-full bg-white/10 mt-3 rounded-full overflow-hidden">
+                            <div id="regimeBar" class="h-full bg-primary transition-all duration-500"
+                                style="width: 50%"></div>
+                        </div>
+                    </div>
+                    <div class="glass-panel p-5 rounded-2xl border-l-4 border-l-emerald-500">
+                        <p class="text-[10px] text-muted-foreground uppercase tracking-widest mb-1">Call Wall</p>
+                        <div id="kpiLowVol" class="text-2xl font-mono font-bold text-emerald-400">---</div>
+                    </div>
+                    <div class="glass-panel p-5 rounded-2xl border-l-4 border-l-red-500">
+                        <p class="text-[10px] text-muted-foreground uppercase tracking-widest mb-1">Put Wall</p>
+                        <div id="kpiHighVol" class="text-2xl font-mono font-bold text-red-400">---</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="glass-panel p-6 rounded-3xl min-h-[450px] flex flex-col">
+                        <div class="widget-header">
+                            <span class="widget-title">Liquidity Profile</span>
+                            <div class="flex bg-black/40 rounded-lg p-0.5">
+                                <button onclick="updateChartRange('near')" id="btn-range-near"
+                                    class="px-3 py-1 text-[10px] rounded-md transition-all">Focus</button>
+                                <button onclick="updateChartRange('wide')" id="btn-range-wide"
+                                    class="px-3 py-1 text-[10px] rounded-md transition-all">Wide</button>
+                                <button onclick="updateChartRange('full')" id="btn-range-full"
+                                    class="px-3 py-1 text-[10px] rounded-md transition-all">Full</button>
+                            </div>
+                        </div>
+                        <div id="profileChart" class="flex-1 w-full"></div>
+                    </div>
+
+                    <div class="glass-panel p-6 rounded-3xl min-h-[450px] flex flex-col">
+                        <div class="widget-header">
+                            <span class="widget-title">Exposure History</span>
+                        </div>
+                        <div id="historyChart" class="flex-1 w-full"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. STRIKE MAP ANALYSIS -->
+            <div id="view-analysis" class="view-section hidden">
+                <div class="glass-panel rounded-3xl overflow-hidden">
+                    <div class="p-6 border-b border-white/5 flex justify-between items-center">
+                        <h3 class="widget-title">Detailed Strike Analysis</h3>
+                        <span class="text-xs text-muted-foreground">Live GEX Levels</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="text-xs text-muted-foreground uppercase bg-white/5">
+                                <tr>
+                                    <th class="px-6 py-4 font-medium tracking-wider">Strike</th>
+                                    <th class="px-6 py-4 font-medium tracking-wider">Status</th>
+                                    <th class="px-6 py-4 font-medium tracking-wider">Net GEX</th>
+                                    <th class="px-6 py-4 font-medium tracking-wider">Call Vol</th>
+                                    <th class="px-6 py-4 font-medium tracking-wider">Put Vol</th>
+                                    <th class="px-6 py-4 font-medium tracking-wider text-right">OI</th>
+                                </tr>
+                            </thead>
+                            <tbody id="analysisTableBody" class="divide-y divide-white/5 text-xs font-mono"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 4. ACTIVITY FEED -->
+            <div id="view-activity" class="view-section hidden">
+                <div class="glass-panel rounded-3xl p-8 max-w-3xl mx-auto">
+                    <div class="widget-header">
+                        <span class="widget-title">System Event Feed</span>
+                    </div>
+                    <div id="activityFeed" class="space-y-3 mt-6">
+                        <div class="text-center py-12 text-muted-foreground text-xs animate-pulse">
+                            Listening for market events...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 5. SETTINGS -->
+            <div id="view-settings" class="view-section hidden">
+                <div class="max-w-xl mx-auto glass-panel rounded-3xl p-10 space-y-8">
+                    <h3 class="text-2xl font-light text-white">System Configuration</h3>
+
+                    <div class="space-y-6">
+                        <!-- General Settings -->
+                        <div class="grid grid-cols-2 gap-6">
+                            <div class="space-y-2">
+                                <label class="text-xs font-bold text-muted-foreground uppercase tracking-widest">Refresh
+                                    Rate (s)</label>
+                                <input type="number" id="settingInterval"
+                                    class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors font-mono"
+                                    value="60">
+                            </div>
+                            <div class="space-y-2">
+                                <label
+                                    class="text-xs font-bold text-muted-foreground uppercase tracking-widest">Watchlist</label>
+                                <input type="text" id="settingSymbols"
+                                    class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white focus:border-primary focus:ring-1 focus:ring-primary outline-none transition-colors font-mono"
+                                    placeholder="SPY, QQQ">
+                            </div>
+                        </div>
+
+                        <!-- Theme Tuner -->
+                        <div class="pt-6 border-t border-white/5 animate-pulse-soft">
+                            <label
+                                class="text-xs font-bold text-muted-foreground uppercase tracking-widest mb-4 block">Theme
+                                Tuner</label>
+                            <div class="grid grid-cols-5 gap-4">
+                                <div class="space-y-1 text-center">
+                                    <div
+                                        class="relative w-full aspect-square rounded-full overflow-hidden border border-white/20 shadow-[0_0_15px_rgba(0,0,0,0.5)] cursor-pointer hover:scale-110 transition-transform">
+                                        <input type="color" id="colorBg"
+                                            class="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] cursor-pointer p-0 border-0"
+                                            value="#08080c">
+                                    </div>
+                                    <span class="text-[10px] text-muted-foreground">Universe</span>
+                                </div>
+                                <div class="space-y-1 text-center">
+                                    <div
+                                        class="relative w-full aspect-square rounded-full overflow-hidden border border-white/20 shadow-[0_0_15px_rgba(155,77,202,0.5)] cursor-pointer hover:scale-110 transition-transform">
+                                        <input type="color" id="colorPrimary"
+                                            class="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] cursor-pointer p-0 border-0"
+                                            value="#9b4dca">
+                                    </div>
+                                    <span class="text-[10px] text-muted-foreground">Action</span>
+                                </div>
+                                <div class="space-y-1 text-center">
+                                    <div
+                                        class="relative w-full aspect-square rounded-full overflow-hidden border border-white/20 shadow-[0_0_15px_rgba(0,188,212,0.5)] cursor-pointer hover:scale-110 transition-transform">
+                                        <input type="color" id="colorSecondary"
+                                            class="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] cursor-pointer p-0 border-0"
+                                            value="#00bcd4">
+                                    </div>
+                                    <span class="text-[10px] text-muted-foreground">Signal</span>
+                                </div>
+                                <div class="space-y-1 text-center">
+                                    <div
+                                        class="relative w-full aspect-square rounded-full overflow-hidden border border-white/20 shadow-[0_0_15px_rgba(16,185,129,0.5)] cursor-pointer hover:scale-110 transition-transform">
+                                        <input type="color" id="colorUp"
+                                            class="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] cursor-pointer p-0 border-0"
+                                            value="#10b981">
+                                    </div>
+                                    <span class="text-[10px] text-muted-foreground">Call</span>
+                                </div>
+                                <div class="space-y-1 text-center">
+                                    <div
+                                        class="relative w-full aspect-square rounded-full overflow-hidden border border-white/20 shadow-[0_0_15px_rgba(239,68,68,0.5)] cursor-pointer hover:scale-110 transition-transform">
+                                        <input type="color" id="colorDown"
+                                            class="absolute -top-1/2 -left-1/2 w-[200%] h-[200%] cursor-pointer p-0 border-0"
+                                            value="#ef4444">
+                                    </div>
+                                    <span class="text-[10px] text-muted-foreground">Put</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <div class="pt-6">
+                        <button onclick="saveSettings()"
+                            class="w-full bg-primary text-white font-bold py-4 rounded-xl hover:bg-primary/90 transition-all shadow-[0_0_25px_hsla(265,89%,66%,0.4)]">
+                            Save Configuration
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed bottom-6 right-6 z-50 flex flex-col gap-3 pointer-events-none"></div>
+
+    <script src="mockData.js"></script>
+    <script src="playground.js"></script>
+</body>
+
+</html>

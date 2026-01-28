@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Open Gamma</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;500;700;900&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script type="text/javascript" src="/eel.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="logo">
+                ⚡ Open<span class="accent">Gamma</span>
+            </div>
+
+            <div class="control-group">
+                <label>ASSET</label>
+                <select id="symbolSelector" onchange="loadSymbol()">
+                    <option>Loading...</option>
+                </select>
+            </div>
+
+            <nav class="main-nav">
+                <button class="nav-btn" onclick="switchView('overview')">
+                    🚦 Market Signal
+                </button>
+                <button class="nav-btn active" onclick="switchView('dashboard')">
+                    📊 Volatility Dashboard
+                </button>
+                <button class="nav-btn" onclick="switchView('analysis')">
+                    🔎 Strike Matrix
+                </button>
+                <button class="nav-btn" onclick="switchView('settings')">
+                    ⚙️ Settings
+                </button>
+            </nav>
+
+            <div class="status-box">
+                <div class="status-item">
+                    <span>Market Status</span>
+                    <span class="live-indicator">● LIVE</span>
+                </div>
+                <div class="status-item">
+                    <span>Update In</span>
+                    <span id="timerCountdown">--s</span>
+                </div>
+                <div class="status-item">
+                    <span>Last Update</span>
+                    <span id="lastUpdate">--:--</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="content-area">
+
+            <!-- VIEW 0: OVERVIEW (MARKET SIGNAL) -->
+            <div id="view-overview" class="view-section" style="display: none;">
+                <!-- A. Market Compass (4-Quadrant) -->
+                <div class="card signal-card"
+                    data-tooltip="The 4-Quadrant Market Signal. X-Axis = Volatility (Net Gamma). Y-Axis = Trend (Spot vs Flip).">
+                    <div id="signalCompass" class="compass-container">
+                        <!-- Quadrant Backgrounds -->
+                        <div class="compass-quad q-tl">MELT UP</div>
+                        <div class="compass-quad q-tr">GRIND UP</div>
+                        <div class="compass-quad q-bl">CRASH</div>
+                        <div class="compass-quad q-br">SUPPORT</div>
+
+                        <!-- Axes -->
+                        <div class="compass-axis-x"></div>
+                        <div class="compass-axis-y"></div>
+
+                        <!-- Inner Ring (Low Confidence Zone) -->
+                        <div class="compass-inner-ring"></div>
+
+                        <!-- The Puck -->
+                        <div id="compassPuck" class="compass-puck"></div>
+                    </div>
+                    <div class="compass-info">
+                        <h2 id="signalTitle">LOADING...</h2>
+                        <p id="signalDesc">Aggregating Market Data...</p>
+                    </div>
+                </div>
+
+                <!-- B. 3-Pillar Gauge -->
+                <div class="card" style="margin-top:20px;"
+                    data-tooltip="Shows the distance between the current price and the 'Flip Point' (0 Net Gamma) for each index. Bars to the right (Green) are in positive gamma (Stability). Bars to the left (Red) are in negative gamma (Volatility).">
+                    <div class="card-header">
+                        <h3>FLIP POINT DISTANCE (REGIME CHECK)</h3>
+                    </div>
+                    <div id="pillarsContainer" class="pillars-grid">
+                        <!-- JS Injects Three Pillars Here -->
+                    </div>
+                </div>
+
+                <!-- C. GEX Tilt Chart -->
+                <div class="card" style="margin-top:20px;"
+                    data-tooltip="Effective Dollar Gamma Exposure ($) within +/- 2% of Spot Price.">
+                    <div class="card-header">
+                        <h3>EFFECTIVE GEX TILT (LOCAL PRESSURE)</h3>
+                    </div>
+                    <div id="tiltChart" class="plot-area" style="height: 350px;"></div>
+                </div>
+            </div>
+
+            <!-- VIEW 1: DASHBOARD -->
+            <div id="view-dashboard" class="view-section">
+
+                <!-- Top Stats Row -->
+                <div class="kpi-grid">
+                    <div class="card kpi-card">
+                        <div class="kpi-title">SPOT PRICE</div>
+                        <div class="kpi-value" id="kpiSpot">---</div>
+                    </div>
+
+                    <!-- Vol Regime Gauge -->
+                    <div class="card kpi-card regime-card">
+                        <div class="kpi-title">VOLATILITY REGIME</div>
+                        <div class="regime-container">
+                            <div class="regime-bar">
+                                <div id="regimeIndicator" class="regime-marker"></div>
+                            </div>
+                            <div class="regime-label" id="regimeText">Analyzing...</div>
+                        </div>
+                    </div>
+
+                    <div class="card kpi-card stability-border">
+                        <div class="kpi-title">LOW VOLATILITY POINT</div>
+                        <div class="kpi-subtitle">Max Positive Gamma (Pin)</div>
+                        <div class="kpi-value text-stability" id="kpiLowVol">---</div>
+                    </div>
+
+                    <div class="card kpi-card volatility-border">
+                        <div class="kpi-title">HIGH VOLATILITY POINT</div>
+                        <div class="kpi-subtitle">Max Negative Gamma (Accel)</div>
+                        <div class="kpi-value text-volatility" id="kpiHighVol">---</div>
+                    </div>
+                </div>
+
+                <!-- Charts -->
+                <div class="charts-grid">
+                    <div class="card chart-container full-width">
+                        <div class="card-header">
+                            <h3>GAMMA LIQUIDITY PROFILE</h3>
+                            <div class="legend">
+                                <span class="dot call"></span> Call OI
+                                <span class="dot put"></span> Put OI
+                                <span class="dot net-line"></span> Net Gamma Curve
+                            </div>
+                        </div>
+                        <div id="profileChart" class="plot-area"></div>
+                    </div>
+
+                    <div class="card chart-container full-width">
+                        <div class="card-header">
+                            <h3>NET GAMMA TREND</h3>
+                        </div>
+                        <div id="historyChart" class="plot-area"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW 2: STRIKE ANALYSIS -->
+            <div id="view-analysis" class="view-section" style="display: none;">
+                <div class="card table-container">
+                    <div class="card-header">
+                        <h3>DEALER POSITIONING ANALYSIS</h3>
+                        <small>Based on 0DTE GEX</small>
+                    </div>
+                    <div class="analysis-table-wrapper">
+                        <table class="analysis-table" id="analysisTable">
+                            <thead>
+                                <tr>
+                                    <th style="text-align:center">Strike</th>
+                                    <th>Regime / Sentiment</th>
+                                    <th>Total GEX Exposure</th>
+                                    <th>Call GEX</th>
+                                    <th>Put GEX</th>
+                                    <th>Open Interest</th>
+                                </tr>
+                            </thead>
+                            <tbody id="analysisTableBody">
+                                <!-- JS Populates this -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW 3: SETTINGS -->
+            <div id="view-settings" class="view-section" style="display: none;">
+                <div class="card settings-card">
+                    <div class="card-header">
+                        <h3>CONFIGURATION</h3>
+                    </div>
+                    <div class="settings-form">
+                        <div class="form-group">
+                            <label>Auto-Refresh Interval (Seconds)</label>
+                            <input type="number" id="settingInterval" min="10" value="60">
+                        </div>
+                        <div class="form-group">
+                            <label>Theme</label>
+                            <select id="settingTheme">
+                                <option value="dark">Dark</option>
+                                <option value="light">Light</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Symbols (comma separated)</label>
+                            <input type="text" id="settingSymbols" placeholder="SPY,QQQ">
+                        </div>
+                        <div class="form-group">
+                            <label>Backend Update Delay (Seconds)</label>
+                            <input type="number" id="settingBackendDelay" min="10" value="180">
+                        </div>
+                        <button class="save-btn" onclick="saveSettings()">💾 Save Settings</button>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+
+        <!-- Right Panel (Notification Feed) -->
+        <aside class="right-panel">
+            <div class="panel-header">
+                <h3>ACTIVITY FEED</h3>
+            </div>
+            <div class="activity-feed" id="activityFeed">
+                <!-- JS Injects Items Here -->
+                <div class="activity-item" style="opacity:0.5; font-style:italic; font-size:12px;">
+                    Listening for events...
+                </div>
+            </div>
+        </aside>
+    </div>
+    <div id="tooltip" class="custom-tooltip"></div>
+    <script src="main.js"></script>
+</body>
+
+</html>

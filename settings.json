@@ -1,0 +1,17 @@
+{
+  "refresh_interval": 180,
+  "theme": "light",
+  "symbols": [
+    "SPY",
+    "QQQ",
+    "IWM",
+    "SPX",
+    "NDX"
+  ],
+  "backend_update_delay": 180,
+  "weights": {
+    "SPY": 0.5,
+    "QQQ": 0.3,
+    "IWM": 0.2
+  }
+}
