@@ -66,28 +66,56 @@
             <!-- VIEW 0: OVERVIEW (MARKET SIGNAL) -->
             <div id="view-overview" class="view-section" style="display: none;">
                 <!-- A. Market Compass (4-Quadrant) -->
-                <div class="card signal-card"
-                    data-tooltip="The 4-Quadrant Market Signal. X-Axis = Volatility (Net Gamma). Y-Axis = Trend (Spot vs Flip).">
-                    <div id="signalCompass" class="compass-container">
-                        <!-- Quadrant Backgrounds -->
-                        <div class="compass-quad q-tl">MELT UP</div>
-                        <div class="compass-quad q-tr">GRIND UP</div>
-                        <div class="compass-quad q-bl">CRASH</div>
-                        <div class="compass-quad q-br">SUPPORT</div>
+                <!-- A. Market Compass (4-Quadrant) -->
+                <div class="card signal-card">
+                    <div style="display: flex; justify-content: center; gap: 40px; flex-wrap: wrap;">
+                        
+                        <!-- 1. Traders Compass -->
+                        <div class="compass-wrapper">
+                            <h3 style="margin-bottom: 15px; color: var(--text-muted); letter-spacing: 1px;">TRADERS MARKET</h3>
+                            <div id="compassTraders" class="compass-container" data-tooltip="Loading...">
+                                <!-- Quadrant Backgrounds -->
+                                <div class="compass-quad q-tl">MELT UP</div>
+                                <div class="compass-quad q-tr">GRIND UP</div>
+                                <div class="compass-quad q-bl">CRASH</div>
+                                <div class="compass-quad q-br">SUPPORT</div>
+                                <!-- Axes -->
+                                <div class="compass-axis-x"></div>
+                                <div class="compass-axis-y"></div>
+                                <!-- Inner Ring -->
+                                <div class="compass-inner-ring"></div>
+                                <!-- The Puck -->
+                                <div id="puckTraders" class="compass-puck"></div>
+                            </div>
+                            <div class="compass-info">
+                                <h2 id="titleTraders">LOADING...</h2>
+                                <p id="descTraders">Aggregating Market Data...</p>
+                            </div>
+                        </div>
 
-                        <!-- Axes -->
-                        <div class="compass-axis-x"></div>
-                        <div class="compass-axis-y"></div>
+                        <!-- 2. Whale Compass -->
+                        <div class="compass-wrapper">
+                            <h3 style="margin-bottom: 15px; color: var(--text-muted); letter-spacing: 1px;">WHALE MARKET</h3>
+                            <div id="compassWhale" class="compass-container" data-tooltip="Loading...">
+                                <!-- Quadrant Backgrounds -->
+                                <div class="compass-quad q-tl">MELT UP</div>
+                                <div class="compass-quad q-tr">GRIND UP</div>
+                                <div class="compass-quad q-bl">CRASH</div>
+                                <div class="compass-quad q-br">SUPPORT</div>
+                                <!-- Axes -->
+                                <div class="compass-axis-x"></div>
+                                <div class="compass-axis-y"></div>
+                                <!-- Inner Ring -->
+                                <div class="compass-inner-ring"></div>
+                                <!-- The Puck -->
+                                <div id="puckWhale" class="compass-puck"></div>
+                            </div>
+                            <div class="compass-info">
+                                <h2 id="titleWhale">LOADING...</h2>
+                                <p id="descWhale">Aggregating Market Data...</p>
+                            </div>
+                        </div>
 
-                        <!-- Inner Ring (Low Confidence Zone) -->
-                        <div class="compass-inner-ring"></div>
-
-                        <!-- The Puck -->
-                        <div id="compassPuck" class="compass-puck"></div>
-                    </div>
-                    <div class="compass-info">
-                        <h2 id="signalTitle">LOADING...</h2>
-                        <p id="signalDesc">Aggregating Market Data...</p>
                     </div>
                 </div>
 

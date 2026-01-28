@@ -214,42 +214,47 @@ def get_market_overview() -> dict:
     """Calculates the Market Regime Compass (Trend vs. Volatility).
 
     Aggregates weighted GEX and Trend scores from multiple symbols (defined in
-    settings.json) to produce a unified market sentiment vector. Broadcasts
-    the result to NinjaTrader.
+    settings.json) to produce two unified market sentiment vectors:
+    1. Traders Market (SPY/QQQ/IWM)
+    2. Whale Market (SPX/NDX/IWM)
 
     Returns:
         A dictionary containing:
-            - compass (dict): X/Y scores, label (e.g., "GRIND UP"), and strategy.
-            - components (list): Per-symbol contribution details.
+            - compass_traders (dict): Compass state for Traders Market.
+            - compass_whale (dict): Compass state for Whale Market.
+            - components (list): Per-symbol contribution details (Union of all).
             - tilt (list): Effective GEX data.
     """
     try:
-        # Load settings for weights
+        # Load settings
         import json
         with open('settings.json') as f:
             settings = json.load(f)
-        weights = settings.get('weights', {})
+        
+        weights_traders = settings.get('weights', {})
+        weights_whale = settings.get('weights_whale', {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20})
         
         overview_data = {
-            "compass": {
-                "x_score": 0, # Volatility (GEX)
-                "y_score": 0, # Trend (Spot vs Flip)
-                "label": "NEUTRAL",
-                "strategy": "Waiting for data..."
-            },
-            "components": [],
+            "compass_traders": {},
+            "compass_whale": {},
+            "components": [], # Will be populated with unique symbols from both
             "tilt": []
         }
         
-        # Weighted Aggregates
-        weighted_vol_score = 0 # Net GEX sign
-        weighted_trend_score = 0 # Spot vs Flip
-        total_weight = 0
-        
-        with engine.connect() as conn:
-            # Iterate through the weighted symbols
-            for symbol, weight in weights.items():
-                # Get latest snapshot
+        def _calculate_compass_state(target_weights, conn):
+            """Helper to calculate compass state for a given set of weights."""
+            x_score_sum = 0
+            y_score_sum = 0
+            total_weight = 0
+            components = []
+            
+            # Format composition string for tooltip (e.g. "SPY: 50%, QQQ: 30%")
+            comp_strs = []
+            for s, w in target_weights.items():
+                comp_strs.append(f"{s}: {int(w*100)}%")
+            composition_str = ", ".join(comp_strs)
+            
+            for symbol, weight in target_weights.items():
                 query = text("""
                     SELECT * FROM gex_snapshots 
                     WHERE symbol = :symbol 
@@ -261,111 +266,117 @@ def get_market_overview() -> dict:
                 if row:
                     net_gex = row.total_net_gex
                     spot = row.spot_price
-                    # Use getattr safety
                     flip = getattr(row, 'flip_strike', 0)
                     eff_gex = getattr(row, 'effective_gex', 0)
                     
-                    # --- REFINED LOGIC ---
-                    # Only contribute to the aggregate score if we have valid Flip data
+                    # Logic
                     if flip and flip > 0:
-                        # 1. Trend Score (Scaled): Uses distance from Flip
                         dist_pct = ((spot - flip) / flip) * 100
-                        # Scaled Trend: 0.5% move = Full Score (1.0), capped at +/- 1
                         trend_score = max(-1, min(1, dist_pct / 0.5))
-                        
-                        # 2. Volatility Score: Binary based on Net GEX (can be scaled later)
                         vol_score = 1 if net_gex > 0 else -1
                         
-                        weighted_vol_score += vol_score * weight
-                        weighted_trend_score += trend_score * weight
+                        x_score_sum += vol_score * weight
+                        y_score_sum += trend_score * weight
                         total_weight += weight
                         
                         regime_label = "Bullish" if trend_score > 0 else "Bearish"
-                        if abs(trend_score) < 0.2: # Small buffer zone
-                            regime_label = "Neutral"
-                            
+                        if abs(trend_score) < 0.2: regime_label = "Neutral"
                     else:
-                        # Handle 'No Data' basically by excluding from the Compass calc
                         dist_pct = 0
                         regime_label = "No Flip Data"
+                        eff_gex = 0 # Default if row missing attributes
+                        net_gex = 0
 
-                    # Component Data
-                    overview_data["components"].append({
+                    components.append({
                         "symbol": symbol,
                         "spot": spot,
                         "flip_strike": flip,
                         "distance_pct": dist_pct,
                         "net_gex": net_gex,
+                        "effective_gex": eff_gex, # Pass effective gex too
                         "regime": regime_label
                     })
-                    
-                    # TILT CHART: Use Effective GEX now
-                    overview_data["tilt"].append({
-                        "symbol": symbol,
-                        "net_gex": eff_gex # Using Effective GEX here
-                    })
-
-        # Final Scores (-1 to 1)
-        if total_weight > 0:
-            final_vol = weighted_vol_score / total_weight
-            final_trend = weighted_trend_score / total_weight
-        else:
-            final_vol = 0
-            final_trend = 0
             
-        overview_data["compass"]["x_score"] = final_vol
-        overview_data["compass"]["y_score"] = final_trend
-        
-        # Determine Quadrant Label & Strategy
-        # Thresholds: Inner Ring = 0.25 radius
-        import math
-        magnitude = math.sqrt(final_vol**2 + final_trend**2)
-        inner_ring_threshold = 0.25
-        
-        # Define boolean flags (Fix for NameError)
-        is_pos_gex = final_vol > 0
-        is_bull_trend = final_trend > 0
-        
-        # DEBUG PRINTS
-        print(f"--- MARKER COMPASS CALC ---")
-        print(f"BREADTH: {total_weight}")
-        print(f"VOL SCORE (X): {final_vol:.4f} | POS? {is_pos_gex}")
-        print(f"TREND SCORE (Y): {final_trend:.4f} | BULL? {is_bull_trend}")
-        print(f"MAGNITUDE: {magnitude:.4f} (Threshold: {inner_ring_threshold})")
-        
-        base_label = ""
-        base_strategy = ""
-        base_icon = ""
+            final_vol = x_score_sum / total_weight if total_weight > 0 else 0
+            final_trend = y_score_sum / total_weight if total_weight > 0 else 0
+            
+            # Label Logic
+            import math
+            magnitude = math.sqrt(final_vol**2 + final_trend**2)
+            inner_ring_threshold = 0.25
+            is_pos_gex = final_vol > 0
+            is_bull_trend = final_trend > 0
+            
+            if is_pos_gex and is_bull_trend:
+                base_lbl, base_strat, base_icon = "GRIND UP", "Buy Calls / Sell Put Spreads.", "🟢"
+            elif is_pos_gex and not is_bull_trend:
+                base_lbl, base_strat, base_icon = "SUPPORT / CHOP", "'Bear Trap.' Buy dips.", "⚪"
+            elif not is_pos_gex and is_bull_trend:
+                base_lbl, base_strat, base_icon = "MELT UP", "Buy Calls, tighten stops.", "🟡"
+            else:
+                base_lbl, base_strat, base_icon = "CRASH / FLUSH", "Buy Puts / Sell Rips.", "🔴"
 
-        if is_pos_gex and is_bull_trend:
-            base_label = "GRIND UP"
-            base_strategy = "Buy Calls / Sell Put Spreads. (Market drifts up)."
-            base_icon = "🟢"
-        elif is_pos_gex and not is_bull_trend:
-            base_label = "SUPPORT / CHOP"
-            base_strategy = "'Bear Trap.' Buy dips, look for reversals."
-            base_icon = "⚪"
-        elif not is_pos_gex and is_bull_trend:
-            base_label = "MELT UP"
-            base_strategy = "Buy Calls, tighten stops. Unanchored upside."
-            base_icon = "🟡"
-        else: # Neg GEX + Bear Trend
-            base_label = "CRASH / FLUSH"
-            base_strategy = "Buy Puts / Sell Rips. Do not fade."
-            base_icon = "🔴"
+            if magnitude < inner_ring_threshold:
+                label = f"{base_icon} WEAK {base_lbl}"
+                strategy = f"{base_strat} (Low Confidence)"
+            else:
+                label = f"{base_icon} {base_lbl}"
+                strategy = base_strat
+                
+            return {
+                "x_score": final_vol,
+                "y_score": final_trend,
+                "label": label,
+                "strategy": strategy,
+                "composition": composition_str,
+                "raw_components": components
+            }
 
-        # Apply Inner Ring Confidence
-        if magnitude < inner_ring_threshold:
-            overview_data["compass"]["label"] = f"{base_icon} WEAK {base_label}"
-            overview_data["compass"]["strategy"] = f"{base_strategy} (Low Confidence)"
-        else:
-            overview_data["compass"]["label"] = f"{base_icon} {base_label}"
-            overview_data["compass"]["strategy"] = base_strategy
+        with engine.connect() as conn:
+            # 1. Calculate Traders Compass
+            traders_state = _calculate_compass_state(weights_traders, conn)
+            overview_data["compass_traders"] = traders_state
+            
+            # 2. Calculate Whale Compass
+            whale_state = _calculate_compass_state(weights_whale, conn)
+            overview_data["compass_whale"] = whale_state
+            
+            # 3. Merge Unique Components for Pillars/Tilt
+            # Use a dictionary keyed by symbol to ensure uniqueness
+            merged_comps = {}
+            
+            # Helper to add to merged dict
+            def add_comps(comp_list):
+                for c in comp_list:
+                    merged_comps[c['symbol']] = c
+            
+            add_comps(traders_state['raw_components'])
+            add_comps(whale_state['raw_components'])
+            
+            for sym, data in merged_comps.items():
+                overview_data["components"].append({
+                    "symbol": data['symbol'],
+                    "spot": data['spot'],
+                    "flip_strike": data['flip_strike'],
+                    "distance_pct": data.get('distance_pct', 0),
+                    "net_gex": data['net_gex'],
+                    "regime": data['regime']
+                })
+                
+                overview_data["tilt"].append({
+                    "symbol": data['symbol'], 
+                    "net_gex": data.get('effective_gex', 0)
+                })
 
-        # --- Broadcast to NinjaTrader ---
+        # --- Broadcast to NinjaTrader (Focus on Traders/Settings Compass for now or send both?) ---
+        # For backward compatibility, we can send the traders data as the primary
         try:
             from ninjatrader_broadcaster import send_regime_update
-            send_regime_update(overview_data)
+            # We construct a backward-compatible payload if needed, or just send the new one
+            # NinjaTrader likely expects 'compass' key. Let's send Traders as default.
+            broadcast_payload = overview_data.copy()
+            broadcast_payload['compass'] = overview_data['compass_traders'] 
+            send_regime_update(broadcast_payload)
         except Exception as e:
             print(f"NinjaTrader broadcast error (non-blocking): {e}")
 

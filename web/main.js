@@ -3,7 +3,7 @@ let countdownTimer = null;
 let currentSettings = { refresh_interval: 60, theme: 'dark', symbols: [], backend_update_delay: 180 };
 let timeLeft = 0;
 let cachedData = null;
-let compassHistory = []; // Trail history
+let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
 
 
 // --- Init ---
@@ -388,16 +388,28 @@ async function loadOverview() {
 }
 
 function renderSignalDashboard(data) {
-    // data.compass keys: x_score, y_score, label, strategy
-    renderCompass(data.compass);
+    renderCompass(data.compass_traders, 'Traders');
+    renderCompass(data.compass_whale, 'Whale');
+
     renderPillars(data.components);
     renderTiltChart(data.tilt);
 }
 
-function renderCompass(compassData) {
+function renderCompass(compassData, type) {
+    // type: 'Traders' or 'Whale'
+    if (!compassData || !compassData.label) return;
+
+    // 0. Update Tooltip
+    // Show composition + default explanation
+    const container = document.getElementById(`compass${type}`);
+    if (container) {
+        const baseTooltip = "X-Axis = Volatility (Net Gamma). Y-Axis = Trend (Spot vs Flip).";
+        container.setAttribute('data-tooltip', `${compassData.composition}. ${baseTooltip}`);
+    }
+
     // 1. Update Text
-    const titleEl = document.getElementById('signalTitle');
-    const descEl = document.getElementById('signalDesc');
+    const titleEl = document.getElementById(`title${type}`);
+    const descEl = document.getElementById(`desc${type}`);
 
     titleEl.innerText = compassData.label;
     descEl.innerText = compassData.strategy;
@@ -410,51 +422,48 @@ function renderCompass(compassData) {
     const xPct = 50 + (compassData.x_score * 35);
     const yPct = 50 - (compassData.y_score * 35);
 
-    const puck = document.getElementById('compassPuck');
+    const puck = document.getElementById(`puck${type}`);
     puck.style.left = `${xPct}%`;
     puck.style.top = `${yPct}%`;
 
     // 3. Trail Logic (Ghost Pucks)
     const newPos = { x: xPct, y: yPct };
+    const history = compassHistory[type];
 
     // Init history if empty
-    if (compassHistory.length === 0) {
-        compassHistory.push(newPos);
+    if (history.length === 0) {
+        history.push(newPos);
     } else {
         // Only add if position changed significantly (> 0.5%)
-        const last = compassHistory[compassHistory.length - 1];
+        const last = history[history.length - 1];
         const dist = Math.sqrt(Math.pow(newPos.x - last.x, 2) + Math.pow(newPos.y - last.y, 2));
         if (dist > 0.5) {
-            compassHistory.push(newPos);
+            history.push(newPos);
         }
     }
 
     // Keep max 6 items (Current + 5 Trails)
-    if (compassHistory.length > 6) compassHistory.shift();
+    if (history.length > 6) history.shift();
 
     // Render Trail Elements
-    // Remove existing trails first
-    document.querySelectorAll('.compass-trail-puck').forEach(el => el.remove());
-    const container = document.querySelector('.compass-container');
+    // Remove existing trails first (scoped to this compass container)
+    // We need to query selector only inside this compass container
+    const compassContainer = document.getElementById(`compass${type}`);
+    compassContainer.querySelectorAll('.compass-trail-puck').forEach(el => el.remove());
 
     // Iterate backwards from 1 step ago
-    // compassHistory = [Oldest ... Newest]
-    // trail-1 is index [len-2]
-    // trail-5 is index [len-6]
-
     for (let i = 1; i <= 5; i++) {
-        const idx = compassHistory.length - 1 - i;
+        const idx = history.length - 1 - i;
         if (idx >= 0) {
-            const pos = compassHistory[idx];
+            const pos = history[idx];
             const el = document.createElement('div');
             el.className = `compass-trail-puck trail-${i}`;
             el.style.left = `${pos.x}%`;
             el.style.top = `${pos.y}%`;
-            container.appendChild(el);
+            compassContainer.appendChild(el);
         }
     }
-
-    // Colorize the title based on label content
+    // Colorize Title
     titleEl.className = ''; // reset
     if (compassData.label.includes('GRIND')) titleEl.style.color = 'var(--stability-color)';
     else if (compassData.label.includes('CRASH')) titleEl.style.color = 'var(--volatility-color)';
