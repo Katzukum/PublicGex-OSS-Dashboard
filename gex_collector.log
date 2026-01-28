@@ -30,3 +30,99 @@
 2026-01-27 21:43:49,757 [INFO] Spot Price for NDX: 25939.7443
 2026-01-27 21:43:52,646 [INFO] No 0DTE expiration found for NDX. Skipping.
 2026-01-27 21:43:52,682 [INFO] Run complete.
+2026-01-27 22:12:08,011 [INFO] Starting collection for SPY...
+2026-01-27 22:12:08,078 [INFO] Spot Price for SPY: 697.16
+2026-01-27 22:12:09,062 [INFO] No 0DTE expiration found for SPY. Skipping.
+2026-01-27 22:12:09,062 [INFO] Starting collection for QQQ...
+2026-01-27 22:12:10,072 [INFO] Spot Price for QQQ: 634.27
+2026-01-27 22:12:11,062 [INFO] No 0DTE expiration found for QQQ. Skipping.
+2026-01-27 22:12:11,062 [INFO] Starting collection for IWM...
+2026-01-27 22:12:12,079 [INFO] Spot Price for IWM: 265.1099
+2026-01-27 22:12:13,067 [INFO] No 0DTE expiration found for IWM. Skipping.
+2026-01-27 22:12:13,068 [INFO] Starting collection for SPX...
+2026-01-27 22:12:14,082 [INFO] Spot Price for SPX: 6978.6
+2026-01-27 22:12:15,067 [INFO] No 0DTE expiration found for SPX. Skipping.
+2026-01-27 22:12:15,067 [INFO] Starting collection for NDX...
+2026-01-27 22:12:16,078 [INFO] Spot Price for NDX: 25939.7443
+2026-01-27 22:12:19,028 [INFO] No 0DTE expiration found for NDX. Skipping.
+2026-01-27 22:12:19,067 [INFO] Run complete.
+2026-01-27 22:15:21,331 [INFO] Starting collection for SPY...
+2026-01-27 22:15:21,408 [INFO] Spot Price for SPY: 697.16
+2026-01-27 22:15:22,389 [INFO] No 0DTE expiration found for SPY. Skipping.
+2026-01-27 22:15:22,390 [INFO] Starting collection for QQQ...
+2026-01-27 22:15:23,396 [INFO] Spot Price for QQQ: 634.27
+2026-01-27 22:15:24,385 [INFO] No 0DTE expiration found for QQQ. Skipping.
+2026-01-27 22:15:24,385 [INFO] Starting collection for IWM...
+2026-01-27 22:15:25,449 [INFO] Spot Price for IWM: 265.1099
+2026-01-27 22:15:26,411 [INFO] No 0DTE expiration found for IWM. Skipping.
+2026-01-27 22:15:26,411 [INFO] Starting collection for SPX...
+2026-01-27 22:15:27,400 [INFO] Spot Price for SPX: 6978.6
+2026-01-27 22:15:31,857 [INFO] No 0DTE expiration found for SPX. Skipping.
+2026-01-27 22:15:31,857 [INFO] Starting collection for NDX...
+2026-01-27 22:15:31,924 [INFO] Spot Price for NDX: 25939.7443
+2026-01-27 22:15:34,578 [INFO] No 0DTE expiration found for NDX. Skipping.
+2026-01-27 22:15:34,628 [INFO] Run complete.
+2026-01-27 22:18:21,275 [INFO] Starting collection for SPY...
+2026-01-27 22:18:21,350 [INFO] Spot Price for SPY: 697.16
+2026-01-27 22:18:22,340 [INFO] No 0DTE expiration found for SPY. Skipping.
+2026-01-27 22:18:22,342 [INFO] Starting collection for QQQ...
+2026-01-27 22:18:23,351 [INFO] Spot Price for QQQ: 634.27
+2026-01-27 22:18:24,419 [INFO] No 0DTE expiration found for QQQ. Skipping.
+2026-01-27 22:18:24,420 [INFO] Starting collection for IWM...
+2026-01-27 22:18:25,344 [INFO] Spot Price for IWM: 265.1099
+2026-01-27 22:18:26,333 [INFO] No 0DTE expiration found for IWM. Skipping.
+2026-01-27 22:18:26,334 [INFO] Starting collection for SPX...
+2026-01-27 22:18:27,357 [INFO] Spot Price for SPX: 6978.6
+2026-01-27 22:18:28,351 [INFO] No 0DTE expiration found for SPX. Skipping.
+2026-01-27 22:18:28,351 [INFO] Starting collection for NDX...
+2026-01-27 22:18:29,346 [INFO] Spot Price for NDX: 25939.7443
+2026-01-27 22:18:30,337 [INFO] No 0DTE expiration found for NDX. Skipping.
+2026-01-27 22:18:30,372 [INFO] Run complete.
+2026-01-27 22:21:21,008 [INFO] Starting collection for SPY...
+2026-01-27 22:21:21,069 [INFO] Spot Price for SPY: 697.16
+2026-01-27 22:21:22,075 [INFO] No 0DTE expiration found for SPY. Skipping.
+2026-01-27 22:21:22,094 [INFO] Starting collection for QQQ...
+2026-01-27 22:21:23,090 [INFO] Spot Price for QQQ: 634.27
+2026-01-27 22:21:24,059 [INFO] No 0DTE expiration found for QQQ. Skipping.
+2026-01-27 22:21:24,061 [INFO] Starting collection for IWM...
+2026-01-27 22:21:25,069 [INFO] Spot Price for IWM: 265.1099
+2026-01-27 22:21:26,063 [INFO] No 0DTE expiration found for IWM. Skipping.
+2026-01-27 22:21:26,065 [INFO] Starting collection for SPX...
+2026-01-27 22:21:27,071 [INFO] Spot Price for SPX: 6978.6
+2026-01-27 22:21:28,063 [INFO] No 0DTE expiration found for SPX. Skipping.
+2026-01-27 22:21:28,064 [INFO] Starting collection for NDX...
+2026-01-27 22:21:29,074 [INFO] Spot Price for NDX: 25939.7443
+2026-01-27 22:21:30,063 [INFO] No 0DTE expiration found for NDX. Skipping.
+2026-01-27 22:21:30,104 [INFO] Run complete.
+2026-01-27 22:24:21,251 [INFO] Starting collection for SPY...
+2026-01-27 22:24:21,307 [INFO] Spot Price for SPY: 697.16
+2026-01-27 22:24:22,304 [INFO] No 0DTE expiration found for SPY. Skipping.
+2026-01-27 22:24:22,305 [INFO] Starting collection for QQQ...
+2026-01-27 22:24:23,316 [INFO] Spot Price for QQQ: 634.27
+2026-01-27 22:24:24,300 [INFO] No 0DTE expiration found for QQQ. Skipping.
+2026-01-27 22:24:24,300 [INFO] Starting collection for IWM...
+2026-01-27 22:24:25,315 [INFO] Spot Price for IWM: 265.1099
+2026-01-27 22:24:26,312 [INFO] No 0DTE expiration found for IWM. Skipping.
+2026-01-27 22:24:26,312 [INFO] Starting collection for SPX...
+2026-01-27 22:24:27,327 [INFO] Spot Price for SPX: 6978.6
+2026-01-27 22:24:28,309 [INFO] No 0DTE expiration found for SPX. Skipping.
+2026-01-27 22:24:28,310 [INFO] Starting collection for NDX...
+2026-01-27 22:24:29,320 [INFO] Spot Price for NDX: 25939.7443
+2026-01-27 22:24:30,309 [INFO] No 0DTE expiration found for NDX. Skipping.
+2026-01-27 22:24:30,332 [INFO] Run complete.
+2026-01-27 22:27:21,637 [INFO] Starting collection for SPY...
+2026-01-27 22:27:21,700 [INFO] Spot Price for SPY: 697.16
+2026-01-27 22:27:22,685 [INFO] No 0DTE expiration found for SPY. Skipping.
+2026-01-27 22:27:22,685 [INFO] Starting collection for QQQ...
+2026-01-27 22:27:23,720 [INFO] Spot Price for QQQ: 634.27
+2026-01-27 22:27:24,685 [INFO] No 0DTE expiration found for QQQ. Skipping.
+2026-01-27 22:27:24,686 [INFO] Starting collection for IWM...
+2026-01-27 22:27:25,704 [INFO] Spot Price for IWM: 265.1099
+2026-01-27 22:27:26,691 [INFO] No 0DTE expiration found for IWM. Skipping.
+2026-01-27 22:27:26,691 [INFO] Starting collection for SPX...
+2026-01-27 22:27:27,738 [INFO] Spot Price for SPX: 6978.6
+2026-01-27 22:27:28,693 [INFO] No 0DTE expiration found for SPX. Skipping.
+2026-01-27 22:27:28,693 [INFO] Starting collection for NDX...
+2026-01-27 22:27:29,700 [INFO] Spot Price for NDX: 25939.7443
+2026-01-27 22:27:30,688 [INFO] No 0DTE expiration found for NDX. Skipping.
+2026-01-27 22:27:30,715 [INFO] Run complete.

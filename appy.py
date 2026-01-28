@@ -265,27 +265,31 @@ def get_market_overview() -> dict:
                     flip = getattr(row, 'flip_strike', 0)
                     eff_gex = getattr(row, 'effective_gex', 0)
                     
-                    # 1. Volatility Score (X-Axis): -1 (Negative GEX) to +1 (Positive GEX)
-                    vol_sign = 1 if net_gex > 0 else -1
-                    weighted_vol_score += vol_sign * weight
-                    
-                    # 2. Trend Score (Y-Axis): -1 (Spot < Flip) to +1 (Spot > Flip)
-                    # If no flip, default to vol_sign (assume trend follows gamma)
-                    trend_sign = 0
+                    # --- REFINED LOGIC ---
+                    # Only contribute to the aggregate score if we have valid Flip data
                     if flip and flip > 0:
-                        trend_sign = 1 if spot > flip else -1
+                        # 1. Trend Score (Scaled): Uses distance from Flip
+                        dist_pct = ((spot - flip) / flip) * 100
+                        # Scaled Trend: 0.5% move = Full Score (1.0), capped at +/- 1
+                        trend_score = max(-1, min(1, dist_pct / 0.5))
+                        
+                        # 2. Volatility Score: Binary based on Net GEX (can be scaled later)
+                        vol_score = 1 if net_gex > 0 else -1
+                        
+                        weighted_vol_score += vol_score * weight
+                        weighted_trend_score += trend_score * weight
+                        total_weight += weight
+                        
+                        regime_label = "Bullish" if trend_score > 0 else "Bearish"
+                        if abs(trend_score) < 0.2: # Small buffer zone
+                            regime_label = "Neutral"
+                            
                     else:
-                        trend_sign = vol_sign
-                    
-                    weighted_trend_score += trend_sign * weight
-                    
-                    total_weight += weight
-                    
-                    # Component Data
-                    dist_pct = ((spot - flip) / flip) * 100 if flip and flip > 0 else 0
-                    
-                    regime_label = "Bullish" if trend_sign > 0 else "Bearish"
+                        # Handle 'No Data' basically by excluding from the Compass calc
+                        dist_pct = 0
+                        regime_label = "No Flip Data"
 
+                    # Component Data
                     overview_data["components"].append({
                         "symbol": symbol,
                         "spot": spot,
