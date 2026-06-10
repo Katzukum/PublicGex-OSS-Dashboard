@@ -16,10 +16,10 @@ The Dashboard determines the market regime based on two factors:
 ```python
 if is_pos_gex and is_bull_trend:
     base_label = "GRIND UP"
-    base_strategy = "Buy Calls / Sell Put Spreads."
+    base_strategy = "Positive gamma with spot above flip. Favor controlled upside and mean-reversion on pullbacks."
 ```
 
-4.  Add your custom logic or sub-conditions. For example, check `total_net_gex` magnitude to distinguish between "Slow Grind" and "Rocketship".
+4.  Add your custom logic or sub-conditions. Prefer context language over direct trade instructions. For example, distinguish between "favor mean reversion" and "watch for range expansion".
 
 ## Adding New Symbols
 

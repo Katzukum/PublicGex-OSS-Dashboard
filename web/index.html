@@ -4,9 +4,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Open Gamma</title>
+    <title>OpenGamma</title>
     <link
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@300;500;700;900&display=swap"
+        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800;900&display=swap"
         rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
     <script type="text/javascript" src="/eel.js"></script>
@@ -14,201 +14,269 @@
 </head>
 
 <body>
-
-    <div class="app-container">
-        <!-- Sidebar -->
+    <div class="terminal-shell">
         <aside class="sidebar">
-            <div class="logo">
-                ⚡ Open<span class="accent">Gamma</span>
+            <div class="brand">
+                <div class="brand-mark">OG</div>
+                <div>
+                    <div class="brand-name">OpenGamma</div>
+                    <div class="brand-subtitle">Gamma Console</div>
+                </div>
             </div>
 
-            <div class="control-group">
-                <label>ASSET</label>
-                <select id="symbolSelector" onchange="loadSymbol()">
-                    <option>Loading...</option>
-                </select>
-            </div>
-
-            <nav class="main-nav">
-                <button class="nav-btn" onclick="switchView('overview')">
-                    🚦 Market Signal
+            <nav class="main-nav" aria-label="Main navigation">
+                <button class="nav-btn active" onclick="switchView('cockpit')" data-view="cockpit">
+                    <span class="nav-icon">[]</span>
+                    <span>Cockpit</span>
                 </button>
-                <button class="nav-btn active" onclick="switchView('dashboard')">
-                    📊 Volatility Dashboard
+                <button class="nav-btn" onclick="switchView('dashboard')" data-view="dashboard">
+                    <span class="nav-icon">~</span>
+                    <span>Gamma</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('analysis')">
-                    🔎 Strike Matrix
+                <button class="nav-btn" onclick="switchView('market-signal')" data-view="market-signal">
+                    <span class="nav-icon">&lt;&gt;</span>
+                    <span>Flow</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('settings')">
-                    ⚙️ Settings
+                <button class="nav-btn" onclick="switchView('dashboard')" data-view="volatility">
+                    <span class="nav-icon">o</span>
+                    <span>Volatility</span>
+                </button>
+                <button class="nav-btn" onclick="switchView('analysis')" data-view="analysis">
+                    <span class="nav-icon">#</span>
+                    <span>Strike Matrix</span>
+                </button>
+                <button class="nav-btn" onclick="switchView('settings')" data-view="settings">
+                    <span class="nav-icon">*</span>
+                    <span>Settings</span>
                 </button>
             </nav>
 
-            <div class="status-box">
-                <div class="status-item">
-                    <span>Market Status</span>
-                    <span class="live-indicator">● LIVE</span>
-                </div>
-                <div class="status-item">
-                    <span>Update In</span>
-                    <span id="timerCountdown">--s</span>
-                </div>
-                <div class="status-item">
-                    <span>Last Update</span>
-                    <span id="lastUpdate">--:--</span>
-                </div>
-            </div>
+            <button class="collapse-btn" type="button" aria-label="Collapse sidebar">
+                <span>&lt;&lt;</span>
+                <span>Collapse</span>
+            </button>
         </aside>
 
-        <!-- Main Content -->
-        <main class="content-area">
+        <main class="workspace">
+            <header class="command-bar">
+                <div class="command-group asset-command">
+                    <span class="command-label">Asset</span>
+                    <select id="symbolSelector" onchange="loadSymbol()">
+                        <option>Loading...</option>
+                    </select>
+                </div>
+                <div class="command-stat">
+                    <span>Spot</span>
+                    <strong id="topSpot">--</strong>
+                </div>
+                <div class="command-stat">
+                    <span>Market</span>
+                    <strong class="live-pill">LIVE</strong>
+                </div>
+                <div class="command-stat">
+                    <span>Last update</span>
+                    <strong id="lastUpdate">--:--</strong>
+                </div>
+                <div class="command-stat data-health">
+                    <span>Data</span>
+                    <strong><i></i> Feed Healthy</strong>
+                </div>
+                <div class="command-actions">
+                    <button class="icon-btn" type="button" onclick="manualRefresh()" data-tooltip="Refresh data">R</button>
+                    <button class="icon-btn" type="button" onclick="switchView('settings')" data-tooltip="Settings">*</button>
+                    <button class="icon-btn" type="button" onclick="toggleFullscreen()" data-tooltip="Fullscreen">[]</button>
+                </div>
+            </header>
 
-            <!-- VIEW 0: OVERVIEW (MARKET SIGNAL) -->
-            <div id="view-overview" class="view-section" style="display: none;">
-                <!-- A. Market Compass (4-Quadrant) -->
-                <!-- A. Market Compass (4-Quadrant) -->
-                <div class="card signal-card">
-                    <div style="display: flex; justify-content: center; gap: 40px; flex-wrap: wrap;">
-                        
-                        <!-- 1. Traders Compass -->
+            <section id="view-cockpit" class="view-section cockpit-view">
+                <div class="cockpit-hero panel">
+                    <div class="hero-symbol">
+                        <div id="cockpitSymbol">--</div>
+                        <p id="cockpitContext">Waiting for market data.</p>
+                    </div>
+                    <div class="hero-metric bias">
+                        <span id="cockpitBiasLabel">WAIT</span>
+                        <strong id="cockpitBiasScore">0%</strong>
+                    </div>
+                    <div class="hero-metric">
+                        <span>Confidence</span>
+                        <strong id="cockpitConfidence">--</strong>
+                    </div>
+                    <div class="hero-metric">
+                        <span>Target</span>
+                        <strong id="cockpitTarget">--</strong>
+                    </div>
+                    <div class="hero-metric">
+                        <span>Invalidation</span>
+                        <strong id="cockpitInvalidation" class="amber">--</strong>
+                    </div>
+                    <div class="hero-metric">
+                        <span>Flip</span>
+                        <strong id="cockpitFlip">--</strong>
+                    </div>
+                </div>
+
+                <div class="signal-grid">
+                    <article class="signal-tile panel blue">
+                        <div class="tile-head">
+                            <span>Market Signal</span>
+                            <em id="tileMarketBadge">Neutral</em>
+                        </div>
+                        <strong id="tileMarketValue">WAIT</strong>
+                        <p id="tileMarketDetail">No signal yet.</p>
+                    </article>
+                    <article class="signal-tile panel purple">
+                        <div class="tile-head">
+                            <span>Dealer Positioning</span>
+                            <em id="tileDealerBadge">Neutral</em>
+                        </div>
+                        <strong id="tileDealerValue">--</strong>
+                        <p id="tileDealerDetail">No dealer data yet.</p>
+                    </article>
+                    <article class="signal-tile panel amber-tile">
+                        <div class="tile-head">
+                            <span>Gamma Liquidity</span>
+                            <em id="tileLiquidityBadge">Neutral</em>
+                        </div>
+                        <strong id="tileLiquidityValue">--</strong>
+                        <p id="tileLiquidityDetail">No liquidity data yet.</p>
+                    </article>
+                    <article class="signal-tile panel teal">
+                        <div class="tile-head">
+                            <span>Whale Flow</span>
+                            <em id="tileWhaleBadge">Neutral</em>
+                        </div>
+                        <strong id="tileWhaleValue">--</strong>
+                        <p id="tileWhaleDetail">No whale composite yet.</p>
+                    </article>
+                </div>
+
+                <section class="chart-panel panel">
+                    <div class="panel-header">
+                        <h2>Gamma Liquidity Profile</h2>
+                        <div class="chart-controls">
+                            <span><b class="legend-call"></b> Call GEX</span>
+                            <span><b class="legend-put"></b> Put GEX</span>
+                            <span><b class="legend-net"></b> Net GEX</span>
+                        </div>
+                    </div>
+                    <div id="cockpitProfileChart" class="plot-area cockpit-chart"></div>
+                    <div class="metric-strip">
+                        <div><span>Total Call GEX</span><strong id="stripCallGex">--</strong></div>
+                        <div><span>Total Put GEX</span><strong id="stripPutGex">--</strong></div>
+                        <div><span>Net GEX</span><strong id="stripNetGex">--</strong></div>
+                        <div><span>Gamma Exposure</span><strong id="stripGammaExposure">--</strong></div>
+                        <div><span>GEX Change (1h)</span><strong id="stripGexChange">--</strong></div>
+                        <div><span>Zero Gamma</span><strong id="stripZeroGamma">--</strong></div>
+                        <div><span>Gamma Slope</span><strong id="stripGammaSlope">--</strong></div>
+                    </div>
+                </section>
+
+                <section id="cockpitPillars" class="asset-card-grid" aria-label="Cross asset pressure cards"></section>
+            </section>
+
+            <section id="view-market-signal" class="view-section" style="display: none;">
+                <div class="panel signal-card">
+                    <div class="compass-layout">
                         <div class="compass-wrapper">
-                            <h3 style="margin-bottom: 15px; color: var(--text-muted); letter-spacing: 1px;">TRADERS MARKET</h3>
+                            <h3>Traders Market</h3>
                             <div id="compassTraders" class="compass-container" data-tooltip="Loading...">
-                                <!-- Quadrant Backgrounds -->
-                                <div class="compass-quad q-tl">MELT UP</div>
-                                <div class="compass-quad q-tr">GRIND UP</div>
-                                <div class="compass-quad q-bl">CRASH</div>
-                                <div class="compass-quad q-br">SUPPORT</div>
-                                <!-- Axes -->
+                                <div class="compass-quad q-tl">Melt Up</div>
+                                <div class="compass-quad q-tr">Grind Up</div>
+                                <div class="compass-quad q-bl">Crash</div>
+                                <div class="compass-quad q-br">Support</div>
                                 <div class="compass-axis-x"></div>
                                 <div class="compass-axis-y"></div>
-                                <!-- Inner Ring -->
                                 <div class="compass-inner-ring"></div>
-                                <!-- The Puck -->
                                 <div id="puckTraders" class="compass-puck"></div>
                             </div>
                             <div class="compass-info">
-                                <h2 id="titleTraders">LOADING...</h2>
-                                <p id="descTraders">Aggregating Market Data...</p>
+                                <h2 id="titleTraders">Loading...</h2>
+                                <p id="descTraders">Aggregating market data.</p>
                             </div>
                         </div>
-
-                        <!-- 2. Whale Compass -->
                         <div class="compass-wrapper">
-                            <h3 style="margin-bottom: 15px; color: var(--text-muted); letter-spacing: 1px;">WHALE MARKET</h3>
+                            <h3>Whale Market</h3>
                             <div id="compassWhale" class="compass-container" data-tooltip="Loading...">
-                                <!-- Quadrant Backgrounds -->
-                                <div class="compass-quad q-tl">MELT UP</div>
-                                <div class="compass-quad q-tr">GRIND UP</div>
-                                <div class="compass-quad q-bl">CRASH</div>
-                                <div class="compass-quad q-br">SUPPORT</div>
-                                <!-- Axes -->
+                                <div class="compass-quad q-tl">Melt Up</div>
+                                <div class="compass-quad q-tr">Grind Up</div>
+                                <div class="compass-quad q-bl">Crash</div>
+                                <div class="compass-quad q-br">Support</div>
                                 <div class="compass-axis-x"></div>
                                 <div class="compass-axis-y"></div>
-                                <!-- Inner Ring -->
                                 <div class="compass-inner-ring"></div>
-                                <!-- The Puck -->
                                 <div id="puckWhale" class="compass-puck"></div>
                             </div>
                             <div class="compass-info">
-                                <h2 id="titleWhale">LOADING...</h2>
-                                <p id="descWhale">Aggregating Market Data...</p>
+                                <h2 id="titleWhale">Loading...</h2>
+                                <p id="descWhale">Aggregating market data.</p>
                             </div>
                         </div>
-
                     </div>
                 </div>
-
-                <!-- B. 3-Pillar Gauge -->
-                <div class="card" style="margin-top:20px;"
-                    data-tooltip="Shows the distance between the current price and the 'Flip Point' (0 Net Gamma) for each index. Bars to the right (Green) are in positive gamma (Stability). Bars to the left (Red) are in negative gamma (Volatility).">
-                    <div class="card-header">
-                        <h3>FLIP POINT DISTANCE (REGIME CHECK)</h3>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Flip Distance & Data Quality</h2>
                     </div>
-                    <div id="pillarsContainer" class="pillars-grid">
-                        <!-- JS Injects Three Pillars Here -->
-                    </div>
+                    <div id="pillarsContainer" class="pillars-grid"></div>
                 </div>
-
-                <!-- C. GEX Tilt Chart -->
-                <div class="card" style="margin-top:20px;"
-                    data-tooltip="Effective Dollar Gamma Exposure ($) within +/- 2% of Spot Price.">
-                    <div class="card-header">
-                        <h3>EFFECTIVE GEX TILT (LOCAL PRESSURE)</h3>
+                <div class="panel">
+                    <div class="panel-header">
+                        <h2>Effective GEX Tilt</h2>
                     </div>
-                    <div id="tiltChart" class="plot-area" style="height: 350px;"></div>
+                    <div id="tiltChart" class="plot-area small-chart"></div>
                 </div>
-            </div>
+            </section>
 
-            <!-- VIEW 1: DASHBOARD -->
-            <div id="view-dashboard" class="view-section">
-
-                <!-- Top Stats Row -->
+            <section id="view-dashboard" class="view-section" style="display: none;">
                 <div class="kpi-grid">
-                    <div class="card kpi-card">
-                        <div class="kpi-title">SPOT PRICE</div>
-                        <div class="kpi-value" id="kpiSpot">---</div>
+                    <div class="panel kpi-card">
+                        <span>Spot Price</span>
+                        <strong id="kpiSpot">--</strong>
                     </div>
-
-                    <!-- Vol Regime Gauge -->
-                    <div class="card kpi-card regime-card">
-                        <div class="kpi-title">VOLATILITY REGIME</div>
-                        <div class="regime-container">
-                            <div class="regime-bar">
-                                <div id="regimeIndicator" class="regime-marker"></div>
-                            </div>
-                            <div class="regime-label" id="regimeText">Analyzing...</div>
-                        </div>
+                    <div class="panel kpi-card regime-card">
+                        <span>Volatility Regime</span>
+                        <div class="regime-bar"><div id="regimeIndicator" class="regime-marker"></div></div>
+                        <strong id="regimeText">Analyzing...</strong>
                     </div>
-
-                    <div class="card kpi-card stability-border">
-                        <div class="kpi-title">LOW VOLATILITY POINT</div>
-                        <div class="kpi-subtitle">Max Positive Gamma (Pin)</div>
-                        <div class="kpi-value text-stability" id="kpiLowVol">---</div>
+                    <div class="panel kpi-card">
+                        <span>Low Volatility Point</span>
+                        <strong id="kpiLowVol">--</strong>
                     </div>
-
-                    <div class="card kpi-card volatility-border">
-                        <div class="kpi-title">HIGH VOLATILITY POINT</div>
-                        <div class="kpi-subtitle">Max Negative Gamma (Accel)</div>
-                        <div class="kpi-value text-volatility" id="kpiHighVol">---</div>
+                    <div class="panel kpi-card">
+                        <span>High Volatility Point</span>
+                        <strong id="kpiHighVol">--</strong>
+                    </div>
+                    <div class="panel kpi-card">
+                        <span>GEX Slope</span>
+                        <strong id="kpiAcceleration">--</strong>
                     </div>
                 </div>
-
-                <!-- Charts -->
-                <div class="charts-grid">
-                    <div class="card chart-container full-width">
-                        <div class="card-header">
-                            <h3>GAMMA LIQUIDITY PROFILE</h3>
-                            <div class="legend">
-                                <span class="dot call"></span> Call OI
-                                <span class="dot put"></span> Put OI
-                                <span class="dot net-line"></span> Net Gamma Curve
-                            </div>
-                        </div>
-                        <div id="profileChart" class="plot-area"></div>
+                <div class="panel chart-panel">
+                    <div class="panel-header">
+                        <h2>Gamma Liquidity Profile</h2>
                     </div>
-
-                    <div class="card chart-container full-width">
-                        <div class="card-header">
-                            <h3>NET GAMMA TREND</h3>
-                        </div>
-                        <div id="historyChart" class="plot-area"></div>
-                    </div>
+                    <div id="profileChart" class="plot-area"></div>
                 </div>
-            </div>
+                <div class="panel chart-panel">
+                    <div class="panel-header">
+                        <h2>Net Gamma Trend</h2>
+                    </div>
+                    <div id="historyChart" class="plot-area small-chart"></div>
+                </div>
+            </section>
 
-            <!-- VIEW 2: STRIKE ANALYSIS -->
-            <div id="view-analysis" class="view-section" style="display: none;">
-                <div class="card table-container">
-                    <div class="card-header">
-                        <h3>DEALER POSITIONING ANALYSIS</h3>
+            <section id="view-analysis" class="view-section" style="display: none;">
+                <div class="panel table-container">
+                    <div class="panel-header">
+                        <h2>Dealer Positioning Analysis</h2>
                         <small>Based on 0DTE GEX</small>
                     </div>
                     <div class="analysis-table-wrapper">
                         <table class="analysis-table" id="analysisTable">
                             <thead>
                                 <tr>
-                                    <th style="text-align:center">Strike</th>
+                                    <th>Strike</th>
                                     <th>Regime / Sentiment</th>
                                     <th>Total GEX Exposure</th>
                                     <th>Call GEX</th>
@@ -216,23 +284,20 @@
                                     <th>Open Interest</th>
                                 </tr>
                             </thead>
-                            <tbody id="analysisTableBody">
-                                <!-- JS Populates this -->
-                            </tbody>
+                            <tbody id="analysisTableBody"></tbody>
                         </table>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            <!-- VIEW 3: SETTINGS -->
-            <div id="view-settings" class="view-section" style="display: none;">
-                <div class="card settings-card">
-                    <div class="card-header">
-                        <h3>CONFIGURATION</h3>
+            <section id="view-settings" class="view-section" style="display: none;">
+                <div class="panel settings-card">
+                    <div class="panel-header">
+                        <h2>Configuration</h2>
                     </div>
                     <div class="settings-form">
                         <div class="form-group">
-                            <label>Auto-Refresh Interval (Seconds)</label>
+                            <label>Auto-refresh interval</label>
                             <input type="number" id="settingInterval" min="10" value="60">
                         </div>
                         <div class="form-group">
@@ -243,34 +308,40 @@
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Symbols (comma separated)</label>
+                            <label>Symbols</label>
                             <input type="text" id="settingSymbols" placeholder="SPY,QQQ">
                         </div>
                         <div class="form-group">
-                            <label>Backend Update Delay (Seconds)</label>
+                            <label>Backend update delay</label>
                             <input type="number" id="settingBackendDelay" min="10" value="180">
                         </div>
-                        <button class="save-btn" onclick="saveSettings()">💾 Save Settings</button>
+                        <div class="form-group">
+                            <label>Raw data retention</label>
+                            <input type="number" id="settingRetentionDays" min="1" value="30">
+                        </div>
+                        <button class="save-btn" onclick="saveSettings()">Save Settings</button>
                     </div>
                 </div>
-            </div>
-
+            </section>
         </main>
 
-        <!-- Right Panel (Notification Feed) -->
         <aside class="right-panel">
-            <div class="panel-header">
-                <h3>ACTIVITY FEED</h3>
+            <div class="feed-header">
+                <h2>Activity Feed</h2>
+                <button class="icon-btn" type="button" onclick="toggleActivityFeed()" data-tooltip="Collapse feed">&lt;&lt;</button>
             </div>
             <div class="activity-feed" id="activityFeed">
-                <!-- JS Injects Items Here -->
-                <div class="activity-item" style="opacity:0.5; font-style:italic; font-size:12px;">
-                    Listening for events...
+                <div class="activity-item muted">
+                    <span class="activity-time">--:--</span>
+                    <span class="activity-title">Listening</span>
+                    <span class="activity-msg">Waiting for events...</span>
                 </div>
             </div>
         </aside>
     </div>
+
     <div id="tooltip" class="custom-tooltip"></div>
+    <div id="toast-container"></div>
     <script src="main.js"></script>
 </body>
 

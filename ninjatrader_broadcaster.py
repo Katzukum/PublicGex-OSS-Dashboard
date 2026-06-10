@@ -146,9 +146,10 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
         spx_data = next((c for c in components if c.get("symbol") == "SPX"), {})
         ndx_data = next((c for c in components if c.get("symbol") == "NDX"), {})
         
-        # Determine confidence from label
         label = compass.get("label", "NEUTRAL")
-        confidence = "LOW" if "WEAK" in label else "HIGH"
+        confidence = compass.get("confidence_label")
+        if not confidence:
+            confidence = "LOW" if compass.get("confidence", 1) < 0.60 else "HIGH"
         
         # Build payload with all index prices
         payload = {
@@ -157,6 +158,7 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
             "regime": label.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "").replace("⚪ ", "").replace("WEAK ", "").strip(),
             "regime_code": extract_regime_code(label),
             "confidence": confidence,
+            "confidence_score": round(compass.get("confidence", 0), 4),
             "x_score": round(compass.get("x_score", 0), 4),
             "y_score": round(compass.get("y_score", 0), 4),
             "strategy": compass.get("strategy", ""),
@@ -168,10 +170,13 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
             "spot_spx": spx_data.get("spot", 0),
             # NDX data (for NQ charts)
             "spot_ndx": ndx_data.get("spot", 0),
+            "accel_ndx": round(ndx_data.get("acceleration", 0), 2),
+            "accel_spx": round(spx_data.get("acceleration", 0), 2),
             # Gamma levels for S/R lines
             "gamma_levels_ndx": overview_data.get("gamma_levels", {}).get("NDX", []),
             "gamma_levels_spx": overview_data.get("gamma_levels", {}).get("SPX", []),
         }
+        payload["regime"] = payload["regime"].replace("LOW CONFIDENCE ", "").strip()
         
         # Use simple global broadcaster to send
         broadcaster.broadcast(payload)

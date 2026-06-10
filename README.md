@@ -12,7 +12,7 @@ This dashboard bridges the gap between raw option chain data (from Public.com) a
 
 ## 🌟 Features
 
-*   **Real-Time Gamma Analysis**: Fetches 0DTE option chains and calculates Net GEX.
+*   **Real-Time Gamma Analysis**: Fetches strict target-day 0DTE option chains and calculates Net GEX.
 *   **Gamma Flip Detection**: Identifies the precise strike price where market stability flips.
 *   **Market Compass**: Visualizes Trend vs. Volatility to categorize the market regime (Grind Up, Melt Up, Chop, Crash).
 *   **NinjaTrader Integration**: Includes a custom C# indicator (`OpenGamma.cs`) to plot levels and regimes directly on your charts.
@@ -41,6 +41,9 @@ Detailed documentation is available in the `docs/` directory:
     ```
 
 3.  **Configure `.env`** (See [Setup Guide](docs/setup.md)).
+    ```bash
+    copy .env.example .env
+    ```
 
 4.  **Run the Dashboard**:
     ```bash
@@ -51,6 +54,13 @@ Detailed documentation is available in the `docs/` directory:
     ```bash
     python publicData.py
     ```
+    This starts the polling collector. Use `python publicData.py --once` for a single refresh.
+
+6.  **Reset the local database schema** (optional):
+    ```bash
+    python publicData.py --reset-db
+    ```
+    Existing `gex_data.db` is backed up before a fresh schema is created.
 
 ## ⚠️ Disclaimer
 

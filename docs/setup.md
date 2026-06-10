@@ -30,6 +30,11 @@
 
 ### 1. Environment Variables (`.env`)
 Create a `.env` file in the root directory. You must provide your Public.com credentials.
+You can start from the included template:
+
+```bash
+copy .env.example .env
+```
 
 ```ini
 PUBLIC_API_KEY=your_api_key_here
@@ -43,6 +48,8 @@ The dashboard behavior is controlled by `settings.json`.
 ```json
 {
   "theme": "dark",
+  "backend_update_delay": 180,
+  "raw_retention_days": 30,
   "weights": {
     "SPY": 1.0,
     "QQQ": 0.5,
@@ -53,6 +60,11 @@ The dashboard behavior is controlled by `settings.json`.
 ```
 *   **symbols**: The list of tickers `publicData.py` will track.
 *   **weights**: How much influence each symbol has on the global "Market Compass" score.
+*   **backend_update_delay**: Seconds between polling collector runs.
+*   **raw_retention_days**: Number of days to keep raw option rows before compaction.
+
+> [!NOTE]
+> Collection is strict target-day 0DTE. Before 6 PM local time, the target is today; at or after 6 PM, the target rolls to the next weekday. If Public.com does not return an expiration for that target date, the symbol is skipped instead of falling back to a later weekly or monthly expiration.
 
 ## Running the System
 
@@ -69,4 +81,13 @@ python publicData.py
 ```
 
 > [!TIP]
-> You can also trigger a "one-off" refresh from the Dashboard UI by clicking the "Refresh Data" button.
+> Use `python publicData.py --once` for a single collector run. The Dashboard UI also uses this one-off mode for manual refreshes.
+
+### Resetting the Local Database
+If the database schema changes or you want a clean start, run:
+
+```bash
+python publicData.py --reset-db
+```
+
+The existing `gex_data.db` is renamed to a timestamped backup before the new schema is created.

@@ -14,6 +14,7 @@ using System.Xml.Serialization;
 using System.Net;
 using System.Net.Sockets;
 using System.IO;
+using System.Globalization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -33,27 +34,30 @@ namespace NinjaTrader.NinjaScript.Indicators
         private TcpListener tcpListener;
         private Thread listenerThread;
         private volatile bool isRunning;
-        
+
         // Regime state (protected by lockObj)
         private volatile string currentRegime = "WAITING";
         private volatile string previousRegime = "---";
         private volatile int regimeCode = 0;
         private volatile string lastUpdate = "";
-        
+
         // Index price captured on update (not on tick)
         private double indexPrice = 0;
         private double futuresPrice = 0;
         private double spread = 0;
         private string indexSymbol = "";
-        
+        private double acceleration = 0;
+
         // Use OnBarUpdate to capture price safely
         private double lastClosePrice = 0;
-        
+
         // Gamma S/R levels (adjusted for futures)
         private List<GammaLevel> gammaLevels = new List<GammaLevel>();
-        
+        private const string CacheFolderName = "OpenGammaCache";
+        private const string CacheVersion = "OpenGammaCacheV1";
+
         private readonly object lockObj = new object();
-        
+
         private struct GammaLevel
         {
             public double Strike;
@@ -62,7 +66,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public bool IsResistance;
         }
         #endregion
-        
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -74,8 +78,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DisplayInDataBox = true;
                 DrawOnPricePanel = true;
                 IsSuspendedWhileInactive = false;
-                
+
                 ListenPort = 5010;
+                GammaBarsOnRight = false;
             }
             else if (State == State.Configure)
             {
@@ -90,7 +95,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     indexSymbol = "SPX";
                 else
                     indexSymbol = "";
-                
+
+                LoadCachedGammaLevels();
                 StartListener();
             }
             else if (State == State.Terminated)
@@ -104,7 +110,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (listenerThread != null && listenerThread.IsAlive)
                 return;
-                
+
             isRunning = true;
             listenerThread = new Thread(ClientLoop)
             {
@@ -114,17 +120,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             listenerThread.Start();
             Print("OpenGamma: Starting TCP Client...");
         }
-        
+
         private void StopListener()
         {
             isRunning = false;
-            
+
             if (listenerThread != null && listenerThread.IsAlive)
                 listenerThread.Join(1000);
-            
+
             Print("OpenGamma: TCP Client stopped");
         }
-        
+
         private void ClientLoop()
         {
             while (isRunning)
@@ -135,19 +141,19 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Attempt to connect to Python Server
                     client = new TcpClient();
                     client.Connect(IPAddress.Loopback, ListenPort);
-                    
+
                     Print($"OpenGamma: Connected to Server on port {ListenPort}");
-                    
+
                     using (NetworkStream stream = client.GetStream())
                     using (StreamReader reader = new StreamReader(stream, Encoding.UTF8))
                     {
                         while (isRunning)
                         {
-                            try 
+                            try
                             {
                                 string line = reader.ReadLine();
                                 if (line == null) break; // End of stream
-                                
+
                                 if (!string.IsNullOrEmpty(line))
                                 {
                                     ParseRegimeUpdate(line);
@@ -166,7 +172,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (isRunning)
                     {
                         // Print("OpenGamma: Connection failed/lost - " + ex.Message);
-                        // Access denied or refuse usually means server not up. 
+                        // Access denied or refuse usually means server not up.
                         // Wait before retry.
                     }
                 }
@@ -174,20 +180,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     client?.Close();
                 }
-                
+
                 // Retry delay
                 if (isRunning)
                     Thread.Sleep(5000);
             }
         }
         #endregion
-        
+
         private void ParseRegimeUpdate(string json)
         {
             try
             {
                 string newRegime = ExtractJsonValue(json, "regime") ?? "UNKNOWN";
-                
+
                 lock (lockObj)
                 {
                     // Track previous regime
@@ -195,14 +201,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         previousRegime = currentRegime;
                     }
-                    
+
                     currentRegime = newRegime;
-                    
+
                     int.TryParse(ExtractJsonValue(json, "regime_code"), out int code);
                     regimeCode = code;
-                    
+
                     lastUpdate = DateTime.Now.ToString("HH:mm:ss");
-                    
+
                     // Get index price from broadcast payload (not from NinjaTrader)
                     if (indexSymbol == "NDX")
                     {
@@ -214,14 +220,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                         double.TryParse(ExtractJsonValue(json, "spot_spx"), out double spx);
                         indexPrice = spx;
                     }
+
+                    if (indexSymbol == "NDX")
+                    {
+                        double.TryParse(ExtractJsonValue(json, "accel_ndx"), out double accel);
+                        acceleration = accel;
+                    }
+                    else if (indexSymbol == "SPX")
+                    {
+                        double.TryParse(ExtractJsonValue(json, "accel_spx"), out double accel);
+                        acceleration = accel;
+                    }
                 }
-                
+
                 // Capture futures price and calc spread on UI thread
                 if (ChartControl != null)
                 {
                     // Cache json for use in dispatcher
                     string jsonCopy = json;
-                    
+
                     ChartControl.Dispatcher.InvokeAsync(() =>
                     {
                         try
@@ -233,17 +250,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 {
                                     // Cache futures price for logging
                                     futuresPrice = lastClosePrice;
-                                    
+
                                     if (indexPrice > 0)
                                     {
                                         // Use integer spread (Index - Futures)
                                         // Round to nearest integer before subtracting
                                         spread = Math.Round(indexPrice) - Math.Round(futuresPrice);
                                     }
-                                    
+
                                     // Parse and adjust gamma levels
                                     ParseGammaLevels(jsonCopy);
-                                    
+
                                     Print($"OpenGamma: {currentRegime} | {indexSymbol}: {Math.Round(indexPrice)} | Futures: {Math.Round(futuresPrice)} | Spread: {spread}");
                                     ForceRefresh();
                                 }
@@ -261,20 +278,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Print("OpenGamma: Parse error - " + ex.Message);
             }
         }
-        
+
         private string ExtractJsonValue(string json, string key)
         {
             string pattern = $"\"{key}\":";
             int startIdx = json.IndexOf(pattern);
             if (startIdx < 0) return null;
-            
+
             startIdx += pattern.Length;
-            
+
             while (startIdx < json.Length && char.IsWhiteSpace(json[startIdx]))
                 startIdx++;
-            
+
             if (startIdx >= json.Length) return null;
-            
+
             if (json[startIdx] == '"')
             {
                 int endIdx = json.IndexOf('"', startIdx + 1);
@@ -289,33 +306,32 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return json.Substring(startIdx, endIdx - startIdx).Trim();
             }
         }
-        
+
         private void ParseGammaLevels(string json)
         {
             string levelsKey = indexSymbol == "NDX" ? "gamma_levels_ndx" : "gamma_levels_spx";
-            
+
             gammaLevels.Clear();
-            
-            // Find key manually but robustly
+
             // Find key manually but robustly
             int keyIdx = json.IndexOf("\"" + levelsKey + "\"");
-            if (keyIdx < 0) 
+            if (keyIdx < 0)
             {
                Print($"OpenGamma: Key '{levelsKey}' not found in JSON.");
-               return; 
+               return;
             }
-            
+
             // Find start of array value [
             int arrStart = json.IndexOf('[', keyIdx);
             if (arrStart < 0) return;
-            
+
             // Find matching closing bracket ]
             int arrEnd = -1;
             int bracketCount = 0;
             for (int i = arrStart; i < json.Length; i++)
             {
                 if (json[i] == '[') bracketCount++;
-                else if (json[i] == ']') 
+                else if (json[i] == ']')
                 {
                     bracketCount--;
                     if (bracketCount == 0)
@@ -325,17 +341,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
-            
+
             if (arrEnd < 0) return;
-            
+
             string arrContent = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
             if (string.IsNullOrWhiteSpace(arrContent)) return;
-            
+
             // Parse individual objects {...}
             int objStart = 0;
             int braceCount = 0;
             int currentStart = -1;
-            
+
             for (int i = 0; i < arrContent.Length; i++)
             {
                 if (arrContent[i] == '{')
@@ -354,23 +370,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
-            
+
             Print($"OpenGamma: Parsed {gammaLevels.Count} levels for {levelsKey}");
+            SaveGammaCache();
         }
-        
+
         private void ParseGammaLevelObject(string objJson)
         {
             double strike = 0, gex = 0;
-            
-            try 
+
+            try
             {
                 // Robust value extraction
                 strike = ExtractNum(objJson, "strike");
                 gex = ExtractNum(objJson, "gex");
-                
+
                 if (strike > 0)
                 {
                     double futuresLevel = strike - spread;
+
                     gammaLevels.Add(new GammaLevel
                     {
                         Strike = strike,
@@ -382,26 +400,151 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             catch (Exception ex) { Print("OpenGamma: Error parsing level obj: " + ex.Message); }
         }
-        
+
         private double ExtractNum(string json, string key)
         {
             int keyIdx = json.IndexOf("\"" + key + "\"");
             if (keyIdx < 0) return 0;
-            
+
             int valStart = keyIdx + key.Length + 3; // quote + key + quote + colon
             while (valStart < json.Length && !char.IsDigit(json[valStart]) && json[valStart] != '-' && json[valStart] != '.')
                 valStart++;
-                
+
             if (valStart >= json.Length) return 0;
-            
+
             int valEnd = valStart;
             while (valEnd < json.Length && (char.IsDigit(json[valEnd]) || json[valEnd] == '.' || json[valEnd] == '-' || json[valEnd] == 'e' || json[valEnd] == 'E' || json[valEnd] == '+'))
                 valEnd++;
-                
+
             if (double.TryParse(json.Substring(valStart, valEnd - valStart), out double result))
                 return result;
-                
+
             return 0;
+        }
+
+        private string GetCachePath()
+        {
+            string instrumentName = "unknown";
+            if (Instrument != null && Instrument.MasterInstrument != null)
+                instrumentName = Instrument.MasterInstrument.Name;
+
+            string cacheKey = $"{Name}_{instrumentName}_{indexSymbol}_{ListenPort}".Replace(" ", "_");
+            foreach (char invalidChar in Path.GetInvalidFileNameChars())
+                cacheKey = cacheKey.Replace(invalidChar, '_');
+
+            string cacheDir = Path.Combine(Core.Globals.UserDataDir, CacheFolderName);
+            return Path.Combine(cacheDir, cacheKey + ".txt");
+        }
+
+        private void SaveGammaCache()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(indexSymbol) || gammaLevels.Count == 0)
+                    return;
+
+                string cachePath = GetCachePath();
+                Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
+
+                using (StreamWriter writer = new StreamWriter(cachePath, false, Encoding.UTF8))
+                {
+                    writer.WriteLine(CacheVersion);
+                    writer.WriteLine(string.Join("|",
+                        indexSymbol,
+                        DateTime.Now.ToString("O", CultureInfo.InvariantCulture),
+                        indexPrice.ToString("R", CultureInfo.InvariantCulture),
+                        futuresPrice.ToString("R", CultureInfo.InvariantCulture),
+                        spread.ToString("R", CultureInfo.InvariantCulture),
+                        acceleration.ToString("R", CultureInfo.InvariantCulture),
+                        currentRegime,
+                        previousRegime,
+                        regimeCode.ToString(CultureInfo.InvariantCulture)));
+
+                    foreach (var level in gammaLevels)
+                    {
+                        writer.WriteLine(string.Join(",",
+                            level.Strike.ToString("R", CultureInfo.InvariantCulture),
+                            level.Gex.ToString("R", CultureInfo.InvariantCulture),
+                            level.FuturesPrice.ToString("R", CultureInfo.InvariantCulture),
+                            level.IsResistance ? "1" : "0"));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Print("OpenGamma: Failed to save level cache - " + ex.Message);
+            }
+        }
+
+        private void LoadCachedGammaLevels()
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(indexSymbol))
+                    return;
+
+                string cachePath = GetCachePath();
+                if (!File.Exists(cachePath))
+                    return;
+
+                string[] lines = File.ReadAllLines(cachePath, Encoding.UTF8);
+                if (lines.Length < 3 || lines[0] != CacheVersion)
+                    return;
+
+                string[] header = lines[1].Split('|');
+                if (header.Length < 9 || header[0] != indexSymbol)
+                    return;
+
+                var cachedLevels = new List<GammaLevel>();
+                for (int i = 2; i < lines.Length; i++)
+                {
+                    if (string.IsNullOrWhiteSpace(lines[i]))
+                        continue;
+
+                    string[] parts = lines[i].Split(',');
+                    if (parts.Length < 4)
+                        continue;
+
+                    if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out double strike))
+                        continue;
+                    if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double gex))
+                        continue;
+                    if (!double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out double futuresLevel))
+                        continue;
+
+                    cachedLevels.Add(new GammaLevel
+                    {
+                        Strike = strike,
+                        Gex = gex,
+                        FuturesPrice = futuresLevel,
+                        IsResistance = parts[3] == "1"
+                    });
+                }
+
+                if (cachedLevels.Count == 0)
+                    return;
+
+                lock (lockObj)
+                {
+                    double.TryParse(header[2], NumberStyles.Float, CultureInfo.InvariantCulture, out indexPrice);
+                    double.TryParse(header[3], NumberStyles.Float, CultureInfo.InvariantCulture, out futuresPrice);
+                    double.TryParse(header[4], NumberStyles.Float, CultureInfo.InvariantCulture, out spread);
+                    double.TryParse(header[5], NumberStyles.Float, CultureInfo.InvariantCulture, out acceleration);
+                    currentRegime = string.IsNullOrEmpty(header[6]) ? "CACHED" : header[6];
+                    previousRegime = string.IsNullOrEmpty(header[7]) ? previousRegime : header[7];
+                    int.TryParse(header[8], NumberStyles.Integer, CultureInfo.InvariantCulture, out regimeCode);
+                    lastUpdate = "cached";
+                    gammaLevels = cachedLevels
+                        .OrderBy(l => l.FuturesPrice)
+                        .ToList();
+                }
+
+                Print($"OpenGamma: Loaded {cachedLevels.Count} cached levels from {cachePath}");
+            }
+            catch (Exception ex)
+            {
+                Print("OpenGamma: Failed to load level cache - " + ex.Message);
+            }
         }
 
         protected override void OnBarUpdate()
@@ -410,18 +553,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBar > 0)
                 lastClosePrice = Close[0];
         }
-        
+
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
             base.OnRender(chartControl, chartScale);
-            
+
             if (chartControl == null) return;
-            
+
             // Get current state thread-safely
             string regime, prevRegime, update, idxSym;
             int code;
-            double idx, fut, sprd;
-            
+            double idx, fut, sprd, accel;
+
             lock (lockObj)
             {
                 regime = currentRegime;
@@ -431,19 +574,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                 idx = indexPrice;
                 fut = futuresPrice;
                 sprd = spread;
+                accel = acceleration;
                 idxSym = indexSymbol;
             }
-            
+
             // Panel dimensions
             float panelWidth = 180;
-            float panelHeight = 85;
+            float panelHeight = 100; // Increased height
             float panelX = ChartPanel.X + ChartPanel.W - panelWidth - 10;
             float panelY = ChartPanel.Y + ChartPanel.H - panelHeight - 10;
             float lineHeight = 16;
             float textY = panelY + 5;
-            
+
             using (SharpDX.DirectWrite.TextFormat titleFormat = new SharpDX.DirectWrite.TextFormat(
-                Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold, 
+                Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold,
                 SharpDX.DirectWrite.FontStyle.Normal, 14))
             using (SharpDX.DirectWrite.TextFormat textFormat = new SharpDX.DirectWrite.TextFormat(
                 Core.Globals.DirectWriteFactory, "Arial", 11))
@@ -455,7 +599,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     RenderTarget.FillRectangle(panelRect, panelBrush);
                 }
-                
+
                 // Current Regime (colored)
                 SharpDX.Color regimeColor = code switch
                 {
@@ -465,14 +609,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     4 => new SharpDX.Color(220, 20, 60, 255),   // Red
                     _ => new SharpDX.Color(180, 180, 180, 255)
                 };
-                
+
                 using (SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, regimeColor))
                 {
-                    RenderTarget.DrawText($"◉ {regime}", titleFormat, 
+                    RenderTarget.DrawText($"◉ {regime}", titleFormat,
                         new SharpDX.RectangleF(panelX, textY, panelWidth - 10, 18), textBrush);
                 }
                 textY += lineHeight + 2;
-                
+
                 // Previous Regime (dimmed)
                 using (SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     RenderTarget, new SharpDX.Color(120, 120, 120, 255)))
@@ -481,7 +625,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                         new SharpDX.RectangleF(panelX, textY, panelWidth - 10, 16), textBrush);
                 }
                 textY += lineHeight;
-                
+
                 // Index price and spread
                 if (!string.IsNullOrEmpty(idxSym) && idx > 0)
                 {
@@ -492,35 +636,106 @@ namespace NinjaTrader.NinjaScript.Indicators
                             new SharpDX.RectangleF(panelX, textY, panelWidth - 10, 16), textBrush);
                     }
                     textY += lineHeight;
-                    
+
                     // Spread with color
-                    SharpDX.Color spreadColor = sprd >= 0 
+                    SharpDX.Color spreadColor = sprd >= 0
                         ? new SharpDX.Color(100, 200, 255, 255)  // Blue for positive
                         : new SharpDX.Color(255, 150, 100, 255); // Orange for negative
-                    
+
                     using (SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, spreadColor))
                     {
                         string spreadSign = sprd >= 0 ? "+" : "";
                         RenderTarget.DrawText($"Spread: {spreadSign}{sprd:F0}", textFormat,
                             new SharpDX.RectangleF(panelX, textY, panelWidth - 10, 16), textBrush);
                     }
+                    textY += lineHeight;
+
+                    // --- Gamma Bias (BULLISH/BEARISH) based on SLOPE ---
+                    // Calculate the slope of the Net Gamma Curve above and below spot
+                    // Slope = change in GEX / change in price
+
+                    string gammaBias = "NEUTRAL";
+                    SharpDX.Color biasColor = new SharpDX.Color(128, 128, 128, 255);
+
+                    List<GammaLevel> levelsForBias;
+                    lock (lockObj)
+                    {
+                        levelsForBias = new List<GammaLevel>(gammaLevels);
+                    }
+
+                    if (levelsForBias.Count >= 4 && fut > 0)
+                    {
+                        // Sort by price ascending
+                        var sortedLevels = levelsForBias.OrderBy(l => l.FuturesPrice).ToList();
+
+                        // Find levels above and below spot
+                        var levelsAbove = sortedLevels.Where(l => l.FuturesPrice > fut).Take(3).ToList();
+                        var levelsBelow = sortedLevels.Where(l => l.FuturesPrice <= fut).Reverse().Take(3).ToList();
+
+                        // Calculate slope ABOVE spot (how curve changes as price goes UP)
+                        double slopeAbove = 0;
+                        if (levelsAbove.Count >= 2)
+                        {
+                            double dGex = levelsAbove[1].Gex - levelsAbove[0].Gex;
+                            double dPrice = levelsAbove[1].FuturesPrice - levelsAbove[0].FuturesPrice;
+                            if (dPrice != 0) slopeAbove = dGex / dPrice;
+                        }
+
+                        // Calculate slope BELOW spot (how curve changes as price goes DOWN)
+                        double slopeBelow = 0;
+                        if (levelsBelow.Count >= 2)
+                        {
+                            // levelsBelow[0] is closest to spot, [1] is further down
+                            double dGex = levelsBelow[0].Gex - levelsBelow[1].Gex;
+                            double dPrice = levelsBelow[0].FuturesPrice - levelsBelow[1].FuturesPrice;
+                            if (dPrice != 0) slopeBelow = dGex / dPrice;
+                        }
+
+                        // Interpretation:
+                        // slopeAbove > 0: Curve rising as price goes up = MORE resistance above = BEARISH
+                        // slopeAbove < 0: Curve falling as price goes up = LESS resistance above = BULLISH
+                        // slopeBelow > 0: Curve rising as price goes down = MORE support below = BULLISH
+                        // slopeBelow < 0: Curve falling as price goes down = LESS support below = BEARISH
+
+                        // Net bias: positive = bullish, negative = bearish
+                        double netBias = -slopeAbove + slopeBelow;
+
+                        if (netBias > 0)
+                        {
+                            gammaBias = "▲ BULLISH";
+                            biasColor = new SharpDX.Color(80, 255, 80, 255);
+                        }
+                        else if (netBias < 0)
+                        {
+                            gammaBias = "▼ BEARISH";
+                            biasColor = new SharpDX.Color(255, 80, 80, 255);
+                        }
+                    }
+
+                    using (SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, biasColor))
+                    {
+                        RenderTarget.DrawText($"Gamma: {gammaBias}", textFormat,
+                            new SharpDX.RectangleF(panelX, textY, panelWidth - 10, 16), textBrush);
+                    }
                 }
             }
-            
+
             // Draw gamma S/R horizontal lines
             List<GammaLevel> levelsCopy;
             lock (lockObj)
             {
                 levelsCopy = new List<GammaLevel>(gammaLevels);
             }
-            
+
             if (levelsCopy.Count > 0)
             {
+                bool drawOnRight = GammaBarsOnRight;
+
                 // Find Max GEX for scaling
                 double maxGex = 0;
                 foreach (var level in levelsCopy)
                     maxGex = Math.Max(maxGex, Math.Abs(level.Gex));
-                
+
                 if (maxGex == 0) maxGex = 1; // Prevent divide by zero
 
                 using (SharpDX.DirectWrite.TextFormat labelFormat = new SharpDX.DirectWrite.TextFormat(
@@ -530,47 +745,94 @@ namespace NinjaTrader.NinjaScript.Indicators
                     {
                         // Convert price to Y coordinate
                         float y = chartScale.GetYByValue(level.FuturesPrice);
-                        
+
                         // Height of the bar (fixed pixel height, e.g., 20px centered)
                         float height = 20;
                         float yTop = y - height / 2;
-                        
+
                         if (y < ChartPanel.Y || y > ChartPanel.Y + ChartPanel.H)
                         {
                             // Log only the first few to avoid spam
-                            if (levelsCopy.IndexOf(level) < 3) 
+                            if (levelsCopy.IndexOf(level) < 3)
                                 Print($"OpenGamma Render: Level {level.FuturesPrice} (Y={y}) is off-screen (Panel: {ChartPanel.Y}-{ChartPanel.Y+ChartPanel.H})");
                             continue;  // Skip if off-screen
                         }
-                        
+
                         // Calculate width based on GEX magnitude (max 40% of screen)
                         // Use Math.Max(10, ...) to ensure very small bars are at least visible
                         float maxWidth = (float)ChartPanel.W * 0.4f;
                         float width = (float)((Math.Abs(level.Gex) / maxGex) * maxWidth);
-                        width = Math.Max(width, 10); 
-                        
+                        width = Math.Max(width, 10);
+
                         // Choose color based on S/R type
                         // Use lower opacity for the fill (e.g. 80 alpha out of 255 -> ~0.3)
                         SharpDX.Color barColor = level.IsResistance
                             ? new SharpDX.Color(255, 60, 60, 80)   // Red fill
                             : new SharpDX.Color(60, 255, 60, 80);  // Green fill
-                            
+
                         // Text color (fully opaque)
                         SharpDX.Color textColor = level.IsResistance
                             ? new SharpDX.Color(255, 100, 100, 255)
                             : new SharpDX.Color(100, 255, 100, 255);
-                        
+
                         using (SharpDX.Direct2D1.SolidColorBrush barBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, barColor))
                         using (SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, textColor))
                         {
-                            // Draw filled bar from Left side
-                            SharpDX.RectangleF rect = new SharpDX.RectangleF(ChartPanel.X, yTop, width, height);
+                            float barX = drawOnRight
+                                ? ChartPanel.X + ChartPanel.W - width
+                                : ChartPanel.X;
+                            SharpDX.RectangleF rect = new SharpDX.RectangleF(barX, yTop, width, height);
                             RenderTarget.FillRectangle(rect, barBrush);
-                            
+
                             // Draw label with strike price
                             string label = $"{level.Strike:F0}";
+                            float labelX = drawOnRight
+                                ? ChartPanel.X + ChartPanel.W - 85
+                                : ChartPanel.X + 5;
                             RenderTarget.DrawText(label, labelFormat,
-                                new SharpDX.RectangleF(ChartPanel.X + 5, yTop + 3, 80, 14), textBrush);
+                                new SharpDX.RectangleF(labelX, yTop + 3, 80, 14), textBrush);
+                        }
+                    }
+                }
+
+                // --- Draw the Net Gamma CURVE (Profile Line) ---
+                // Sort levels by price (descending for top-to-bottom drawing)
+                var sortedLevels = levelsCopy.OrderByDescending(l => l.FuturesPrice).ToList();
+
+                if (sortedLevels.Count >= 2)
+                {
+                    // Build curve points
+                    var curvePoints = new List<SharpDX.Vector2>();
+                    float curveMaxWidth = (float)ChartPanel.W * 0.25f; // Max 25% of chart width
+                    float curveBaseX = ChartPanel.X + 5; // Anchor at left edge
+
+                    foreach (var level in sortedLevels)
+                    {
+                        float y = chartScale.GetYByValue(level.FuturesPrice);
+
+                        // Skip off-screen points but still include to avoid gaps
+                        if (y < ChartPanel.Y - 50 || y > ChartPanel.Y + ChartPanel.H + 50)
+                            continue;
+
+                        // X position: NetGEX determines how far RIGHT the curve goes
+                        // Positive GEX = curve goes further right (resistance)
+                        // Negative GEX = curve stays left (support dropping = easy path)
+                        float normalizedGex = (float)(level.Gex / maxGex);
+                        float xOffset = normalizedGex * curveMaxWidth;
+
+                        curvePoints.Add(new SharpDX.Vector2(curveBaseX + curveMaxWidth + xOffset, y));
+                    }
+
+                    // Draw the curve
+                    if (curvePoints.Count >= 2)
+                    {
+                        using (SharpDX.Direct2D1.SolidColorBrush curveBrush = new SharpDX.Direct2D1.SolidColorBrush(
+                            RenderTarget, new SharpDX.Color(255, 0, 255, 200))) // Magenta/Pink
+                        {
+                            for (int i = 0; i < curvePoints.Count - 1; i++)
+                            {
+                                RenderTarget.DrawLine(curvePoints[i], curvePoints[i + 1], curveBrush, 3.0f);
+                            }
                         }
                     }
                 }
@@ -582,6 +844,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(1024, 65535)]
         [Display(Name = "Listen Port", Order = 1, GroupName = "Connection")]
         public int ListenPort { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Gamma Bars On Right", Order = 1, GroupName = "Visual")]
+        public bool GammaBarsOnRight { get; set; }
         #endregion
     }
 }
@@ -598,13 +864,23 @@ namespace NinjaTrader.NinjaScript.Indicators
 			return OpenGamma(Input, listenPort);
 		}
 
+		public OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight)
+		{
+			return OpenGamma(Input, listenPort, gammaBarsOnRight);
+		}
+
 		public OpenGamma OpenGamma(ISeries<double> input, int listenPort)
+		{
+			return OpenGamma(input, listenPort, false);
+		}
+
+		public OpenGamma OpenGamma(ISeries<double> input, int listenPort, bool gammaBarsOnRight)
 		{
 			if (cacheOpenGamma != null)
 				for (int idx = 0; idx < cacheOpenGamma.Length; idx++)
-					if (cacheOpenGamma[idx] != null && cacheOpenGamma[idx].ListenPort == listenPort && cacheOpenGamma[idx].EqualsInput(input))
+					if (cacheOpenGamma[idx] != null && cacheOpenGamma[idx].ListenPort == listenPort && cacheOpenGamma[idx].GammaBarsOnRight == gammaBarsOnRight && cacheOpenGamma[idx].EqualsInput(input))
 						return cacheOpenGamma[idx];
-			return CacheIndicator<OpenGamma>(new OpenGamma(){ ListenPort = listenPort }, input, ref cacheOpenGamma);
+			return CacheIndicator<OpenGamma>(new OpenGamma(){ ListenPort = listenPort, GammaBarsOnRight = gammaBarsOnRight }, input, ref cacheOpenGamma);
 		}
 	}
 }
@@ -618,9 +894,19 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 			return indicator.OpenGamma(Input, listenPort);
 		}
 
+		public Indicators.OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight)
+		{
+			return indicator.OpenGamma(Input, listenPort, gammaBarsOnRight);
+		}
+
 		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort)
 		{
 			return indicator.OpenGamma(input, listenPort);
+		}
+
+		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort, bool gammaBarsOnRight)
+		{
+			return indicator.OpenGamma(input, listenPort, gammaBarsOnRight);
 		}
 	}
 }
@@ -634,9 +920,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 			return indicator.OpenGamma(Input, listenPort);
 		}
 
+		public Indicators.OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight)
+		{
+			return indicator.OpenGamma(Input, listenPort, gammaBarsOnRight);
+		}
+
 		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort)
 		{
 			return indicator.OpenGamma(input, listenPort);
+		}
+
+		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort, bool gammaBarsOnRight)
+		{
+			return indicator.OpenGamma(input, listenPort, gammaBarsOnRight);
 		}
 	}
 }

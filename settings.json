@@ -9,6 +9,7 @@
     "NDX"
   ],
   "backend_update_delay": 180,
+  "raw_retention_days": 30,
   "weights": {
     "SPY": 0.5,
     "QQQ": 0.3,

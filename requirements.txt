@@ -1,0 +1,5 @@
+eel>=0.18.2
+pandas>=2.3.0
+SQLAlchemy>=2.0.0
+python-dotenv>=1.0.0
+publicdotcom-py>=0.1.10

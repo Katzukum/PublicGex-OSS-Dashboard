@@ -2,6 +2,12 @@
 deprecated/
 .env
 gex_data.db
+gex_data*.db
+gex_data*.db-wal
+gex_data*.db-shm
+gex_collector.log
+gex_collector.lock
+gex_compact.marker
 
 # Python
 __pycache__/
