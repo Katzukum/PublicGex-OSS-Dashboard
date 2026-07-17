@@ -1,34 +1,458 @@
 let refreshTimer = null;
 let countdownTimer = null;
-let currentSettings = { refresh_interval: 60, theme: 'dark', symbols: [], backend_update_delay: 180, raw_retention_days: 30 };
+let statusTimer = null;
+let currentSettings = {
+    refresh_interval: 10,
+    theme: 'dark',
+    symbols: [],
+    api_rate_limit_per_second: 10,
+    api_rate_limit_utilization: 0.6,
+    min_poll_interval_seconds: 15,
+    max_poll_interval_seconds: 120,
+    raw_retention_days: 30
+};
 let timeLeft = 0;
 let cachedData = null;
 let cachedSymbol = null;
 let cachedOverview = null;
+let cachedTradeSetups = null;
 let cockpitModel = null;
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
+
+const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono", monospace';
+const CHART_TEXT = '#96a3af';
+const CHART_GRID = 'rgba(122,148,170,0.14)';
+const chartInstances = {};
+
+function formatStatusAge(seconds) {
+    if (seconds === null || seconds === undefined) return 'n/a';
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    return `${(seconds / 3600).toFixed(1)}h`;
+}
+
+async function updateBackendStatus() {
+    const statusEl = document.getElementById('backendStatus');
+    if (!statusEl) return;
+
+    try {
+        const status = await eel.get_backend_status()();
+        if (!status.ok) {
+            statusEl.className = 'status-offline';
+            statusEl.innerHTML = '<i></i> No Backend';
+            return;
+        }
+
+        const age = status.snapshot_age_seconds;
+        const runStatus = String(status.run_status || '').toLowerCase();
+        let statusClass = 'status-healthy';
+        let label = `Fresh ${formatStatusAge(age)}`;
+
+        if (runStatus === 'running') {
+            statusClass = 'status-running';
+            label = `Running ${formatStatusAge(status.run_age_seconds)}`;
+        } else if (age === null || age === undefined) {
+            statusClass = 'status-unknown';
+            label = 'No Snapshot';
+        } else if (age > 180) {
+            statusClass = 'status-stale';
+            label = `Stale ${formatStatusAge(age)}`;
+        }
+
+        statusEl.className = statusClass;
+        statusEl.innerHTML = `<i></i> ${label}`;
+    } catch (e) {
+        statusEl.className = 'status-error';
+        statusEl.innerHTML = '<i></i> Status Error';
+        console.error('Backend status failed', e);
+    }
+}
+
+function startStatusTimer() {
+    if (statusTimer) clearInterval(statusTimer);
+    updateBackendStatus();
+    statusTimer = setInterval(updateBackendStatus, 5000);
+}
+
+function chartText(size = 12, color = CHART_TEXT) {
+    return { color, fontFamily: NUMERIC_FONT, fontSize: size };
+}
+
+function getChart(id) {
+    const el = document.getElementById(id);
+    if (!el || !window.echarts) return null;
+    if (!chartInstances[id] || chartInstances[id].isDisposed()) {
+        chartInstances[id] = echarts.init(el, null, { renderer: 'canvas' });
+    }
+    return chartInstances[id];
+}
+
+function resizeCharts(ids = Object.keys(chartInstances)) {
+    requestAnimationFrame(() => {
+        ids.forEach(id => chartInstances[id]?.resize());
+    });
+}
+
+function setChartOption(id, option) {
+    const chart = getChart(id);
+    if (!chart) return;
+    chart.setOption(option, true);
+    resizeCharts([id]);
+}
+
+function zoomDataOptions(startValue = null, endValue = null) {
+    const insideZoom = {
+        type: 'inside',
+        xAxisIndex: 0,
+        filterMode: 'none',
+        zoomOnMouseWheel: true,
+        moveOnMouseWheel: true,
+        moveOnMouseMove: true,
+        preventDefaultMouseMove: true,
+        throttle: 50
+    };
+
+    if (Number.isFinite(startValue) && Number.isFinite(endValue) && startValue < endValue) {
+        insideZoom.startValue = startValue;
+        insideZoom.endValue = endValue;
+    }
+
+    return [insideZoom];
+}
+
+function nearestAxisIndex(axisValues, rawValue) {
+    if (typeof rawValue === 'number') {
+        if (typeof axisValues[0] === 'number') {
+            return axisValues.reduce((bestIndex, value, index) => {
+                return Math.abs(value - rawValue) < Math.abs(axisValues[bestIndex] - rawValue) ? index : bestIndex;
+            }, 0);
+        }
+        return Math.max(0, Math.min(Math.round(rawValue), axisValues.length - 1));
+    }
+
+    const exactIndex = axisValues.indexOf(rawValue);
+    return exactIndex >= 0 ? exactIndex : 0;
+}
+
+function zoomChartAroundIndex(chart, axisValues, dataIndex, zoomSize) {
+    const halfWindow = zoomSize / 2;
+    const startIndex = Math.max(Math.floor(dataIndex - halfWindow), 0);
+    const endIndex = Math.min(Math.ceil(dataIndex + halfWindow), axisValues.length - 1);
+
+    chart.dispatchAction({
+        type: 'dataZoom',
+        dataZoomIndex: 0,
+        startValue: axisValues[startIndex],
+        endValue: axisValues[endIndex]
+    });
+}
+
+function attachClickZoom(id, axisValues, zoomSize = 6) {
+    const chart = getChart(id);
+    if (!chart || !axisValues?.length) return;
+
+    chart.off('click');
+    chart.on('click', params => {
+        if (params.componentType !== 'series' || params.dataIndex == null) return;
+        zoomChartAroundIndex(chart, axisValues, params.dataIndex, zoomSize);
+    });
+
+    chart.getZr().off('click');
+    chart.getZr().on('click', event => {
+        const point = [event.offsetX, event.offsetY];
+        if (!chart.containPixel({ gridIndex: 0 }, point)) return;
+        const [rawX] = chart.convertFromPixel({ gridIndex: 0 }, point);
+        zoomChartAroundIndex(chart, axisValues, nearestAxisIndex(axisValues, rawX), zoomSize);
+    });
+
+    chart.off('dblclick');
+    chart.on('dblclick', () => {
+        chart.dispatchAction({
+            type: 'dataZoom',
+            dataZoomIndex: 0,
+            start: 0,
+            end: 100
+        });
+    });
+}
+
+function formatCompactNumber(value) {
+    const abs = Math.abs(value);
+    if (abs >= 1000000000) return `${(value / 1000000000).toFixed(1)}B`;
+    if (abs >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+    if (abs >= 1000) return `${(value / 1000).toFixed(1)}k`;
+    return Number(value).toFixed(0);
+}
+
+function formatAxisPrice(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '';
+    return n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 0 }) : n.toFixed(2);
+}
+
+function formatMillionsAxis(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '';
+    const abs = Math.abs(n);
+    if (abs >= 100) return n.toFixed(0);
+    if (abs >= 10) return n.toFixed(1);
+    return n.toFixed(2);
+}
+
+function formatMillionsValue(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    return `${formatMillionsAxis(n)}M`;
+}
+
+function niceStep(value) {
+    if (!Number.isFinite(value) || value <= 0) return 1;
+    const exponent = Math.floor(Math.log10(value));
+    const fraction = value / Math.pow(10, exponent);
+    const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+    return niceFraction * Math.pow(10, exponent);
+}
+
+function chartBounds(values, padding = 0.14) {
+    const finiteValues = (values || []).filter(Number.isFinite);
+    if (!finiteValues.length) return { min: -1, max: 1 };
+
+    let min = Math.min(0, ...finiteValues);
+    let max = Math.max(0, ...finiteValues);
+    let range = max - min;
+    if (range === 0) range = Math.max(Math.abs(max), 1);
+
+    const rawMin = min - (range * padding);
+    const rawMax = max + (range * padding);
+    const step = niceStep((rawMax - rawMin) / 5);
+
+    min = Math.floor(rawMin / step) * step;
+    max = Math.ceil(rawMax / step) * step;
+    if (min === max) {
+        min -= step;
+        max += step;
+    }
+
+    return { min, max };
+}
+
+function rowsInStrikeRange(rows, startValue, endValue) {
+    if (!Number.isFinite(startValue) || !Number.isFinite(endValue)) return rows;
+    const start = Math.min(startValue, endValue);
+    const end = Math.max(startValue, endValue);
+    const visibleRows = rows.filter(row => row.strike >= start && row.strike <= end);
+    return visibleRows.length ? visibleRows : rows;
+}
+
+function profileAxisBounds(rows) {
+    return {
+        netBounds: chartBounds(rows.map(row => row.net), 0.18),
+        sideBounds: chartBounds(rows.flatMap(row => [row.call, row.put]), 0.16),
+    };
+}
+
+function strikeAxisBounds(strikes) {
+    const finiteStrikes = strikes.filter(Number.isFinite);
+    if (!finiteStrikes.length) return {};
+
+    const minStrike = Math.min(...finiteStrikes);
+    const maxStrike = Math.max(...finiteStrikes);
+    const span = maxStrike - minStrike;
+    const padding = span > 0 ? span * 0.025 : Math.max(Math.abs(minStrike) * 0.01, 1);
+
+    return {
+        min: minStrike - padding,
+        max: maxStrike + padding
+    };
+}
+
+function resolveZoomRange(payload, strikes) {
+    const dataMin = Math.min(...strikes);
+    const dataMax = Math.max(...strikes);
+    const zoom = payload?.batch?.[0] || payload || {};
+    const startValue = Number(zoom.startValue);
+    const endValue = Number(zoom.endValue);
+
+    if (Number.isFinite(startValue) && Number.isFinite(endValue)) {
+        return { startValue, endValue };
+    }
+
+    const startPct = Number(zoom.start);
+    const endPct = Number(zoom.end);
+    if (Number.isFinite(startPct) && Number.isFinite(endPct)) {
+        const span = dataMax - dataMin;
+        return {
+            startValue: dataMin + (span * startPct / 100),
+            endValue: dataMin + (span * endPct / 100),
+        };
+    }
+
+    return { startValue: dataMin, endValue: dataMax };
+}
+
+function applyProfileAxisBounds(chart, rows, startValue, endValue) {
+    const visibleRows = rowsInStrikeRange(rows, startValue, endValue);
+    const { netBounds, sideBounds } = profileAxisBounds(visibleRows);
+
+    chart.setOption({
+        yAxis: [
+            { min: netBounds.min, max: netBounds.max },
+            { min: sideBounds.min, max: sideBounds.max }
+        ]
+    }, false);
+}
+
+function attachProfileAxisAutoscale(id, rows) {
+    const chart = getChart(id);
+    if (!chart || !rows.length) return;
+    const strikes = rows.map(row => row.strike);
+
+    chart.off('dataZoom');
+    chart.on('dataZoom', event => {
+        const { startValue, endValue } = resolveZoomRange(event, strikes);
+        applyProfileAxisBounds(chart, rows, startValue, endValue);
+    });
+}
+
+function focusedStrikeWindow(strikes, markers, spotPrice) {
+    const finiteStrikes = strikes.filter(Number.isFinite);
+    if (!finiteStrikes.length || !Number.isFinite(spotPrice) || spotPrice <= 0) {
+        return { startValue: null, endValue: null };
+    }
+
+    const dataMin = Math.min(...finiteStrikes);
+    const dataMax = Math.max(...finiteStrikes);
+    const relevant = [
+        spotPrice,
+        ...(markers || []).map(level => level.value).filter(Number.isFinite)
+    ];
+    const relevantMin = Math.min(...relevant);
+    const relevantMax = Math.max(...relevant);
+    const minHalfWindow = spotPrice * 0.015;
+    const markerHalfWindow = Math.max((relevantMax - relevantMin) * 1.4, minHalfWindow);
+    const center = (Math.min(relevantMin, spotPrice) + Math.max(relevantMax, spotPrice)) / 2;
+    const startValue = Math.max(dataMin, center - markerHalfWindow);
+    const endValue = Math.min(dataMax, center + markerHalfWindow);
+
+    if (endValue - startValue < (dataMax - dataMin) * 0.15) {
+        const expandedHalf = Math.max((dataMax - dataMin) * 0.075, minHalfWindow);
+        return {
+            startValue: Math.max(dataMin, center - expandedHalf),
+            endValue: Math.min(dataMax, center + expandedHalf)
+        };
+    }
+
+    return { startValue, endValue };
+}
+
+function buildMarkerLines(markerLevels, strikes) {
+    const finiteStrikes = strikes.filter(Number.isFinite);
+    const xSpan = finiteStrikes.length ? Math.max(...finiteStrikes) - Math.min(...finiteStrikes) : 0;
+    const crowdDistance = xSpan * 0.025;
+
+    return markerLevels
+        .slice()
+        .sort((a, b) => a.value - b.value)
+        .map((level, index, sortedLevels) => {
+            const crowded = crowdDistance > 0 && sortedLevels.some(other => {
+                return other !== level && Math.abs(other.value - level.value) <= crowdDistance;
+            });
+            const showLabel = !crowded || level.label === 'Spot';
+
+            return {
+                xAxis: level.value,
+                name: level.label,
+                lineStyle: {
+                    color: level.color,
+                    width: level.label === 'Spot' ? 2 : 1.5,
+                    type: level.dash === 'dot' ? 'dotted' : level.dash === 'dash' ? 'dashed' : 'solid'
+                },
+                label: {
+                    show: showLabel,
+                    formatter: showLabel && !crowded ? `${level.label}\n${formatTargetPrice(level.value)}` : level.label,
+                    position: index % 2 === 0 ? 'insideEndTop' : 'insideStartTop',
+                    color: level.color,
+                    backgroundColor: 'rgba(2,5,8,0.82)',
+                    borderColor: level.color,
+                    borderWidth: 1,
+                    borderRadius: 3,
+                    padding: [3, 5],
+                    fontFamily: NUMERIC_FONT,
+                    fontSize: 10,
+                    fontWeight: 700
+                }
+            };
+        });
+}
+
+function profileTooltipFormatter(rows, valueFormatter = formatCompactNumber) {
+    return params => {
+        const items = Array.isArray(params) ? params : [params];
+        const rawAxisValue = Number(items[0]?.axisValue ?? (Array.isArray(items[0]?.value) ? items[0].value[0] : NaN));
+        const nearest = rows.reduce((best, row) => {
+            if (!best) return row;
+            return Math.abs(row.strike - rawAxisValue) < Math.abs(best.strike - rawAxisValue) ? row : best;
+        }, null);
+
+        if (!nearest) return '';
+
+        return [
+            `<strong>${formatAxisPrice(nearest.strike)}</strong>`,
+            `<span style="color:#ff8b1a">●</span> Call GEX: ${valueFormatter(nearest.call)}`,
+            `<span style="color:#2388e8">●</span> Put GEX: ${valueFormatter(nearest.put)}`,
+            `<span style="color:#b177ff">●</span> Net GEX: ${valueFormatter(nearest.net)}`,
+        ].join('<br/>');
+    };
+}
+
+function baseChartOptions({ valueFormatter = formatCompactNumber } = {}) {
+    return {
+        backgroundColor: 'transparent',
+        textStyle: chartText(),
+        animationDuration: 280,
+        tooltip: {
+            trigger: 'axis',
+            backgroundColor: '#020508',
+            borderColor: '#223140',
+            borderWidth: 1,
+            textStyle: chartText(13, '#f2f5f8'),
+            formatter: params => {
+                const items = Array.isArray(params) ? params : [params];
+                const axisLabel = items[0]?.axisValueLabel || items[0]?.axisValue || '';
+                const lines = [`<strong>${axisLabel}</strong>`];
+                items.forEach(item => {
+                    const raw = Array.isArray(item.value) ? item.value[1] : item.value;
+                    lines.push(`${item.marker}${item.seriesName}: ${valueFormatter(Number(raw), item)}`);
+                });
+                return lines.join('<br/>');
+            },
+            axisPointer: {
+                type: 'cross',
+                label: {
+                    backgroundColor: '#101720',
+                    color: '#f2f5f8',
+                    fontFamily: NUMERIC_FONT,
+                    fontSize: 12
+                }
+            }
+        }
+    };
+}
 
 
 // --- Init ---
 async function init() {
     currentSettings = await eel.get_settings()();
+    startStatusTimer();
     document.getElementById('settingInterval').value = currentSettings.refresh_interval;
     document.getElementById('settingTheme').value = currentSettings.theme || 'dark';
     document.getElementById('settingSymbols').value = (currentSettings.symbols || []).join(',');
-    document.getElementById('settingBackendDelay').value = currentSettings.backend_update_delay || 180;
+    document.getElementById('settingRateLimit').value = currentSettings.api_rate_limit_per_second || 10;
+    document.getElementById('settingRateUtilization').value = currentSettings.api_rate_limit_utilization || 0.6;
+    document.getElementById('settingMinPoll').value = currentSettings.min_poll_interval_seconds || 15;
+    document.getElementById('settingMaxPoll').value = currentSettings.max_poll_interval_seconds || 120;
     const retentionInput = document.getElementById('settingRetentionDays');
     if (retentionInput) retentionInput.value = currentSettings.raw_retention_days || 30;
-
-    // Trigger data refresh on load
-    const lastUpdateEl = document.getElementById('lastUpdate');
-    if (lastUpdateEl) lastUpdateEl.innerText = "Refreshing...";
-
-    console.log("Triggering backend data refresh...");
-    const refreshResult = await eel.trigger_data_refresh()();
-    console.log("Backend data refresh complete.", refreshResult);
-    if (refreshResult && refreshResult.ok === false) {
-        showToast("Refresh Skipped", refreshResult.message || "Collector did not save new data.", "info");
-    }
 
     const symbols = await eel.get_symbols()();
 
@@ -50,6 +474,7 @@ async function init() {
         opt.value = '';
         opt.innerText = 'No 0DTE data';
         selector.appendChild(opt);
+        const lastUpdateEl = document.getElementById('lastUpdate');
         if (lastUpdateEl) lastUpdateEl.innerText = "No data";
     }
 }
@@ -59,7 +484,7 @@ function switchView(viewName) {
     document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
 
     const target = document.getElementById(`view-${viewName}`);
-    if (target) target.style.display = 'block';
+    if (target) target.style.display = ['cockpit', 'setups', 'one-off'].includes(viewName) ? 'grid' : 'block';
 
     document.querySelectorAll(`[data-view="${viewName}"]`).forEach(btn => btn.classList.add('active'));
     if (viewName === 'dashboard') document.querySelector('[data-view="dashboard"]')?.classList.add('active');
@@ -68,23 +493,26 @@ function switchView(viewName) {
         document.querySelector('[data-view="cockpit"]')?.classList.add('active');
         loadCockpit();
     }
+    if (viewName === 'setups') {
+        document.querySelector('[data-view="setups"]')?.classList.add('active');
+        loadTradeSetups();
+    }
     if (viewName === 'market-signal') {
         document.querySelector('[data-view="market-signal"]')?.classList.add('active');
         loadOverview();
     }
     if (viewName === 'analysis') document.querySelector('[data-view="analysis"]')?.classList.add('active');
+    if (viewName === 'one-off') {
+        document.querySelector('[data-view="one-off"]')?.classList.add('active');
+        loadOneOffProfiles();
+    }
     if (viewName === 'settings') document.querySelector('[data-view="settings"]')?.classList.add('active');
 
-    if (viewName === 'dashboard' && cachedData) {
-        Plotly.Plots.resize('profileChart');
-        Plotly.Plots.resize('historyChart');
-    }
-    if (viewName === 'market-signal') {
-        Plotly.Plots.resize('tiltChart');
-    }
-    if (viewName === 'cockpit' && cachedData) {
-        requestAnimationFrame(() => Plotly.Plots.resize('cockpitProfileChart'));
-    }
+    if (viewName === 'dashboard' && cachedData) resizeCharts(['profileChart', 'historyChart']);
+    if (viewName === 'market-signal') resizeCharts(['tiltChart']);
+    if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart']);
+    if (viewName === 'setups' && cachedData) resizeCharts(['setupProfileChart']);
+    if (viewName === 'one-off') resizeCharts(['oneOffProfileChart']);
 }
 
 async function loadSymbol() {
@@ -104,6 +532,9 @@ async function loadSymbol() {
     renderAnalysisTable(data);
     if (document.getElementById('view-cockpit').style.display !== 'none') {
         await loadCockpit();
+    }
+    if (document.getElementById('view-setups').style.display !== 'none') {
+        await loadTradeSetups();
     }
     if (
         document.getElementById('view-market-signal').style.display === 'block'
@@ -179,11 +610,11 @@ function updateKPIs(snap, lowVolStrike, highVolStrike) {
     document.getElementById('lastUpdate').innerText = dateObj.toLocaleTimeString();
 }
 
-function renderProfileChart(profileData, spotPrice) {
+function renderProfileChartTo(chartId, profileData, spotPrice) {
     let strikeMap = {};
     profileData.forEach(row => {
         if (!strikeMap[row.strike_price]) strikeMap[row.strike_price] = { call: 0, put: 0, net: 0 };
-        if (row.option_type === 'CALL') strikeMap[row.strike_price].call += row.gex_value;
+        if (optionSide(row) === 'call') strikeMap[row.strike_price].call += row.gex_value;
         else strikeMap[row.strike_price].put += row.gex_value; // Puts are negative
         strikeMap[row.strike_price].net += row.gex_value;
     });
@@ -192,107 +623,147 @@ function renderProfileChart(profileData, spotPrice) {
     const netGexArr = strikes.map(s => strikeMap[s].net);
     const callGexArr = strikes.map(s => strikeMap[s].call);
     const putGexArr = strikes.map(s => strikeMap[s].put); // Negative values
+    const profileRows = strikes.map((strike, i) => ({
+        strike,
+        call: callGexArr[i],
+        put: putGexArr[i],
+        net: netGexArr[i],
+    }));
+    const { netBounds, sideBounds } = profileAxisBounds(profileRows);
+    const xBounds = strikeAxisBounds(strikes);
 
-    // Trace 1: Net Gamma Curve
-    const traceLine = {
-        x: strikes,
-        y: netGexArr,
-        type: 'scatter',
-        mode: 'lines',
-        name: 'Net Gamma',
-        line: { color: '#b392f0', width: 3, shape: 'spline' },
-        yaxis: 'y1'
-    };
-
-    // Trace 2: Calls (Orange)
-    const traceCalls = {
-        x: strikes,
-        y: callGexArr,
-        type: 'bar',
-        name: 'Call Gamma',
-        marker: { color: '#ff9100' },
-        yaxis: 'y2',
-        opacity: 0.6
-    };
-
-    // Trace 3: Puts (Blue)
-    const tracePuts = {
-        x: strikes,
-        y: putGexArr,
-        type: 'bar',
-        name: 'Put Gamma',
-        marker: { color: '#0091ff' },
-        yaxis: 'y2',
-        opacity: 0.6
-    };
-
-    const layout = {
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(0,0,0,0)',
-        font: { color: '#8b949e', family: 'Inter' },
-        margin: { t: 30, l: 60, r: 60, b: 40 },
-        hovermode: 'x unified',
-        xaxis: {
-            title: 'Strike',
-            gridcolor: '#30363d',
+    const option = {
+        ...baseChartOptions(),
+        grid: { top: 30, left: 62, right: 62, bottom: 42, containLabel: true },
+        dataZoom: zoomDataOptions(),
+        xAxis: {
+            type: 'value',
+            name: 'Strike',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(12), formatter: formatAxisPrice },
+            axisLine: { onZero: false, lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } },
+            ...xBounds
         },
-        yaxis: {
-            title: 'Net Gamma Exposure',
-            titlefont: { color: '#b392f0' },
-            tickfont: { color: '#b392f0' },
-            gridcolor: '#30363d',
-        },
-        yaxis2: {
-            title: 'Total Call/Put GEX',
-            overlaying: 'y',
-            side: 'right',
-            showgrid: false
-        },
-        barmode: 'relative',
-        showlegend: false,
-        shapes: [{
-            type: 'line',
-            x0: spotPrice, x1: spotPrice,
-            y0: 0, y1: 1, xref: 'x', yref: 'paper',
-            line: { color: 'white', width: 1, dash: 'solid' }
-        }]
+        yAxis: [
+            {
+                type: 'value',
+                name: 'Net Gamma Exposure',
+                min: netBounds.min,
+                max: netBounds.max,
+                nameTextStyle: chartText(12, '#b177ff'),
+                axisLabel: { ...chartText(12, '#b177ff'), formatter: formatCompactNumber },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } }
+            },
+            {
+                type: 'value',
+                name: 'Total Call/Put GEX',
+                min: sideBounds.min,
+                max: sideBounds.max,
+                nameTextStyle: chartText(12),
+                axisLabel: { ...chartText(12), formatter: formatCompactNumber },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { show: false }
+            }
+        ],
+        series: [
+            {
+                name: 'Call GEX',
+                type: 'bar',
+                yAxisIndex: 1,
+                stack: 'gex',
+                data: strikes.map((s, i) => [s, callGexArr[i]]),
+                itemStyle: { color: '#ff8b1a', opacity: 0.76 },
+                barWidth: 10
+            },
+            {
+                name: 'Put GEX',
+                type: 'bar',
+                yAxisIndex: 1,
+                stack: 'gex',
+                data: strikes.map((s, i) => [s, putGexArr[i]]),
+                itemStyle: { color: '#2388e8', opacity: 0.76 },
+                barWidth: 10
+            },
+            {
+                name: 'Net GEX',
+                type: 'line',
+                smooth: true,
+                symbol: 'none',
+                data: strikes.map((s, i) => [s, netGexArr[i]]),
+                lineStyle: { color: '#b177ff', width: 3 },
+                markLine: {
+                    symbol: 'none',
+                    silent: true,
+                    data: [{
+                        xAxis: spotPrice,
+                        lineStyle: { color: '#ffffff', width: 1 },
+                        label: {
+                            formatter: 'Spot',
+                            color: '#ffffff',
+                            fontFamily: NUMERIC_FONT,
+                            fontSize: 12
+                        }
+                    }]
+                }
+            }
+        ]
     };
 
-    Plotly.newPlot('profileChart', [traceCalls, tracePuts, traceLine], layout, { displayModeBar: false, responsive: true });
+    setChartOption(chartId, option);
+    attachProfileAxisAutoscale(chartId, profileRows);
+    attachClickZoom(chartId, strikes);
+}
+
+function renderProfileChart(profileData, spotPrice) {
+    renderProfileChartTo('profileChart', profileData, spotPrice);
 }
 
 function renderHistoryChart(history) {
     if (!history || history.length === 0) return;
 
-    const traceGex = {
-        x: history.map(d => d.timestamp),
-        y: history.map(d => d.total_net_gex),
-        type: 'scatter',
-        mode: 'lines',
-        fill: 'tozeroy',
-        name: 'Net GEX',
-        line: { color: '#b392f0', width: 2 }
-    };
-
-    // Add Zero Line
-    const layout = {
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(0,0,0,0)',
-        font: { color: '#8b949e', family: 'Inter' },
-        margin: { t: 10, l: 40, r: 20, b: 40 },
-        xaxis: { gridcolor: '#30363d' },
-        yaxis: { gridcolor: '#30363d' },
-        showlegend: false,
-        shapes: [{
+    const option = {
+        ...baseChartOptions(),
+        grid: { top: 12, left: 42, right: 22, bottom: 38, containLabel: true },
+        dataZoom: zoomDataOptions(),
+        xAxis: {
+            type: 'category',
+            data: history.map(d => d.timestamp),
+            axisLabel: { ...chartText(12), hideOverlap: true },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } }
+        },
+        yAxis: {
+            type: 'value',
+            axisLabel: { ...chartText(12), formatter: formatCompactNumber },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } }
+        },
+        series: [{
+            name: 'Net GEX',
             type: 'line',
-            x0: history[0].timestamp,
-            x1: history[history.length - 1].timestamp,
-            y0: 0, y1: 0,
-            xref: 'x', yref: 'y',
-            line: { color: '#444', width: 1, dash: 'dot' }
+            smooth: true,
+            symbol: 'none',
+            data: history.map(d => d.total_net_gex),
+            lineStyle: { color: '#b177ff', width: 2 },
+            areaStyle: { color: 'rgba(177,119,255,0.16)' },
+            markLine: {
+                symbol: 'none',
+                silent: true,
+                data: [{
+                    yAxis: 0,
+                    lineStyle: { color: '#667584', width: 1, type: 'dotted' },
+                    label: { show: false }
+                }]
+            }
         }]
     };
-    Plotly.newPlot('historyChart', [traceGex], layout, { displayModeBar: false, responsive: true });
+
+    setChartOption('historyChart', option);
+    attachClickZoom('historyChart', history.map(d => d.timestamp), 16);
 }
 
 // --- Analysis Table (Matches previous redesign) ---
@@ -308,12 +779,12 @@ function renderAnalysisTable(data) {
     data.profile.forEach(row => {
         const s = row.strike_price;
         if (!strikes[s]) strikes[s] = { strike: s, callGex: 0, putGex: 0, callOI: 0, putOI: 0 };
-        if (row.option_type === 'CALL') {
-            strikes[s].callGex = row.gex_value;
-            strikes[s].callOI = row.open_interest;
+        if (optionSide(row) === 'call') {
+            strikes[s].callGex += row.gex_value;
+            strikes[s].callOI += row.open_interest || 0;
         } else {
-            strikes[s].putGex = row.gex_value;
-            strikes[s].putOI = row.open_interest;
+            strikes[s].putGex += row.gex_value;
+            strikes[s].putOI += row.open_interest || 0;
         }
     });
 
@@ -358,19 +829,19 @@ function renderAnalysisTable(data) {
                     ${row.netGex > 0 ? 'Dealer Long Gamma' : 'Dealer Short Gamma'}
                 </div>
             </td>
-            <td style="font-family: monospace; font-size:13px;">
+            <td style="font-family: var(--font-mono); font-size:14px; font-variant-numeric: tabular-nums slashed-zero;">
                 <span class="${row.netGex > 0 ? 'val-positive' : 'val-negative'}">$${netValM}M</span>
             </td>
             <td>
                 <div class="bar-container">
-                    <span style="font-size:11px; color:#888">${(row.callGex / 1000000).toFixed(2)}</span>
+                    <span style="font-size:12px; color:#9aa6b2; font-variant-numeric: tabular-nums slashed-zero;">${(row.callGex / 1000000).toFixed(2)}</span>
                     <div class="bg-bar bar-call" style="width: ${callWidth}px; max-width:80px;"></div>
                 </div>
             </td>
             <td>
                 <div class="bar-container" style="justify-content: flex-start;">
                     <div class="bg-bar bar-put" style="width: ${putWidth}px; max-width:80px;"></div>
-                    <span style="font-size:11px; color:#888">${(Math.abs(row.putGex) / 1000000).toFixed(2)}</span>
+                    <span style="font-size:12px; color:#9aa6b2; font-variant-numeric: tabular-nums slashed-zero;">${(Math.abs(row.putGex) / 1000000).toFixed(2)}</span>
                 </div>
             </td>
             <td style="color:#888;">${(row.callOI + row.putOI).toLocaleString()}</td>
@@ -397,30 +868,148 @@ function startTimers() {
     }, 1000);
 
     refreshTimer = setInterval(async () => {
-        console.log("Auto-refreshing data...");
-        const lastUpdateEl = document.getElementById('lastUpdate');
-        if (lastUpdateEl) lastUpdateEl.innerText = "Refreshing...";
-
-        const result = await eel.trigger_data_refresh()();
-        if (result && result.ok === false) {
-            showToast("Refresh Skipped", result.message || "Collector did not save new data.", "info");
-        }
+        console.log("Reloading local dashboard data...");
         await loadSymbol();
     }, currentSettings.refresh_interval * 1000);
 }
 
 async function manualRefresh() {
     const lastUpdateEl = document.getElementById('lastUpdate');
-    if (lastUpdateEl) lastUpdateEl.innerText = "Refreshing...";
+    if (lastUpdateEl) lastUpdateEl.innerText = "Reloading...";
+    await loadSymbol();
+    showToast("Dashboard Reloaded", "Local market snapshot reloaded.", "info");
+}
 
-    const result = await eel.trigger_data_refresh()();
-    if (result && result.ok === false) {
-        showToast("Refresh Skipped", result.message || "Collector did not save new data.", "info");
-    } else {
-        showToast("Refresh Complete", "Latest market data requested.", "info");
+function oneOffSetText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.innerText = value;
+}
+
+function setOneOffInputs(symbol, expirationDate) {
+    const symbolInput = document.getElementById('oneOffSymbol');
+    const dateInput = document.getElementById('oneOffDate');
+    if (symbolInput && symbol) symbolInput.value = String(symbol).toUpperCase();
+    if (dateInput && expirationDate) dateInput.value = String(expirationDate);
+}
+
+function renderOneOffProfile(data, dbPath = '') {
+    if (!data || data.error || !data.snapshot) {
+        showToast('One-Off Profile', data?.error || 'No one-off profile data.', 'error');
+        return;
     }
 
-    await loadSymbol();
+    const snap = data.snapshot;
+    const rows = buildStrikeProfile(data.profile || []);
+    oneOffSetText('oneOffProfileLabel', snap.symbol || '--');
+    oneOffSetText('oneOffSpot', snap.spot_price ? `$${Number(snap.spot_price).toFixed(2)}` : '--');
+    oneOffSetText('oneOffExpiration', snap.expiration_date || '--');
+    oneOffSetText('oneOffContracts', (data.profile || []).length.toLocaleString());
+    oneOffSetText('oneOffNetGex', formatMoneyM(snap.total_net_gex || 0, 1));
+    oneOffSetText('oneOffSnapshotTime', snap.timestamp ? new Date(snap.timestamp).toLocaleString() : '--');
+    oneOffSetText('oneOffStatus', rows.length ? `${rows.length} strikes` : 'No strikes');
+    if (dbPath) oneOffSetText('oneOffDbPath', dbPath.split(/[\\/]/).pop());
+
+    renderProfileChartTo('oneOffProfileChart', data.profile || [], snap.spot_price || 0);
+
+    const tbody = document.getElementById('oneOffTableBody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    rows.forEach(row => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td class="strike-cell">${formatAxisPrice(row.strike)}</td>
+            <td class="${row.netGex >= 0 ? 'val-positive' : 'val-negative'}">${formatMoneyM(row.netGex, 2)}</td>
+            <td>${formatMoneyM(row.callGex, 2)}</td>
+            <td>${formatMoneyM(row.putGex, 2)}</td>
+            <td>${row.oi.toLocaleString()}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+async function loadOneOffProfiles() {
+    const list = document.getElementById('oneOffRecentList');
+    if (!list) return;
+
+    try {
+        const profiles = await eel.get_one_off_profiles()();
+        oneOffSetText('oneOffRecentCount', String(profiles.length || 0));
+        list.innerHTML = '';
+        if (!profiles.length) {
+            list.innerHTML = '<div class="one-off-empty">No saved pulls</div>';
+            return;
+        }
+
+        profiles.forEach(profile => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'one-off-recent-item';
+            btn.onclick = () => openOneOffProfile(profile);
+            btn.innerHTML = `
+                <span>${profile.symbol || '--'} ${profile.expiration_date || '--'}</span>
+                <strong>${formatMoneyM(profile.total_net_gex || 0, 1)}</strong>
+                <em>${profile.contract_count || 0} contracts</em>
+            `;
+            list.appendChild(btn);
+        });
+    } catch (e) {
+        console.error('Failed to load one-off profiles', e);
+    }
+}
+
+async function openOneOffProfile(profile) {
+    const snapshotId = typeof profile === 'object' ? profile.snapshot_id : profile;
+    if (!snapshotId) return;
+    if (typeof profile === 'object') {
+        setOneOffInputs(profile.symbol, profile.expiration_date);
+    }
+    const data = await eel.get_one_off_profile(snapshotId)();
+    if (data?.snapshot) {
+        setOneOffInputs(data.snapshot.symbol, data.snapshot.expiration_date);
+    }
+    renderOneOffProfile(data);
+}
+
+async function buildOneOffProfile() {
+    const symbolInput = document.getElementById('oneOffSymbol');
+    const dateInput = document.getElementById('oneOffDate');
+    const btn = document.getElementById('oneOffBuildBtn');
+    const symbol = symbolInput?.value?.trim().toUpperCase();
+    const expirationDate = dateInput?.value?.trim();
+
+    if (!symbol || !expirationDate) {
+        showToast('One-Off Profile', 'Enter a symbol and date.', 'error');
+        return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Building...';
+    }
+    oneOffSetText('oneOffStatus', 'Pulling data');
+
+    try {
+        const result = await eel.build_one_off_profile(symbol, expirationDate)();
+        if (!result || !result.ok) {
+            oneOffSetText('oneOffStatus', 'Failed');
+            showToast('One-Off Failed', result?.message || 'Profile build failed.', 'error');
+            return;
+        }
+
+        renderOneOffProfile(result.data, result.db_path || '');
+        setOneOffInputs(result.symbol, result.expiration_date);
+        await loadOneOffProfiles();
+        showToast('One-Off Saved', result.message || `${symbol} profile saved.`, 'info');
+    } catch (e) {
+        console.error('One-off profile failed', e);
+        oneOffSetText('oneOffStatus', 'Error');
+        showToast('One-Off Error', String(e), 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerText = 'Build Profile';
+        }
+    }
 }
 
 function toggleFullscreen() {
@@ -437,26 +1026,65 @@ function toggleActivityFeed() {
     document.querySelector('.terminal-shell')?.classList.toggle('feed-collapsed');
 }
 
-function saveSettings() {
-    const newInterval = parseInt(document.getElementById('settingInterval').value);
+async function saveSettings() {
+    const newInterval = parseInt(document.getElementById('settingInterval').value, 10);
     const newTheme = document.getElementById('settingTheme').value;
     const newSymbols = document.getElementById('settingSymbols').value.split(',').map(s => s.trim()).filter(Boolean);
-    const newBackendDelay = parseInt(document.getElementById('settingBackendDelay').value);
+    const newRateLimit = parseFloat(document.getElementById('settingRateLimit').value);
+    const newRateUtilization = parseFloat(document.getElementById('settingRateUtilization').value);
+    const newMinPoll = parseInt(document.getElementById('settingMinPoll').value, 10);
+    const newMaxPoll = parseInt(document.getElementById('settingMaxPoll').value, 10);
     const retentionEl = document.getElementById('settingRetentionDays');
-    const newRetentionDays = retentionEl ? parseInt(retentionEl.value) : 30;
-    eel.save_settings({
+    const newRetentionDays = retentionEl ? parseInt(retentionEl.value, 10) : 30;
+
+    if (
+        !Number.isFinite(newInterval) ||
+        !Number.isFinite(newRateLimit) ||
+        !Number.isFinite(newRateUtilization) ||
+        !Number.isFinite(newMinPoll) ||
+        !Number.isFinite(newMaxPoll) ||
+        !Number.isFinite(newRetentionDays) ||
+        newSymbols.length === 0
+    ) {
+        showToast("Settings Not Saved", "Enter valid numbers and at least one symbol.", "error");
+        return;
+    }
+
+    const result = await eel.save_settings({
         refresh_interval: newInterval,
         theme: newTheme,
         symbols: newSymbols,
-        backend_update_delay: newBackendDelay,
+        api_rate_limit_per_second: newRateLimit,
+        api_rate_limit_utilization: newRateUtilization,
+        min_poll_interval_seconds: newMinPoll,
+        max_poll_interval_seconds: newMaxPoll,
         raw_retention_days: newRetentionDays
     })();
-    currentSettings.refresh_interval = newInterval;
-    currentSettings.theme = newTheme;
-    currentSettings.symbols = newSymbols;
-    currentSettings.backend_update_delay = newBackendDelay;
-    currentSettings.raw_retention_days = newRetentionDays;
-    showToast("Settings Saved", "Configuration updated.", "info");
+
+    if (!result || !result.ok) {
+        showToast("Settings Not Saved", result?.message || "Configuration was rejected.", "error");
+        return;
+    }
+
+    currentSettings = result.settings || {
+        ...currentSettings,
+        refresh_interval: newInterval,
+        theme: newTheme,
+        symbols: newSymbols,
+        api_rate_limit_per_second: newRateLimit,
+        api_rate_limit_utilization: newRateUtilization,
+        min_poll_interval_seconds: newMinPoll,
+        max_poll_interval_seconds: newMaxPoll,
+        raw_retention_days: newRetentionDays
+    };
+    document.getElementById('settingInterval').value = currentSettings.refresh_interval;
+    document.getElementById('settingRateLimit').value = currentSettings.api_rate_limit_per_second;
+    document.getElementById('settingRateUtilization').value = currentSettings.api_rate_limit_utilization;
+    document.getElementById('settingMinPoll').value = currentSettings.min_poll_interval_seconds;
+    document.getElementById('settingMaxPoll').value = currentSettings.max_poll_interval_seconds;
+    if (retentionEl) retentionEl.value = currentSettings.raw_retention_days;
+    document.getElementById('settingSymbols').value = (currentSettings.symbols || []).join(',');
+    showToast("Settings Saved", result.message || "Configuration updated.", "info");
     startTimers();
 }
 
@@ -505,6 +1133,13 @@ function formatAge(seconds) {
     return `${(seconds / 3600).toFixed(1)}h old`;
 }
 
+function optionSide(row) {
+    const type = String(row.option_type || '').toUpperCase();
+    if (type.includes('CALL')) return 'call';
+    if (type.includes('PUT')) return 'put';
+    return Number(row.gex_value || 0) < 0 ? 'put' : 'call';
+}
+
 function voteLabel(score) {
     if (score > 0.20) return 'CALL';
     if (score < -0.20) return 'PUT';
@@ -531,7 +1166,7 @@ function buildStrikeProfile(profileData) {
     (profileData || []).forEach(row => {
         const strike = Number(row.strike_price);
         if (!map[strike]) map[strike] = { strike, callGex: 0, putGex: 0, netGex: 0, oi: 0 };
-        if (row.option_type === 'CALL') map[strike].callGex += row.gex_value;
+        if (optionSide(row) === 'call') map[strike].callGex += row.gex_value;
         else map[strike].putGex += row.gex_value;
         map[strike].netGex += row.gex_value;
         map[strike].oi += row.open_interest || 0;
@@ -612,11 +1247,12 @@ function buildDealerVote(symbolData, component) {
 }
 
 function nearestSignificant(rows, spot, direction, sign) {
-    const maxAbs = rows.reduce((max, row) => Math.max(max, Math.abs(row.netGex)), 0);
+    const sideValue = row => sign > 0 ? Number(row.callGex || 0) : Number(row.putGex || 0);
+    const maxAbs = rows.reduce((max, row) => Math.max(max, Math.abs(sideValue(row))), 0);
     const threshold = maxAbs * 0.20;
     const candidates = rows
         .filter(row => direction === 'above' ? row.strike > spot : row.strike < spot)
-        .filter(row => Math.abs(row.netGex) >= threshold && Math.sign(row.netGex) === sign)
+        .filter(row => Math.abs(sideValue(row)) >= threshold && Math.sign(sideValue(row)) === sign)
         .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
     return candidates[0] || null;
 }
@@ -748,6 +1384,68 @@ function setClassText(id, value, className) {
     el.className = className || '';
 }
 
+function formatEdgeWinRate(value) {
+    if (value === null || value === undefined || value === '') return '--';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    return `${Math.round(n * 100)}%`;
+}
+
+function formatEdgeMove(value) {
+    if (value === null || value === undefined || value === '') return '--';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    const sign = n > 0 ? '+' : '';
+    return `${sign}${n.toFixed(Math.abs(n) >= 10 ? 0 : 1)} pts`;
+}
+
+function renderEdgeStats(edgeStats) {
+    const grid = document.getElementById('edgeStatsGrid');
+    const source = document.getElementById('edgeStatsSource');
+    if (!grid) return;
+
+    const horizons = edgeStats?.horizons || [];
+    if (!horizons.length) {
+        if (source) source.innerText = 'No empirical bucket for this symbol';
+        grid.innerHTML = [15, 30, 60].map(horizon => `
+            <article class="edge-stat">
+                <span>${horizon}m</span>
+                <strong class="amber-text">--</strong>
+                <em>n=0 | med --</em>
+            </article>
+        `).join('');
+        return;
+    }
+
+    const primary = edgeStats.primary || horizons.find(item => item.horizon_minutes === 30) || horizons[0];
+    if (source) {
+        const sampleLabel = primary.sample_label || 'historical';
+        source.innerText = `${edgeStats.symbol || ''} ${sampleLabel} outcomes`;
+    }
+
+    grid.innerHTML = horizons.map(item => {
+        const sample = Number(item.sample_size || 0);
+        const winRate = formatEdgeWinRate(item.win_rate);
+        const moveText = formatEdgeMove(item.median_move_points);
+        const favorable = formatEdgeMove(item.median_favorable_points);
+        const adverse = formatEdgeMove(item.median_adverse_points);
+        const numericWinRate = Number(item.win_rate);
+        const cls = !Number.isFinite(numericWinRate) ? 'amber-text' : numericWinRate >= 0.55 ? 'green-text' : numericWinRate <= 0.45 ? 'red-text' : 'amber-text';
+        const labelClass = sample > 0 ? cls : 'amber-text';
+        const detail = sample > 0
+            ? `n=${sample} | med ${moveText} | MFE ${favorable} | MAE ${adverse}`
+            : 'n=0 | med --';
+
+        return `
+            <article class="edge-stat">
+                <span>${item.horizon_minutes}m</span>
+                <strong class="${labelClass}">${winRate}</strong>
+                <em>${detail}</em>
+            </article>
+        `;
+    }).join('');
+}
+
 function renderCockpit(model, symbolData, overviewData) {
     if (!model) return;
 
@@ -784,15 +1482,242 @@ function renderCockpit(model, symbolData, overviewData) {
 
     renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model);
     renderMetricStrip(symbolData, model);
+    renderEdgeStats(overviewData.edge_stats?.[model.symbol]);
     renderCockpitPillars(overviewData.components || []);
+}
+
+async function loadTradeSetups() {
+    const symbol = document.getElementById('symbolSelector')?.value;
+    if (!symbol) return;
+
+    if (!cachedData || cachedData.snapshot?.symbol !== symbol) {
+        cachedData = await eel.get_dashboard_data(symbol)();
+    }
+    if (!cachedOverview || cachedOverview.error) {
+        cachedOverview = await eel.get_market_overview()();
+    }
+    if (cachedData && cachedOverview && !cachedOverview.error) {
+        cockpitModel = buildCockpitModel(cachedData, cachedOverview);
+    }
+
+    const data = await eel.get_trade_setups(symbol)();
+    cachedTradeSetups = data;
+    renderTradeSetups(data, cockpitModel, cachedData);
+}
+
+function formatTradePoints(value, decimals = 2) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    return `${n.toFixed(decimals)} pts`;
+}
+
+function formatTradeDollars(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    const sign = n < 0 ? '-' : '';
+    return `${sign}$${formatNumber(Math.abs(n), 0)}`;
+}
+
+function setupSideClass(side) {
+    return side === 'CALL' ? 'green-text' : side === 'PUT' ? 'red-text' : 'amber-text';
+}
+
+function renderSetupStat(label, value, className = '') {
+    return `
+        <div>
+            <span>${label}</span>
+            <strong class="${className}">${value}</strong>
+        </div>
+    `;
+}
+
+function unavailableSetupCard(title, idea) {
+    return `
+        <div class="setup-card-head">
+            <span>${title}</span>
+            <em>Unavailable</em>
+        </div>
+        <strong class="amber-text">No Setup</strong>
+        <p>${idea?.reason || 'No eligible strike structure in the current snapshot.'}</p>
+    `;
+}
+
+function renderButterflyCard(idea) {
+    const card = document.getElementById('butterflySetupCard');
+    if (!card) return;
+    if (!idea || idea.status !== 'ready') {
+        card.innerHTML = unavailableSetupCard('Butterfly', idea);
+        return;
+    }
+
+    const sideClass = setupSideClass(idea.side);
+    card.innerHTML = `
+        <div class="setup-card-head">
+            <span>Butterfly</span>
+            <em>${idea.method}</em>
+        </div>
+        <strong class="${sideClass}">${idea.side} ${formatTargetPrice(idea.lower)} / ${formatTargetPrice(idea.center)} / ${formatTargetPrice(idea.upper)}</strong>
+        <div class="setup-stat-grid">
+            ${renderSetupStat('Debit', formatTradePoints(idea.estimated_debit), sideClass)}
+            ${renderSetupStat('Max Reward', formatTradePoints(idea.max_profit), 'green-text')}
+            ${renderSetupStat('Risk', formatTradeDollars(idea.estimated_debit_dollars), 'amber-text')}
+            ${renderSetupStat('Tent', `${formatTargetPrice(idea.lower_breakeven)} - ${formatTargetPrice(idea.upper_breakeven)}`)}
+        </div>
+        <p>${idea.rationale}</p>
+    `;
+}
+
+function renderDebitSpreadCard(idea) {
+    const card = document.getElementById('debitSpreadSetupCard');
+    if (!card) return;
+    if (!idea || idea.status !== 'ready') {
+        card.innerHTML = unavailableSetupCard('Debit Spread', idea);
+        return;
+    }
+
+    const sideClass = setupSideClass(idea.side);
+    card.innerHTML = `
+        <div class="setup-card-head">
+            <span>Debit Spread</span>
+            <em>${idea.method}</em>
+        </div>
+        <strong class="${sideClass}">${idea.side} ${formatTargetPrice(idea.long_strike)} / ${formatTargetPrice(idea.short_strike)}</strong>
+        <div class="setup-stat-grid">
+            ${renderSetupStat('Debit', formatTradePoints(idea.estimated_debit), sideClass)}
+            ${renderSetupStat('Max Reward', formatTradePoints(idea.max_profit), 'green-text')}
+            ${renderSetupStat('Breakeven', formatTargetPrice(idea.breakeven))}
+            ${renderSetupStat('Pit Target', formatTargetPrice(idea.target), 'amber-text')}
+        </div>
+        <p>${idea.rationale}</p>
+    `;
+}
+
+function setupMarkerLevels(setups, model) {
+    const ideas = setups?.ideas || {};
+    const fly = ideas.butterfly || {};
+    const spread = ideas.debit_spread || {};
+    const levels = [
+        { label: 'Spot', value: setups?.spot, color: '#ffffff', dash: 'solid' },
+        { label: 'Cockpit Target', value: model?.target, color: '#ff454f', dash: 'dot' },
+        { label: 'Cockpit Invalid', value: model?.invalidation, color: '#f5a524', dash: 'dash' },
+    ];
+
+    if (fly.status === 'ready') {
+        levels.push(
+            { label: 'Fly Body', value: fly.center, color: '#00d37f', dash: 'solid' },
+            { label: 'Fly Wing', value: fly.lower, color: '#00d37f', dash: 'dash' },
+            { label: 'Fly Wing', value: fly.upper, color: '#00d37f', dash: 'dash' },
+        );
+    }
+    if (spread.status === 'ready') {
+        levels.push(
+            { label: 'Spread Target', value: spread.target, color: '#2f9bff', dash: 'solid' },
+            { label: 'Pit Wall', value: spread.pit_left_wall_strike, color: '#b177ff', dash: 'dash' },
+            { label: 'Pit Wall', value: spread.pit_right_wall_strike, color: '#b177ff', dash: 'dash' },
+        );
+    }
+
+    return levels.filter(level => Number.isFinite(Number(level.value))).map(level => ({
+        ...level,
+        value: Number(level.value)
+    }));
+}
+
+function renderSetupProfileChart(setups, model) {
+    const profile = setups?.profile || [];
+    const strikes = profile.map(row => Number(row.strike)).filter(Number.isFinite);
+    if (!strikes.length) return;
+
+    const rows = profile.map(row => ({
+        strike: Number(row.strike),
+        net: Number(row.net_gex || 0) / 1000000,
+        call: Number(row.call_gex || 0) / 1000000,
+        put: Number(row.put_gex || 0) / 1000000,
+    })).sort((a, b) => a.strike - b.strike);
+    const markerLevels = setupMarkerLevels(setups, model);
+    const markerLines = buildMarkerLines(markerLevels, rows.map(row => row.strike));
+    const focusWindow = focusedStrikeWindow(rows.map(row => row.strike), markerLevels, setups.spot);
+    const visibleRows = rowsInStrikeRange(rows, focusWindow.startValue, focusWindow.endValue);
+    const bounds = chartBounds(visibleRows.map(row => row.net), 0.20);
+
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        tooltip: {
+            ...baseChartOptions({ valueFormatter: formatMillionsValue }).tooltip,
+            formatter: profileTooltipFormatter(rows, formatMillionsValue)
+        },
+        grid: { top: 42, left: 58, right: 58, bottom: 46, containLabel: true },
+        dataZoom: zoomDataOptions(focusWindow.startValue, focusWindow.endValue),
+        xAxis: {
+            type: 'value',
+            name: 'Strike',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(12), formatter: formatAxisPrice },
+            axisLine: { onZero: false, lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: CHART_GRID } }
+        },
+        yAxis: {
+            type: 'value',
+            name: 'Net GEX (M)',
+            min: bounds.min,
+            max: bounds.max,
+            nameTextStyle: chartText(12, '#b177ff'),
+            axisLabel: { ...chartText(12, '#b177ff'), formatter: formatMillionsAxis },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: CHART_GRID } }
+        },
+        series: [{
+            name: 'Net GEX',
+            type: 'line',
+            smooth: true,
+            symbol: 'circle',
+            symbolSize: 5,
+            data: rows.map(row => [row.strike, row.net]),
+            lineStyle: { color: '#b177ff', width: 3 },
+            itemStyle: { color: '#b177ff' },
+            areaStyle: { color: 'rgba(177,119,255,0.08)' },
+            markLine: {
+                symbol: 'none',
+                silent: true,
+                data: markerLines
+            }
+        }]
+    };
+
+    setChartOption('setupProfileChart', option);
+    attachClickZoom('setupProfileChart', rows.map(row => row.strike));
+}
+
+function renderTradeSetups(setups, model, symbolData) {
+    if (!setups || setups.error) {
+        showToast('Setups unavailable', setups?.error || 'No setup data', 'info');
+        return;
+    }
+
+    const biasClass = model?.score > 0.22 ? 'green-text' : model?.score < -0.22 ? 'red-text' : 'amber-text';
+    setText('setupSymbol', setups.symbol || symbolData?.snapshot?.symbol || '--');
+    setClassText('setupCockpitBias', model?.title || 'WAIT', biasClass);
+    setText('setupConfidence', model ? `${Math.round((model.confidence || 0) * 100)}%` : '--');
+    setText('setupCockpitTarget', model?.plan?.target || '--');
+    setText('setupTimestamp', setups.timestamp ? new Date(setups.timestamp).toLocaleTimeString() : '--');
+    setText('setupPricingModel', setups.pricing_model || 'Model pricing');
+    setText('setupButterflyLens', setups.backtest_lens?.butterfly || '--');
+    setText('setupSpreadLens', setups.backtest_lens?.debit_spread || '--');
+    setText('setupSampleWarning', setups.backtest_lens?.sample_warning || '--');
+
+    renderButterflyCard(setups.ideas?.butterfly);
+    renderDebitSpreadCard(setups.ideas?.debit_spread);
+    renderSetupProfileChart(setups, model);
 }
 
 function renderMetricStrip(symbolData, model) {
     const callTotal = symbolData.profile
-        .filter(row => row.option_type === 'CALL')
+        .filter(row => optionSide(row) === 'call')
         .reduce((sum, row) => sum + row.gex_value, 0);
     const putTotal = symbolData.profile
-        .filter(row => row.option_type !== 'CALL')
+        .filter(row => optionSide(row) === 'put')
         .reduce((sum, row) => sum + row.gex_value, 0);
     const history = symbolData.history || [];
     const firstHist = history[0]?.total_net_gex || 0;
@@ -852,7 +1777,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
     const strikeMap = {};
     profileData.forEach(row => {
         if (!strikeMap[row.strike_price]) strikeMap[row.strike_price] = { call: 0, put: 0, net: 0 };
-        if (row.option_type === 'CALL') strikeMap[row.strike_price].call += row.gex_value;
+        if (optionSide(row) === 'call') strikeMap[row.strike_price].call += row.gex_value;
         else strikeMap[row.strike_price].put += row.gex_value;
         strikeMap[row.strike_price].net += row.gex_value;
     });
@@ -862,8 +1787,6 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
     const netGexArr = strikes.map(s => strikeMap[s].net / 1000000);
     const callGexArr = strikes.map(s => strikeMap[s].call / 1000000);
     const putGexArr = strikes.map(s => strikeMap[s].put / 1000000);
-    const minY = Math.min(...netGexArr, ...callGexArr, ...putGexArr);
-    const maxY = Math.max(...netGexArr, ...callGexArr, ...putGexArr);
 
     const markerLevels = [
         { label: 'Target', value: model.target, color: '#ff454f', dash: 'dot' },
@@ -871,87 +1794,108 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
         { label: 'Flip', value: model.flip, color: '#ff454f', dash: 'dash' },
         { label: 'Invalidation', value: model.invalidation, color: '#f5a524', dash: 'dash' }
     ].filter(level => Number.isFinite(level.value));
-
-    const shapes = markerLevels.map(level => ({
-        type: 'line',
-        x0: level.value,
-        x1: level.value,
-        y0: 0,
-        y1: 1,
-        xref: 'x',
-        yref: 'paper',
-        line: { color: level.color, width: level.label === 'Spot' ? 2 : 1.5, dash: level.dash }
+    const markerLines = buildMarkerLines(markerLevels, strikes);
+    const focusWindow = focusedStrikeWindow(strikes, markerLevels, spotPrice);
+    const profileRows = strikes.map((strike, i) => ({
+        strike,
+        call: callGexArr[i],
+        put: putGexArr[i],
+        net: netGexArr[i]
     }));
+    const initialRows = rowsInStrikeRange(profileRows, focusWindow.startValue, focusWindow.endValue);
+    const { netBounds, sideBounds } = profileAxisBounds(initialRows);
 
-    const annotations = markerLevels.map(level => ({
-        x: level.value,
-        y: maxY,
-        xref: 'x',
-        yref: 'y',
-        text: `${level.label}<br>${formatTargetPrice(level.value)}`,
-        showarrow: false,
-        yshift: 12,
-        font: { color: level.color, size: 11, family: 'JetBrains Mono' }
-    }));
-
-    const traceCalls = {
-        x: strikes,
-        y: callGexArr,
-        type: 'bar',
-        name: 'Call GEX',
-        marker: { color: '#ff8b1a' },
-        opacity: 0.86
-    };
-    const tracePuts = {
-        x: strikes,
-        y: putGexArr,
-        type: 'bar',
-        name: 'Put GEX',
-        marker: { color: '#2388e8' },
-        opacity: 0.86
-    };
-    const traceLine = {
-        x: strikes,
-        y: netGexArr,
-        type: 'scatter',
-        mode: 'lines',
-        name: 'Net GEX',
-        line: { color: '#b177ff', width: 3, shape: 'spline' }
-    };
-
-    const layout = {
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(0,0,0,0)',
-        font: { color: '#96a3af', family: 'JetBrains Mono', size: 11 },
-        margin: { t: 42, l: 62, r: 62, b: 48 },
-        hovermode: 'x unified',
-        barmode: 'relative',
-        showlegend: false,
-        xaxis: {
-            title: 'Price',
-            gridcolor: 'rgba(122,148,170,0.14)',
-            zerolinecolor: 'rgba(255,255,255,0.25)',
-            range: [Math.min(...strikes), Math.max(...strikes)]
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        tooltip: {
+            ...baseChartOptions({ valueFormatter: formatMillionsValue }).tooltip,
+            formatter: profileTooltipFormatter(profileRows, formatMillionsValue)
         },
-        yaxis: {
-            title: 'GEX (Millions USD)',
-            gridcolor: 'rgba(122,148,170,0.14)',
-            zerolinecolor: 'rgba(255,255,255,0.35)',
-            range: [minY * 1.18, maxY * 1.22]
+        grid: { top: 42, left: 58, right: 62, bottom: 46, containLabel: true },
+        dataZoom: zoomDataOptions(focusWindow.startValue, focusWindow.endValue),
+        legend: { show: false },
+        xAxis: {
+            type: 'value',
+            name: 'Strike',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(12), formatter: formatAxisPrice },
+            axisLine: { onZero: false, lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: CHART_GRID } }
         },
-        shapes,
-        annotations
+        yAxis: [
+            {
+                type: 'value',
+                name: 'Net GEX (M)',
+                min: netBounds.min,
+                max: netBounds.max,
+                nameTextStyle: chartText(12, '#b177ff'),
+                axisLabel: { ...chartText(12, '#b177ff'), formatter: formatMillionsAxis },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { lineStyle: { color: CHART_GRID } }
+            },
+            {
+                type: 'value',
+                name: 'Call / Put GEX (M)',
+                min: sideBounds.min,
+                max: sideBounds.max,
+                nameTextStyle: chartText(12),
+                axisLabel: { ...chartText(12), formatter: formatMillionsAxis },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { show: false }
+            }
+        ],
+        series: [
+            {
+                name: 'Call GEX',
+                type: 'bar',
+                yAxisIndex: 1,
+                stack: 'gex',
+                data: strikes.map((s, i) => [s, callGexArr[i]]),
+                itemStyle: { color: '#ff8b1a', opacity: 0.86 },
+                barMinHeight: 2,
+                barWidth: 12
+            },
+            {
+                name: 'Put GEX',
+                type: 'bar',
+                yAxisIndex: 1,
+                stack: 'gex',
+                data: strikes.map((s, i) => [s, putGexArr[i]]),
+                itemStyle: { color: '#2388e8', opacity: 0.86 },
+                barMinHeight: 2,
+                barWidth: 12
+            },
+            {
+                name: 'Net GEX',
+                type: 'line',
+                yAxisIndex: 0,
+                smooth: true,
+                symbol: 'none',
+                data: strikes.map((s, i) => [s, netGexArr[i]]),
+                lineStyle: { color: '#b177ff', width: 3 },
+                markLine: {
+                    symbol: 'none',
+                    silent: true,
+                    data: markerLines
+                }
+            }
+        ]
     };
 
-    Plotly.newPlot('cockpitProfileChart', [traceCalls, tracePuts, traceLine], layout, { displayModeBar: false, responsive: true });
+    setChartOption('cockpitProfileChart', option);
+    attachProfileAxisAutoscale('cockpitProfileChart', profileRows);
+    attachClickZoom('cockpitProfileChart', strikes);
 }
 
 function nearestAnySignificant(rows, spot, direction) {
-    const maxAbs = rows.reduce((max, row) => Math.max(max, Math.abs(row.netGex)), 0);
+    const strength = row => Math.max(Math.abs(row.netGex || 0), Math.abs(row.callGex || 0), Math.abs(row.putGex || 0));
+    const maxAbs = rows.reduce((max, row) => Math.max(max, strength(row)), 0);
     const threshold = maxAbs * 0.18;
     const candidates = rows
         .filter(row => direction === 1 ? row.strike > spot : row.strike < spot)
-        .filter(row => Math.abs(row.netGex) >= threshold)
+        .filter(row => strength(row) >= threshold)
         .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
     return candidates[0] || null;
 }
@@ -1222,33 +2166,53 @@ function renderTiltChart(tiltData) {
     const vals = tiltData.map(d => d.net_gex); // This is now Effective GEX from backend
     const colors = vals.map(v => v >= 0 ? '#00d26a' : '#f85149');
 
-    const trace = {
-        x: symbols,
-        y: vals,
-        type: 'bar',
-        marker: { color: colors },
-        text: vals.map(v => `$${(v / 1000000).toFixed(1)}M`), // 1 decimal for smaller effective numbers
-        textposition: 'auto'
+    const option = {
+        ...baseChartOptions(),
+        grid: { top: 20, left: 42, right: 20, bottom: 34, containLabel: true },
+        dataZoom: zoomDataOptions(),
+        xAxis: {
+            type: 'category',
+            data: symbols,
+            axisLabel: chartText(12),
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { show: false }
+        },
+        yAxis: {
+            type: 'value',
+            name: 'Effective GEX ($ per 1% move)',
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(12), formatter: formatCompactNumber },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } }
+        },
+        series: [{
+            name: 'Effective GEX',
+            type: 'bar',
+            data: vals.map((v, i) => ({
+                value: v,
+                itemStyle: { color: colors[i] },
+                label: {
+                    show: true,
+                    position: v >= 0 ? 'top' : 'bottom',
+                    formatter: `$${(v / 1000000).toFixed(1)}M`,
+                    color: '#f2f5f8',
+                    fontFamily: NUMERIC_FONT,
+                    fontSize: 12,
+                    fontWeight: 700
+                }
+            })),
+            barWidth: 24
+        }]
     };
 
-    const layout = {
-        paper_bgcolor: 'rgba(0,0,0,0)',
-        plot_bgcolor: 'rgba(0,0,0,0)',
-        font: { color: '#8b949e', family: 'Inter' },
-        margin: { t: 20, l: 40, r: 20, b: 30 },
-        xaxis: { gridcolor: '#30363d' },
-        yaxis: {
-            gridcolor: '#30363d',
-            title: 'Effective GEX ($ per 1% move)'
-        }
-    };
-
-    Plotly.newPlot('tiltChart', [trace], layout, { displayModeBar: false, responsive: true });
+    setChartOption('tiltChart', option);
+    attachClickZoom('tiltChart', symbols, 4);
 }
 
 
 
 init();
+window.addEventListener('resize', () => resizeCharts());
 
 // --- Tooltip Logic ---
 document.addEventListener('mouseover', function (e) {
@@ -1300,6 +2264,7 @@ function handle_backend_event(event) {
 
     // 2. Handle Specifics
     if (event.type === 'data_refresh') {
+        updateBackendStatus();
         // Trigger UI update if it matches current symbol or just notify
         const currentSymbol = document.getElementById('symbolSelector').value;
         if (event.payload.symbol === currentSymbol) {
@@ -1307,6 +2272,11 @@ function handle_backend_event(event) {
             loadSymbol(); // Reloads data from DB
             showToast("Data Updated", `New data available for ${event.payload.symbol}`, "info");
         }
+    }
+    else if (event.type === 'MARKET_UPDATE') {
+        updateBackendStatus();
+        loadSymbol();
+        showToast("Backend Cycle Complete", "Dashboard loaded the latest local snapshot.", "info");
     }
     else if (event.type === 'magnet_change') {
         const p = event.payload;
@@ -1342,6 +2312,9 @@ function addNotificationToPanel(event) {
     } else if (event.type === 'data_refresh') {
         title = "Data Update";
         body = `Refresh for ${event.payload.symbol}`;
+    } else if (event.type === 'MARKET_UPDATE') {
+        title = "Backend Cycle";
+        body = "Market overview and Ninja payload updated";
     }
 
     div.className = `activity-item ${typeClass}`;

@@ -39,7 +39,7 @@ copy .env.example .env
 ```ini
 PUBLIC_API_KEY=your_api_key_here
 PUBLIC_ACCOUNT_ID=your_account_id_here
-API_RATE_LIMIT=60
+API_RATE_LIMIT_PER_SECOND=10
 ```
 
 ### 2. Application Settings (`settings.json`)
@@ -48,7 +48,10 @@ The dashboard behavior is controlled by `settings.json`.
 ```json
 {
   "theme": "dark",
-  "backend_update_delay": 180,
+  "api_rate_limit_per_second": 10,
+  "api_rate_limit_utilization": 0.6,
+  "min_poll_interval_seconds": 15,
+  "max_poll_interval_seconds": 120,
   "raw_retention_days": 30,
   "weights": {
     "SPY": 1.0,
@@ -60,7 +63,9 @@ The dashboard behavior is controlled by `settings.json`.
 ```
 *   **symbols**: The list of tickers `publicData.py` will track.
 *   **weights**: How much influence each symbol has on the global "Market Compass" score.
-*   **backend_update_delay**: Seconds between polling collector runs.
+*   **api_rate_limit_per_second**: Public.com request ceiling used by the collector.
+*   **api_rate_limit_utilization**: Fraction of that ceiling the collector is allowed to plan around.
+*   **min_poll_interval_seconds** / **max_poll_interval_seconds**: Bounds for the collector's calculated next poll delay.
 *   **raw_retention_days**: Number of days to keep raw option rows before compaction.
 
 > [!NOTE]
@@ -68,20 +73,20 @@ The dashboard behavior is controlled by `settings.json`.
 
 ## Running the System
 
-### Step 1: Start the Dashboard
-This launches the UI and the Event Listener.
+### Step 1: Start the App
+This launches the UI, Event Listener, NinjaTrader bridge, and Public.com collector. The collector is stopped when the dashboard exits.
 ```bash
-python appy.py
+python app.py
 ```
 
-### Step 2: Start Data Collection (Separate Terminal)
-This begins the polling loop.
+### Optional: Start Data Collection By Itself
+Use this only for headless collection or debugging.
 ```bash
 python publicData.py
 ```
 
 > [!TIP]
-> Use `python publicData.py --once` for a single collector run. The Dashboard UI also uses this one-off mode for manual refreshes.
+> Use `python publicData.py --once` for a single collector run.
 
 ### Resetting the Local Database
 If the database schema changes or you want a clean start, run:

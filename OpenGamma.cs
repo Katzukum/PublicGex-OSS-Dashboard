@@ -44,12 +44,36 @@ namespace NinjaTrader.NinjaScript.Indicators
         // Index price captured on update (not on tick)
         private double indexPrice = 0;
         private double futuresPrice = 0;
+        private double rawSpread = 0;
         private double spread = 0;
+        private bool jmaSpreadInitialized = false;
+        private double jmaSpreadValue = 0;
+        private double jmaSpreadE0 = 0;
+        private double jmaSpreadE1 = 0;
+        private double jmaSpreadE2 = 0;
         private string indexSymbol = "";
         private double acceleration = 0;
+        private string dashboardSymbol = "";
+        private string dashboardBias = "";
+        private double dashboardBiasScore = double.NaN;
+        private double dashboardConfidence = double.NaN;
+        private double dashboardTarget = double.NaN;
+        private double dashboardInvalidation = double.NaN;
+        private double dashboardFlip = double.NaN;
+        private string dashboardContext = "";
+        private string dashboardMarket = "";
+        private string dashboardDealer = "";
+        private string dashboardLiquidity = "";
+        private string dashboardWhale = "";
+        private string dashboardEdgeSummary = "";
+        private string dashboardEdgeSource = "";
+        private double dashboardEdgeWinRate = double.NaN;
+        private double dashboardEdgeMedianMove = double.NaN;
+        private double dashboardEdgeSample = double.NaN;
 
         // Use OnBarUpdate to capture price safely
         private double lastClosePrice = 0;
+        private double jmaClosePrice = 0;
 
         // Gamma S/R levels (adjusted for futures)
         private List<GammaLevel> gammaLevels = new List<GammaLevel>();
@@ -64,6 +88,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public double Gex;
             public double FuturesPrice; // Strike adjusted by spread
             public bool IsResistance;
+            public bool IsKeyLevel;
         }
         #endregion
 
@@ -81,9 +106,15 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 ListenPort = 5010;
                 GammaBarsOnRight = false;
+                JmaTimeSeriesMinutes = 2;
+                JmaLength = 13;
+                JmaPhase = 78;
+                JmaPower = 2;
+                JmaResetThreshold = 25;
             }
             else if (State == State.Configure)
             {
+                AddDataSeries(BarsPeriodType.Minute, JmaTimeSeriesMinutes);
             }
             else if (State == State.DataLoaded)
             {
@@ -204,7 +235,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     currentRegime = newRegime;
 
-                    int.TryParse(ExtractJsonValue(json, "regime_code"), out int code);
+                    int.TryParse(ExtractJsonValue(json, "regime_code"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int code);
                     regimeCode = code;
 
                     lastUpdate = DateTime.Now.ToString("HH:mm:ss");
@@ -212,71 +243,155 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // Get index price from broadcast payload (not from NinjaTrader)
                     if (indexSymbol == "NDX")
                     {
-                        double.TryParse(ExtractJsonValue(json, "spot_ndx"), out double ndx);
+                        double.TryParse(ExtractJsonValue(json, "spot_ndx"), NumberStyles.Float, CultureInfo.InvariantCulture, out double ndx);
                         indexPrice = ndx;
                     }
                     else if (indexSymbol == "SPX")
                     {
-                        double.TryParse(ExtractJsonValue(json, "spot_spx"), out double spx);
+                        double.TryParse(ExtractJsonValue(json, "spot_spx"), NumberStyles.Float, CultureInfo.InvariantCulture, out double spx);
                         indexPrice = spx;
                     }
 
                     if (indexSymbol == "NDX")
                     {
-                        double.TryParse(ExtractJsonValue(json, "accel_ndx"), out double accel);
+                        double.TryParse(ExtractJsonValue(json, "accel_ndx"), NumberStyles.Float, CultureInfo.InvariantCulture, out double accel);
                         acceleration = accel;
                     }
                     else if (indexSymbol == "SPX")
                     {
-                        double.TryParse(ExtractJsonValue(json, "accel_spx"), out double accel);
+                        double.TryParse(ExtractJsonValue(json, "accel_spx"), NumberStyles.Float, CultureInfo.InvariantCulture, out double accel);
                         acceleration = accel;
                     }
+
+                    string dashValue = ExtractDashboardValue(json, "dashboard_symbol");
+                    if (dashValue != null)
+                        dashboardSymbol = string.IsNullOrEmpty(dashValue) ? indexSymbol : dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_bias");
+                    if (dashValue != null)
+                        dashboardBias = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_context");
+                    if (dashValue != null)
+                        dashboardContext = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_market");
+                    if (dashValue != null)
+                        dashboardMarket = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_dealer");
+                    if (dashValue != null)
+                        dashboardDealer = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_liquidity");
+                    if (dashValue != null)
+                        dashboardLiquidity = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_whale");
+                    if (dashValue != null)
+                        dashboardWhale = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_edge_summary");
+                    if (dashValue != null)
+                        dashboardEdgeSummary = dashValue;
+                    dashValue = ExtractDashboardValue(json, "dashboard_edge_source");
+                    if (dashValue != null)
+                        dashboardEdgeSource = dashValue;
+
+                    if (TryExtractDashboardDouble(json, "dashboard_bias_score", out double biasScore))
+                        dashboardBiasScore = biasScore;
+                    if (TryExtractDashboardDouble(json, "dashboard_confidence", out double confidenceScore))
+                        dashboardConfidence = confidenceScore;
+                    if (TryExtractDashboardDouble(json, "dashboard_target", out double target))
+                        dashboardTarget = target;
+                    if (TryExtractDashboardDouble(json, "dashboard_invalidation", out double invalidation))
+                        dashboardInvalidation = invalidation;
+                    if (TryExtractDashboardDouble(json, "dashboard_flip", out double flip))
+                        dashboardFlip = flip;
+                    if (TryExtractDashboardDouble(json, "dashboard_edge_win_rate", out double edgeWinRate))
+                        dashboardEdgeWinRate = edgeWinRate;
+                    if (TryExtractDashboardDouble(json, "dashboard_edge_median_move", out double edgeMedianMove))
+                        dashboardEdgeMedianMove = edgeMedianMove;
+                    if (TryExtractDashboardDouble(json, "dashboard_edge_sample", out double edgeSample))
+                        dashboardEdgeSample = edgeSample;
                 }
 
                 // Capture futures price and calc spread on UI thread
+                string jsonCopy = json;
+                Action processChartUpdate = () =>
+                {
+                    try
+                    {
+                        bool levelsSeen;
+                        int levelCount;
+                        lock (lockObj)
+                        {
+                            // Use cached close price from OnBarUpdate when it is available.
+                            // The incoming dashboard payload should still update levels/cache even
+                            // if NinjaTrader has not delivered a chart price yet.
+                            if (lastClosePrice > 0)
+                                futuresPrice = lastClosePrice;
+
+                            // Feed the Jurik average from the configured secondary
+                            // minute series rather than the primary chart series.
+                            if (jmaClosePrice > 0 && indexPrice > 0)
+                            {
+                                rawSpread = indexPrice - jmaClosePrice;
+                                spread = UpdateJmaSpread(rawSpread);
+                            }
+
+                            // Parse and adjust gamma levels on every valid payload, using the
+                            // latest known spread when the current chart price is not ready yet.
+                            levelsSeen = ParseGammaLevels(jsonCopy);
+                            levelCount = gammaLevels.Count;
+
+                            Print($"OpenGamma: {currentRegime} | {indexSymbol}: {Math.Round(indexPrice)} | Futures: {Math.Round(futuresPrice)} | Raw Spread: {rawSpread:F2} | JMA Spread: {spread:F2} | Levels: {(levelsSeen ? levelCount.ToString() : "unchanged")}");
+                        }
+
+                        if (ChartControl != null)
+                            ForceRefresh();
+                    }
+                    catch (Exception ex)
+                    {
+                        Print("OpenGamma: Failed to process update - " + ex.Message);
+                    }
+                };
+
                 if (ChartControl != null)
                 {
-                    // Cache json for use in dispatcher
-                    string jsonCopy = json;
-
-                    ChartControl.Dispatcher.InvokeAsync(() =>
-                    {
-                        try
-                        {
-                            lock (lockObj)
-                            {
-                                // Use cached close price from OnBarUpdate
-                                if (lastClosePrice > 0)
-                                {
-                                    // Cache futures price for logging
-                                    futuresPrice = lastClosePrice;
-
-                                    if (indexPrice > 0)
-                                    {
-                                        // Use integer spread (Index - Futures)
-                                        // Round to nearest integer before subtracting
-                                        spread = Math.Round(indexPrice) - Math.Round(futuresPrice);
-                                    }
-
-                                    // Parse and adjust gamma levels
-                                    ParseGammaLevels(jsonCopy);
-
-                                    Print($"OpenGamma: {currentRegime} | {indexSymbol}: {Math.Round(indexPrice)} | Futures: {Math.Round(futuresPrice)} | Spread: {spread}");
-                                    ForceRefresh();
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Print("OpenGamma: Failed to process update - " + ex.Message);
-                        }
-                    });
+                    ChartControl.Dispatcher.InvokeAsync(processChartUpdate);
+                }
+                else
+                {
+                    processChartUpdate();
                 }
             }
             catch (Exception ex)
             {
                 Print("OpenGamma: Parse error - " + ex.Message);
             }
+        }
+
+        private string ExtractDashboardValue(string json, string key)
+        {
+            if (!string.IsNullOrEmpty(indexSymbol))
+            {
+                string symbolValue = ExtractJsonValue(json, key + "_" + indexSymbol.ToLowerInvariant());
+                if (symbolValue != null)
+                    return symbolValue;
+            }
+
+            return ExtractJsonValue(json, key);
+        }
+
+        private bool TryExtractDashboardDouble(string json, string key, out double result)
+        {
+            result = double.NaN;
+            string value = ExtractDashboardValue(json, key);
+            if (value == null)
+                return false;
+
+            if (string.Equals(value, "null", StringComparison.OrdinalIgnoreCase) || value.Length == 0)
+                return true;
+
+            if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result))
+                return true;
+
+            result = double.NaN;
+            return true;
         }
 
         private string ExtractJsonValue(string json, string key)
@@ -307,23 +422,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void ParseGammaLevels(string json)
+        private bool ParseGammaLevels(string json)
         {
             string levelsKey = indexSymbol == "NDX" ? "gamma_levels_ndx" : "gamma_levels_spx";
-
-            gammaLevels.Clear();
 
             // Find key manually but robustly
             int keyIdx = json.IndexOf("\"" + levelsKey + "\"");
             if (keyIdx < 0)
             {
                Print($"OpenGamma: Key '{levelsKey}' not found in JSON.");
-               return;
+               return false;
             }
 
             // Find start of array value [
             int arrStart = json.IndexOf('[', keyIdx);
-            if (arrStart < 0) return;
+            if (arrStart < 0) return false;
 
             // Find matching closing bracket ]
             int arrEnd = -1;
@@ -342,10 +455,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            if (arrEnd < 0) return;
+            if (arrEnd < 0) return false;
 
             string arrContent = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
-            if (string.IsNullOrWhiteSpace(arrContent)) return;
+            gammaLevels.Clear();
+            if (string.IsNullOrWhiteSpace(arrContent))
+            {
+                Print($"OpenGamma: Parsed 0 levels for {levelsKey}");
+                SaveGammaCache();
+                return true;
+            }
 
             // Parse individual objects {...}
             int objStart = 0;
@@ -371,8 +490,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            Print($"OpenGamma: Parsed {gammaLevels.Count} levels for {levelsKey}");
+            int keyCount = gammaLevels.Count(l => l.IsKeyLevel);
+            Print($"OpenGamma: Parsed {gammaLevels.Count} levels for {levelsKey} ({keyCount} key, {gammaLevels.Count - keyCount} hollow)");
             SaveGammaCache();
+            return true;
         }
 
         private void ParseGammaLevelObject(string objJson)
@@ -384,6 +505,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Robust value extraction
                 strike = ExtractNum(objJson, "strike");
                 gex = ExtractNum(objJson, "gex");
+                bool isKeyLevel = ExtractBool(objJson, "is_key_level", true);
 
                 if (strike > 0)
                 {
@@ -394,11 +516,58 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Strike = strike,
                         Gex = gex,
                         FuturesPrice = futuresLevel,
-                        IsResistance = gex > 0
+                        IsResistance = gex > 0,
+                        IsKeyLevel = isKeyLevel
                     });
                 }
             }
             catch (Exception ex) { Print("OpenGamma: Error parsing level obj: " + ex.Message); }
+        }
+
+        private double UpdateJmaSpread(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+                return spread;
+
+            if (!jmaSpreadInitialized)
+            {
+                ResetJmaSpread(value);
+                return jmaSpreadValue;
+            }
+
+            double resetThreshold = Math.Max(0, JmaResetThreshold);
+            if (resetThreshold > 0 && Math.Abs(value - jmaSpreadValue) > resetThreshold)
+            {
+                ResetJmaSpread(value);
+                return jmaSpreadValue;
+            }
+
+            int length = Math.Max(1, JmaLength);
+            int phase = Math.Max(-100, Math.Min(100, JmaPhase));
+            double power = Math.Max(1, JmaPower);
+
+            double phaseRatio = phase / 100.0 + 1.5;
+            double beta = 0.45 * (length - 1) / (0.45 * (length - 1) + 2.0);
+            double alpha = Math.Pow(beta, power);
+            double oneMinusAlpha = 1.0 - alpha;
+
+            jmaSpreadE0 = oneMinusAlpha * value + alpha * jmaSpreadE0;
+            jmaSpreadE1 = (value - jmaSpreadE0) * (1.0 - beta) + beta * jmaSpreadE1;
+            jmaSpreadE2 = (jmaSpreadE0 + phaseRatio * jmaSpreadE1 - jmaSpreadValue)
+                * oneMinusAlpha * oneMinusAlpha
+                + alpha * alpha * jmaSpreadE2;
+            jmaSpreadValue += jmaSpreadE2;
+
+            return jmaSpreadValue;
+        }
+
+        private void ResetJmaSpread(double value)
+        {
+            jmaSpreadInitialized = true;
+            jmaSpreadValue = value;
+            jmaSpreadE0 = value;
+            jmaSpreadE1 = 0;
+            jmaSpreadE2 = 0;
         }
 
         private double ExtractNum(string json, string key)
@@ -416,10 +585,44 @@ namespace NinjaTrader.NinjaScript.Indicators
             while (valEnd < json.Length && (char.IsDigit(json[valEnd]) || json[valEnd] == '.' || json[valEnd] == '-' || json[valEnd] == 'e' || json[valEnd] == 'E' || json[valEnd] == '+'))
                 valEnd++;
 
-            if (double.TryParse(json.Substring(valStart, valEnd - valStart), out double result))
+            if (double.TryParse(json.Substring(valStart, valEnd - valStart), NumberStyles.Float, CultureInfo.InvariantCulture, out double result))
                 return result;
 
             return 0;
+        }
+
+        private bool ExtractBool(string json, string key, bool defaultValue)
+        {
+            int keyIdx = json.IndexOf("\"" + key + "\"");
+            if (keyIdx < 0) return defaultValue;
+
+            int valStart = keyIdx + key.Length + 3; // quote + key + quote + colon
+            while (valStart < json.Length && char.IsWhiteSpace(json[valStart]))
+                valStart++;
+
+            if (valStart >= json.Length) return defaultValue;
+
+            string token;
+            if (json[valStart] == '"')
+            {
+                int endIdx = json.IndexOf('"', valStart + 1);
+                if (endIdx < 0) return defaultValue;
+                token = json.Substring(valStart + 1, endIdx - valStart - 1);
+            }
+            else
+            {
+                int valEnd = valStart;
+                while (valEnd < json.Length && json[valEnd] != ',' && json[valEnd] != '}')
+                    valEnd++;
+                token = json.Substring(valStart, valEnd - valStart).Trim();
+            }
+
+            if (string.Equals(token, "true", StringComparison.OrdinalIgnoreCase) || token == "1")
+                return true;
+            if (string.Equals(token, "false", StringComparison.OrdinalIgnoreCase) || token == "0")
+                return false;
+
+            return defaultValue;
         }
 
         private string GetCachePath()
@@ -440,10 +643,18 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             try
             {
-                if (string.IsNullOrEmpty(indexSymbol) || gammaLevels.Count == 0)
+                if (string.IsNullOrEmpty(indexSymbol))
                     return;
 
                 string cachePath = GetCachePath();
+
+                if (gammaLevels.Count == 0)
+                {
+                    if (File.Exists(cachePath))
+                        File.Delete(cachePath);
+                    return;
+                }
+
                 Directory.CreateDirectory(Path.GetDirectoryName(cachePath));
 
                 using (StreamWriter writer = new StreamWriter(cachePath, false, Encoding.UTF8))
@@ -466,7 +677,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                             level.Strike.ToString("R", CultureInfo.InvariantCulture),
                             level.Gex.ToString("R", CultureInfo.InvariantCulture),
                             level.FuturesPrice.ToString("R", CultureInfo.InvariantCulture),
-                            level.IsResistance ? "1" : "0"));
+                            level.IsResistance ? "1" : "0",
+                            level.IsKeyLevel ? "1" : "0"));
                     }
                 }
             }
@@ -517,7 +729,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         Strike = strike,
                         Gex = gex,
                         FuturesPrice = futuresLevel,
-                        IsResistance = parts[3] == "1"
+                        IsResistance = parts[3] == "1",
+                        IsKeyLevel = parts.Length < 5 || parts[4] == "1"
                     });
                 }
 
@@ -529,6 +742,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     double.TryParse(header[2], NumberStyles.Float, CultureInfo.InvariantCulture, out indexPrice);
                     double.TryParse(header[3], NumberStyles.Float, CultureInfo.InvariantCulture, out futuresPrice);
                     double.TryParse(header[4], NumberStyles.Float, CultureInfo.InvariantCulture, out spread);
+                    rawSpread = spread;
+                    ResetJmaSpread(spread);
                     double.TryParse(header[5], NumberStyles.Float, CultureInfo.InvariantCulture, out acceleration);
                     currentRegime = string.IsNullOrEmpty(header[6]) ? "CACHED" : header[6];
                     previousRegime = string.IsNullOrEmpty(header[7]) ? previousRegime : header[7];
@@ -549,9 +764,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
-            // Capture latest price for use in async updates
-            if (CurrentBar > 0)
-                lastClosePrice = Close[0];
+            lock (lockObj)
+            {
+                if (BarsInProgress == 0 && CurrentBars[0] >= 0)
+                    lastClosePrice = Closes[0][0];
+                else if (BarsInProgress == 1 && CurrentBars[1] >= 0)
+                    jmaClosePrice = Closes[1][0];
+            }
         }
 
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
@@ -561,9 +780,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (chartControl == null) return;
 
             // Get current state thread-safely
-            string regime, prevRegime, update, idxSym;
+            string regime, prevRegime, update, idxSym, dashSymbol, dashBias, dashContext, dashMarket, dashDealer, dashLiquidity, dashWhale, dashEdgeSummary, dashEdgeSource;
             int code;
-            double idx, fut, sprd, accel;
+            double idx, fut, sprd, accel, dashScore, dashConfidence, dashTarget, dashInvalidation, dashFlip, dashEdgeWinRate, dashEdgeMedianMove, dashEdgeSample;
 
             lock (lockObj)
             {
@@ -576,8 +795,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sprd = spread;
                 accel = acceleration;
                 idxSym = indexSymbol;
+                dashSymbol = dashboardSymbol;
+                dashBias = dashboardBias;
+                dashScore = dashboardBiasScore;
+                dashConfidence = dashboardConfidence;
+                dashTarget = dashboardTarget;
+                dashInvalidation = dashboardInvalidation;
+                dashFlip = dashboardFlip;
+                dashContext = dashboardContext;
+                dashMarket = dashboardMarket;
+                dashDealer = dashboardDealer;
+                dashLiquidity = dashboardLiquidity;
+                dashWhale = dashboardWhale;
+                dashEdgeSummary = dashboardEdgeSummary;
+                dashEdgeSource = dashboardEdgeSource;
+                dashEdgeWinRate = dashboardEdgeWinRate;
+                dashEdgeMedianMove = dashboardEdgeMedianMove;
+                dashEdgeSample = dashboardEdgeSample;
             }
 
+            bool drawLegacyPanel = false;
+            if (drawLegacyPanel)
+            {
             // Panel dimensions
             float panelWidth = 180;
             float panelHeight = 100; // Increased height
@@ -660,7 +899,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     List<GammaLevel> levelsForBias;
                     lock (lockObj)
                     {
-                        levelsForBias = new List<GammaLevel>(gammaLevels);
+                        levelsForBias = gammaLevels.Where(l => l.IsKeyLevel).ToList();
                     }
 
                     if (levelsForBias.Count >= 4 && fut > 0)
@@ -720,6 +959,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
+            }
+
             // Draw gamma S/R horizontal lines
             List<GammaLevel> levelsCopy;
             lock (lockObj)
@@ -741,7 +982,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 using (SharpDX.DirectWrite.TextFormat labelFormat = new SharpDX.DirectWrite.TextFormat(
                     Core.Globals.DirectWriteFactory, "Arial", 10))
                 {
-                    foreach (var level in levelsCopy)
+                    foreach (var level in levelsCopy.OrderBy(l => l.IsKeyLevel ? 1 : 0))
                     {
                         // Convert price to Y coordinate
                         float y = chartScale.GetYByValue(level.FuturesPrice);
@@ -770,19 +1011,27 @@ namespace NinjaTrader.NinjaScript.Indicators
                             ? new SharpDX.Color(255, 60, 60, 80)   // Red fill
                             : new SharpDX.Color(60, 255, 60, 80);  // Green fill
 
+                        SharpDX.Color outlineColor = level.IsResistance
+                            ? new SharpDX.Color(255, 60, 60, 190)
+                            : new SharpDX.Color(60, 255, 60, 190);
+
                         // Text color (fully opaque)
                         SharpDX.Color textColor = level.IsResistance
                             ? new SharpDX.Color(255, 100, 100, 255)
                             : new SharpDX.Color(100, 255, 100, 255);
 
                         using (SharpDX.Direct2D1.SolidColorBrush barBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, barColor))
+                        using (SharpDX.Direct2D1.SolidColorBrush outlineBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, outlineColor))
                         using (SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, textColor))
                         {
                             float barX = drawOnRight
                                 ? ChartPanel.X + ChartPanel.W - width
                                 : ChartPanel.X;
                             SharpDX.RectangleF rect = new SharpDX.RectangleF(barX, yTop, width, height);
-                            RenderTarget.FillRectangle(rect, barBrush);
+                            if (level.IsKeyLevel)
+                                RenderTarget.FillRectangle(rect, barBrush);
+                            else
+                                RenderTarget.DrawRectangle(rect, outlineBrush, 1.5f);
 
                             // Draw label with strike price
                             string label = $"{level.Strike:F0}";
@@ -837,6 +1086,137 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
+
+            if (string.IsNullOrEmpty(dashSymbol))
+                dashSymbol = idxSym;
+
+            if (string.IsNullOrEmpty(dashBias))
+                dashBias = regime;
+            if (double.IsNaN(dashConfidence))
+                dashConfidence = 0;
+
+            float dashboardWidth = Math.Max(390f, Math.Min((float)ChartPanel.W * 0.46f, 580f));
+            float dashboardHeight = 122;
+            float dashboardX = ChartPanel.X + 10;
+            float dashboardY = ChartPanel.Y + ChartPanel.H - dashboardHeight - 12;
+
+            using (SharpDX.DirectWrite.TextFormat dashboardTitleFormat = new SharpDX.DirectWrite.TextFormat(
+                Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold,
+                SharpDX.DirectWrite.FontStyle.Normal, 17))
+            using (SharpDX.DirectWrite.TextFormat dashboardMetricFormat = new SharpDX.DirectWrite.TextFormat(
+                Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold,
+                SharpDX.DirectWrite.FontStyle.Normal, 13))
+            using (SharpDX.DirectWrite.TextFormat dashboardLabelFormat = new SharpDX.DirectWrite.TextFormat(
+                Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Normal,
+                SharpDX.DirectWrite.FontStyle.Normal, 8))
+            using (SharpDX.DirectWrite.TextFormat dashboardTextFormat = new SharpDX.DirectWrite.TextFormat(
+                Core.Globals.DirectWriteFactory, "Arial", 9))
+            {
+                SharpDX.RectangleF dashboardRect = new SharpDX.RectangleF(dashboardX - 5, dashboardY - 5, dashboardWidth, dashboardHeight);
+                using (SharpDX.Direct2D1.SolidColorBrush dashboardBrush = new SharpDX.Direct2D1.SolidColorBrush(
+                    RenderTarget, new SharpDX.Color(20, 20, 30, 235)))
+                {
+                    RenderTarget.FillRectangle(dashboardRect, dashboardBrush);
+                }
+
+                SharpDX.Color red = new SharpDX.Color(255, 66, 86, 255);
+                SharpDX.Color green = new SharpDX.Color(55, 230, 120, 255);
+                SharpDX.Color amber = new SharpDX.Color(255, 171, 37, 255);
+                SharpDX.Color cyan = new SharpDX.Color(141, 199, 255, 255);
+                SharpDX.Color white = new SharpDX.Color(245, 248, 255, 255);
+                SharpDX.Color dim = new SharpDX.Color(176, 202, 224, 255);
+                SharpDX.Color biasColor = dashScore < -0.05 ? red : dashScore > 0.05 ? green : amber;
+
+                using (SharpDX.Direct2D1.SolidColorBrush whiteBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, white))
+                using (SharpDX.Direct2D1.SolidColorBrush dimBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, dim))
+                using (SharpDX.Direct2D1.SolidColorBrush cyanBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, cyan))
+                using (SharpDX.Direct2D1.SolidColorBrush biasBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, biasColor))
+                using (SharpDX.Direct2D1.SolidColorBrush amberBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, amber))
+                {
+                    float contentX = dashboardX + 10;
+                    float contentY = dashboardY + 8;
+                    float topY = contentY;
+                    float metricY = contentY + 12;
+                    float tileY = dashboardY + 58;
+                    float symbolWidth = 138;
+                    float metricWidth = Math.Max(48f, (dashboardWidth - symbolWidth - 22) / 5f);
+                    float metricX = contentX + symbolWidth;
+
+                    RenderTarget.DrawText(string.IsNullOrEmpty(dashSymbol) ? "NDX" : dashSymbol, dashboardTitleFormat,
+                        new SharpDX.RectangleF(contentX, contentY, 50, 22), whiteBrush);
+
+                    RenderTarget.DrawText(dashContext, dashboardTextFormat,
+                        new SharpDX.RectangleF(contentX, contentY + 24, symbolWidth - 10, 30), dimBrush);
+
+                    RenderTarget.DrawText(dashBias, dashboardLabelFormat,
+                        new SharpDX.RectangleF(metricX, topY, metricWidth, 10), biasBrush);
+                    string scoreText = double.IsNaN(dashScore) ? "--" : $"{Math.Round(dashScore * 100):+0;-0;0}%";
+                    RenderTarget.DrawText(scoreText, dashboardMetricFormat,
+                        new SharpDX.RectangleF(metricX, metricY, metricWidth, 18), biasBrush);
+
+                    RenderTarget.DrawText("Conf", dashboardLabelFormat,
+                        new SharpDX.RectangleF(metricX + metricWidth, topY, metricWidth, 10), cyanBrush);
+                    RenderTarget.DrawText($"{Math.Round(dashConfidence * 100):F0}%", dashboardMetricFormat,
+                        new SharpDX.RectangleF(metricX + metricWidth, metricY, metricWidth, 18), whiteBrush);
+
+                    RenderTarget.DrawText("Target", dashboardLabelFormat,
+                        new SharpDX.RectangleF(metricX + (metricWidth * 2), topY, metricWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(double.IsNaN(dashTarget) ? "--" : dashTarget.ToString("F0", CultureInfo.InvariantCulture), dashboardMetricFormat,
+                        new SharpDX.RectangleF(metricX + (metricWidth * 2), metricY, metricWidth, 18), whiteBrush);
+
+                    RenderTarget.DrawText("Invalid", dashboardLabelFormat,
+                        new SharpDX.RectangleF(metricX + (metricWidth * 3), topY, metricWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(double.IsNaN(dashInvalidation) ? "--" : dashInvalidation.ToString("F0", CultureInfo.InvariantCulture), dashboardMetricFormat,
+                        new SharpDX.RectangleF(metricX + (metricWidth * 3), metricY, metricWidth, 18), amberBrush);
+
+                    RenderTarget.DrawText("Flip", dashboardLabelFormat,
+                        new SharpDX.RectangleF(metricX + (metricWidth * 4), topY, metricWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(double.IsNaN(dashFlip) ? "--" : dashFlip.ToString("F0", CultureInfo.InvariantCulture), dashboardMetricFormat,
+                        new SharpDX.RectangleF(metricX + (metricWidth * 4), metricY, metricWidth, 18), whiteBrush);
+
+                    float tileGap = 6;
+                    float tileWidth = (dashboardWidth - 20 - (tileGap * 3)) / 4f;
+                    string marketValue = (string.IsNullOrEmpty(dashMarket) ? $"Market: {regime}" : dashMarket).Replace("Market: ", "");
+                    string dealerValue = (string.IsNullOrEmpty(dashDealer) ? $"Dealer: {prevRegime}" : dashDealer).Replace("Dealer: ", "");
+                    string liquidityValue = (string.IsNullOrEmpty(dashLiquidity) ? $"{idxSym}: {idx:F0} | Spread: {sprd:+0;-0;0}" : dashLiquidity).Replace("Liquidity: ", "");
+                    string whaleValue = (string.IsNullOrEmpty(dashWhale) ? $"Updated: {update}" : dashWhale).Replace("Whale: ", "");
+                    string edgeValue = dashEdgeSummary;
+                    if (string.IsNullOrEmpty(edgeValue))
+                    {
+                        string edgeWin = double.IsNaN(dashEdgeWinRate) ? "--" : $"{Math.Round(dashEdgeWinRate * 100):F0}%";
+                        string edgeSample = double.IsNaN(dashEdgeSample) ? "0" : dashEdgeSample.ToString("F0", CultureInfo.InvariantCulture);
+                        string edgeMove = double.IsNaN(dashEdgeMedianMove) ? "--" : $"{dashEdgeMedianMove:+0;-0;0}";
+                        edgeValue = $"30m {edgeWin} n={edgeSample} med {edgeMove}";
+                    }
+                    string edgeSource = string.IsNullOrEmpty(dashEdgeSource) ? "Empirical Edge" : $"Empirical Edge ({dashEdgeSource})";
+
+                    RenderTarget.DrawText("Market Signal", dashboardLabelFormat,
+                        new SharpDX.RectangleF(contentX, tileY, tileWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(marketValue, dashboardTextFormat,
+                        new SharpDX.RectangleF(contentX, tileY + 11, tileWidth, 16), biasBrush);
+
+                    RenderTarget.DrawText("Dealer Positioning", dashboardLabelFormat,
+                        new SharpDX.RectangleF(contentX + tileWidth + tileGap, tileY, tileWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(dealerValue, dashboardTextFormat,
+                        new SharpDX.RectangleF(contentX + tileWidth + tileGap, tileY + 11, tileWidth, 16), biasBrush);
+
+                    RenderTarget.DrawText("Gamma Liquidity", dashboardLabelFormat,
+                        new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 2), tileY, tileWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(liquidityValue, dashboardTextFormat,
+                        new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 2), tileY + 11, tileWidth, 16), biasBrush);
+
+                    RenderTarget.DrawText("Whale Flow", dashboardLabelFormat,
+                        new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 3), tileY, tileWidth, 10), cyanBrush);
+                    RenderTarget.DrawText(whaleValue, dashboardTextFormat,
+                        new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 3), tileY + 11, tileWidth, 16), biasBrush);
+
+                    float edgeY = tileY + 34;
+                    RenderTarget.DrawText(edgeSource, dashboardLabelFormat,
+                        new SharpDX.RectangleF(contentX, edgeY, dashboardWidth - 20, 10), cyanBrush);
+                    RenderTarget.DrawText(edgeValue, dashboardTextFormat,
+                        new SharpDX.RectangleF(contentX, edgeY + 12, dashboardWidth - 20, 18), whiteBrush);
+                }
+            }
         }
 
         #region Properties
@@ -848,6 +1228,31 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Gamma Bars On Right", Order = 1, GroupName = "Visual")]
         public bool GammaBarsOnRight { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, int.MaxValue)]
+        [Display(Name = "Time Series (Minutes)", Order = 1, GroupName = "JMA Spread")]
+        public int JmaTimeSeriesMinutes { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, int.MaxValue)]
+        [Display(Name = "Length - JMA", Order = 2, GroupName = "JMA Spread")]
+        public int JmaLength { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(-100, 100)]
+        [Display(Name = "Phase - JMA", Order = 3, GroupName = "JMA Spread")]
+        public int JmaPhase { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, int.MaxValue)]
+        [Display(Name = "Power - JMA", Order = 4, GroupName = "JMA Spread")]
+        public int JmaPower { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, double.MaxValue)]
+        [Display(Name = "Reset Threshold - JMA", Order = 5, GroupName = "JMA Spread")]
+        public double JmaResetThreshold { get; set; }
         #endregion
     }
 }
@@ -861,26 +1266,36 @@ namespace NinjaTrader.NinjaScript.Indicators
 		private OpenGamma[] cacheOpenGamma;
 		public OpenGamma OpenGamma(int listenPort)
 		{
-			return OpenGamma(Input, listenPort);
+			return OpenGamma(Input, listenPort, false, 2, 13, 78, 2, 25);
 		}
 
 		public OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight)
 		{
-			return OpenGamma(Input, listenPort, gammaBarsOnRight);
+			return OpenGamma(Input, listenPort, gammaBarsOnRight, 2, 13, 78, 2, 25);
+		}
+
+		public OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight, int jmaTimeSeriesMinutes, int jmaLength, int jmaPhase, int jmaPower, double jmaResetThreshold)
+		{
+			return OpenGamma(Input, listenPort, gammaBarsOnRight, jmaTimeSeriesMinutes, jmaLength, jmaPhase, jmaPower, jmaResetThreshold);
 		}
 
 		public OpenGamma OpenGamma(ISeries<double> input, int listenPort)
 		{
-			return OpenGamma(input, listenPort, false);
+			return OpenGamma(input, listenPort, false, 2, 13, 78, 2, 25);
 		}
 
 		public OpenGamma OpenGamma(ISeries<double> input, int listenPort, bool gammaBarsOnRight)
 		{
+			return OpenGamma(input, listenPort, gammaBarsOnRight, 2, 13, 78, 2, 25);
+		}
+
+		public OpenGamma OpenGamma(ISeries<double> input, int listenPort, bool gammaBarsOnRight, int jmaTimeSeriesMinutes, int jmaLength, int jmaPhase, int jmaPower, double jmaResetThreshold)
+		{
 			if (cacheOpenGamma != null)
 				for (int idx = 0; idx < cacheOpenGamma.Length; idx++)
-					if (cacheOpenGamma[idx] != null && cacheOpenGamma[idx].ListenPort == listenPort && cacheOpenGamma[idx].GammaBarsOnRight == gammaBarsOnRight && cacheOpenGamma[idx].EqualsInput(input))
+					if (cacheOpenGamma[idx] != null && cacheOpenGamma[idx].ListenPort == listenPort && cacheOpenGamma[idx].GammaBarsOnRight == gammaBarsOnRight && cacheOpenGamma[idx].JmaTimeSeriesMinutes == jmaTimeSeriesMinutes && cacheOpenGamma[idx].JmaLength == jmaLength && cacheOpenGamma[idx].JmaPhase == jmaPhase && cacheOpenGamma[idx].JmaPower == jmaPower && cacheOpenGamma[idx].JmaResetThreshold == jmaResetThreshold && cacheOpenGamma[idx].EqualsInput(input))
 						return cacheOpenGamma[idx];
-			return CacheIndicator<OpenGamma>(new OpenGamma(){ ListenPort = listenPort, GammaBarsOnRight = gammaBarsOnRight }, input, ref cacheOpenGamma);
+			return CacheIndicator<OpenGamma>(new OpenGamma(){ ListenPort = listenPort, GammaBarsOnRight = gammaBarsOnRight, JmaTimeSeriesMinutes = jmaTimeSeriesMinutes, JmaLength = jmaLength, JmaPhase = jmaPhase, JmaPower = jmaPower, JmaResetThreshold = jmaResetThreshold }, input, ref cacheOpenGamma);
 		}
 	}
 }
@@ -899,6 +1314,11 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 			return indicator.OpenGamma(Input, listenPort, gammaBarsOnRight);
 		}
 
+		public Indicators.OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight, int jmaTimeSeriesMinutes, int jmaLength, int jmaPhase, int jmaPower, double jmaResetThreshold)
+		{
+			return indicator.OpenGamma(Input, listenPort, gammaBarsOnRight, jmaTimeSeriesMinutes, jmaLength, jmaPhase, jmaPower, jmaResetThreshold);
+		}
+
 		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort)
 		{
 			return indicator.OpenGamma(input, listenPort);
@@ -907,6 +1327,11 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort, bool gammaBarsOnRight)
 		{
 			return indicator.OpenGamma(input, listenPort, gammaBarsOnRight);
+		}
+
+		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort, bool gammaBarsOnRight, int jmaTimeSeriesMinutes, int jmaLength, int jmaPhase, int jmaPower, double jmaResetThreshold)
+		{
+			return indicator.OpenGamma(input, listenPort, gammaBarsOnRight, jmaTimeSeriesMinutes, jmaLength, jmaPhase, jmaPower, jmaResetThreshold);
 		}
 	}
 }
@@ -925,6 +1350,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 			return indicator.OpenGamma(Input, listenPort, gammaBarsOnRight);
 		}
 
+		public Indicators.OpenGamma OpenGamma(int listenPort, bool gammaBarsOnRight, int jmaTimeSeriesMinutes, int jmaLength, int jmaPhase, int jmaPower, double jmaResetThreshold)
+		{
+			return indicator.OpenGamma(Input, listenPort, gammaBarsOnRight, jmaTimeSeriesMinutes, jmaLength, jmaPhase, jmaPower, jmaResetThreshold);
+		}
+
 		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort)
 		{
 			return indicator.OpenGamma(input, listenPort);
@@ -933,6 +1363,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort, bool gammaBarsOnRight)
 		{
 			return indicator.OpenGamma(input, listenPort, gammaBarsOnRight);
+		}
+
+		public Indicators.OpenGamma OpenGamma(ISeries<double> input , int listenPort, bool gammaBarsOnRight, int jmaTimeSeriesMinutes, int jmaLength, int jmaPhase, int jmaPower, double jmaResetThreshold)
+		{
+			return indicator.OpenGamma(input, listenPort, gammaBarsOnRight, jmaTimeSeriesMinutes, jmaLength, jmaPhase, jmaPower, jmaResetThreshold);
 		}
 	}
 }

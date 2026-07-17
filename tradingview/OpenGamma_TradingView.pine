@@ -1,0 +1,239 @@
+//@version=5
+indicator("OpenGamma - TradingView", overlay=true, max_boxes_count=200, max_lines_count=300, max_labels_count=200)
+
+groupData = "Data"
+indexPreset = input.string("Auto", "Index", options=["Auto", "NDX", "SPX"], group=groupData)
+ndxTicker = input.symbol("NASDAQ:NDX", "NDX spot symbol", group=groupData)
+spxTicker = input.symbol("SP:SPX", "SPX spot symbol", group=groupData)
+basisTimeframe = input.timeframe("2", "Spread basis timeframe", group=groupData)
+levelsText = input.text_area("", "Gamma levels", group=groupData, tooltip="Paste rows from export_tradingview_levels.py. Format: strike:gex:key; strike:gex:key")
+
+groupSpread = "JMA Spread"
+jmaLength = input.int(13, "Length", minval=1, group=groupSpread)
+jmaPhase = input.int(78, "Phase", minval=-100, maxval=100, group=groupSpread)
+jmaPower = input.int(2, "Power", minval=1, group=groupSpread)
+jmaResetThreshold = input.float(25.0, "Reset threshold", minval=0.0, group=groupSpread)
+manualSpread = input.float(0.0, "Manual spread override", group=groupSpread, tooltip="Leave at 0 to use live spot minus chart futures close. Use a non-zero value when the spot symbol is unavailable.")
+
+groupVisual = "Visual"
+profilePlacement = input.string("Right", "Profile placement", options=["Right", "Behind latest bars"], group=groupVisual)
+profileOffset = input.int(3, "Right offset", minval=0, maxval=100, group=groupVisual)
+maxProfileBars = input.int(55, "Max profile width", minval=5, maxval=200, group=groupVisual)
+bandHeightPoints = input.float(8.0, "Band height, points", minval=0.0, group=groupVisual)
+showKeyOnly = input.bool(false, "Show key levels only", group=groupVisual)
+showCurve = input.bool(true, "Show net gamma curve", group=groupVisual)
+showLabels = input.bool(true, "Show strike labels", group=groupVisual)
+
+groupDashboard = "Dashboard"
+showDashboard = input.bool(true, "Show dashboard", group=groupDashboard)
+manualBias = input.string("", "Bias", group=groupDashboard)
+manualScore = input.float(0.0, "Bias score", minval=-1.0, maxval=1.0, group=groupDashboard)
+manualConfidence = input.float(0.0, "Confidence", minval=0.0, maxval=1.0, group=groupDashboard)
+manualContext = input.string("", "Context", group=groupDashboard)
+manualMarket = input.string("", "Market", group=groupDashboard)
+manualDealer = input.string("", "Dealer", group=groupDashboard)
+manualLiquidity = input.string("", "Liquidity", group=groupDashboard)
+manualWhale = input.string("", "Whale", group=groupDashboard)
+manualEdge = input.string("", "Empirical edge", group=groupDashboard)
+targetLevel = input.float(0.0, "Target", group=groupDashboard)
+invalidationLevel = input.float(0.0, "Invalidation", group=groupDashboard)
+flipLevel = input.float(0.0, "Flip", group=groupDashboard)
+showPlanLines = input.bool(true, "Plot target/invalidation/flip", group=groupDashboard)
+
+var float[] strikes = array.new_float()
+var float[] gexValues = array.new_float()
+var bool[] keyFlags = array.new_bool()
+var box[] profileBoxes = array.new_box()
+var line[] profileLines = array.new_line()
+var line[] curveLines = array.new_line()
+var label[] strikeLabels = array.new_label()
+
+chartName = str.upper(syminfo.ticker)
+autoIndex = (str.contains(chartName, "NQ") or str.contains(chartName, "QQQ")) ? "NDX" : "SPX"
+indexSymbol = indexPreset == "Auto" ? autoIndex : indexPreset
+spotTicker = indexSymbol == "NDX" ? ndxTicker : spxTicker
+
+spotClose = request.security(spotTicker, basisTimeframe, close, ignore_invalid_symbol=true)
+basisClose = request.security(syminfo.tickerid, basisTimeframe, close)
+rawSpread = spotClose - basisClose
+
+var float jmaSpread = na
+var float jmaE0 = na
+var float jmaE1 = 0.0
+var float jmaE2 = 0.0
+
+if not na(rawSpread)
+    if na(jmaSpread) or (jmaResetThreshold > 0 and math.abs(rawSpread - jmaSpread) > jmaResetThreshold)
+        jmaSpread := rawSpread
+        jmaE0 := rawSpread
+        jmaE1 := 0.0
+        jmaE2 := 0.0
+    else
+        phaseRatio = jmaPhase / 100.0 + 1.5
+        beta = 0.45 * (jmaLength - 1) / (0.45 * (jmaLength - 1) + 2.0)
+        alpha = math.pow(beta, jmaPower)
+        oneMinusAlpha = 1.0 - alpha
+        jmaE0 := oneMinusAlpha * rawSpread + alpha * jmaE0
+        jmaE1 := (rawSpread - jmaE0) * (1.0 - beta) + beta * jmaE1
+        jmaE2 := (jmaE0 + phaseRatio * jmaE1 - jmaSpread) * oneMinusAlpha * oneMinusAlpha + alpha * alpha * jmaE2
+        jmaSpread += jmaE2
+
+activeSpread = manualSpread != 0.0 ? manualSpread : nz(jmaSpread, 0.0)
+
+if barstate.isfirst
+    normalizedText = str.replace_all(str.replace_all(levelsText, "\n", ";"), "\r", ";")
+    rows = str.split(normalizedText, ";")
+    for rowIndex = 0 to array.size(rows) - 1
+        row = str.trim(array.get(rows, rowIndex))
+        if str.length(row) > 0
+            parts = str.split(row, ":")
+            if array.size(parts) >= 2
+                strikeValue = str.tonumber(str.trim(array.get(parts, 0)))
+                gexValue = str.tonumber(str.trim(array.get(parts, 1)))
+                keyValue = array.size(parts) >= 3 ? str.tonumber(str.trim(array.get(parts, 2))) : 1.0
+                if not na(strikeValue) and not na(gexValue) and strikeValue > 0
+                    array.push(strikes, strikeValue)
+                    array.push(gexValues, gexValue)
+                    array.push(keyFlags, na(keyValue) ? true : keyValue != 0)
+
+clearBoxes(box[] drawings) =>
+    if array.size(drawings) > 0
+        for drawingIndex = 0 to array.size(drawings) - 1
+            box.delete(array.get(drawings, drawingIndex))
+    array.clear(drawings)
+
+clearLines(line[] drawings) =>
+    if array.size(drawings) > 0
+        for drawingIndex = 0 to array.size(drawings) - 1
+            line.delete(array.get(drawings, drawingIndex))
+    array.clear(drawings)
+
+clearLabels(label[] drawings) =>
+    if array.size(drawings) > 0
+        for drawingIndex = 0 to array.size(drawings) - 1
+            label.delete(array.get(drawings, drawingIndex))
+    array.clear(drawings)
+
+var table dashTable = table.new(position.bottom_left, 5, 4, bgcolor=color.new(color.rgb(20, 20, 30), 8), frame_color=color.new(color.white, 82), frame_width=1)
+
+levelCount = array.size(strikes)
+maxAbsGex = 0.0
+if levelCount > 0
+    for levelIndex = 0 to levelCount - 1
+        maxAbsGex := math.max(maxAbsGex, math.abs(array.get(gexValues, levelIndex)))
+maxAbsGex := maxAbsGex == 0.0 ? 1.0 : maxAbsGex
+
+float above1Price = na
+float above1Gex = na
+float above2Price = na
+float above2Gex = na
+float below1Price = na
+float below1Gex = na
+float below2Price = na
+float below2Gex = na
+
+if levelCount > 0
+    for levelIndex = 0 to levelCount - 1
+        levelPrice = array.get(strikes, levelIndex) - activeSpread
+        levelGex = array.get(gexValues, levelIndex)
+        if levelPrice > close
+            if na(above1Price) or levelPrice < above1Price
+                above2Price := above1Price
+                above2Gex := above1Gex
+                above1Price := levelPrice
+                above1Gex := levelGex
+            else if na(above2Price) or levelPrice < above2Price
+                above2Price := levelPrice
+                above2Gex := levelGex
+        else
+            if na(below1Price) or levelPrice > below1Price
+                below2Price := below1Price
+                below2Gex := below1Gex
+                below1Price := levelPrice
+                below1Gex := levelGex
+            else if na(below2Price) or levelPrice > below2Price
+                below2Price := levelPrice
+                below2Gex := levelGex
+
+slopeAbove = not na(above1Price) and not na(above2Price) and above2Price != above1Price ? (above2Gex - above1Gex) / (above2Price - above1Price) : 0.0
+slopeBelow = not na(below1Price) and not na(below2Price) and below1Price != below2Price ? (below1Gex - below2Gex) / (below1Price - below2Price) : 0.0
+netBias = -slopeAbove + slopeBelow
+derivedBias = netBias > 0 ? "BULLISH" : netBias < 0 ? "BEARISH" : "NEUTRAL"
+dashboardBias = str.length(str.trim(manualBias)) > 0 ? manualBias : derivedBias
+biasColor = manualScore < -0.05 or dashboardBias == "BEARISH" ? color.rgb(255, 66, 86) : manualScore > 0.05 or dashboardBias == "BULLISH" ? color.rgb(55, 230, 120) : color.rgb(255, 171, 37)
+
+if barstate.islast
+    clearBoxes(profileBoxes)
+    clearLines(profileLines)
+    clearLines(curveLines)
+    clearLabels(strikeLabels)
+
+    if levelCount > 0
+        halfBand = bandHeightPoints > 0 ? bandHeightPoints * 0.5 : math.max(syminfo.mintick * 10.0, ta.atr(14) * 0.005)
+        int previousCurveX = na
+        float previousCurveY = na
+        for levelIndex = 0 to levelCount - 1
+            strikeValue = array.get(strikes, levelIndex)
+            gexValue = array.get(gexValues, levelIndex)
+            isKeyLevel = array.get(keyFlags, levelIndex)
+            shouldShow = not showKeyOnly or isKeyLevel
+            levelPrice = strikeValue - activeSpread
+            normalizedGex = gexValue / maxAbsGex
+            widthBars = math.max(2, int(math.round(math.abs(normalizedGex) * maxProfileBars)))
+            isResistance = gexValue > 0
+            levelColor = isResistance ? color.rgb(255, 60, 60) : color.rgb(60, 220, 110)
+
+            if shouldShow
+                leftBar = profilePlacement == "Right" ? bar_index + profileOffset : bar_index - widthBars
+                rightBar = profilePlacement == "Right" ? bar_index + profileOffset + widthBars : bar_index
+                fillColor = isKeyLevel ? color.new(levelColor, 78) : color.new(levelColor, 100)
+                outlineColor = color.new(levelColor, isKeyLevel ? 30 : 0)
+                array.push(profileBoxes, box.new(left=leftBar, top=levelPrice + halfBand, right=rightBar, bottom=levelPrice - halfBand, xloc=xloc.bar_index, bgcolor=fillColor, border_color=outlineColor, border_width=isKeyLevel ? 1 : 2))
+                array.push(profileLines, line.new(x1=leftBar, y1=levelPrice, x2=rightBar, y2=levelPrice, xloc=xloc.bar_index, color=color.new(levelColor, 20), width=isKeyLevel ? 2 : 1))
+                if showLabels
+                    labelBar = profilePlacement == "Right" ? bar_index + profileOffset : bar_index
+                    labelStyle = profilePlacement == "Right" ? label.style_label_left : label.style_label_right
+                    array.push(strikeLabels, label.new(x=labelBar, y=levelPrice, text=str.tostring(strikeValue, "#"), xloc=xloc.bar_index, style=labelStyle, textcolor=color.new(levelColor, 0), color=color.new(color.black, 100), size=size.tiny))
+
+            if showCurve
+                curveBase = profilePlacement == "Right" ? bar_index + profileOffset + maxProfileBars + 6 : bar_index - maxProfileBars - 6
+                curveWidth = math.max(10, int(math.round(maxProfileBars * 0.45)))
+                curveX = curveBase + int(math.round(normalizedGex * curveWidth))
+                if not na(previousCurveX) and not na(previousCurveY)
+                    array.push(curveLines, line.new(x1=previousCurveX, y1=previousCurveY, x2=curveX, y2=levelPrice, xloc=xloc.bar_index, color=color.rgb(255, 0, 255), width=2))
+                previousCurveX := curveX
+                previousCurveY := levelPrice
+
+if showDashboard and barstate.islast
+    textDim = color.rgb(176, 202, 224)
+    textWhite = color.rgb(245, 248, 255)
+    accent = color.rgb(141, 199, 255)
+    scoreText = str.tostring(math.round(manualScore * 100), "#") + "%"
+    confidenceText = str.tostring(math.round(manualConfidence * 100), "#") + "%"
+    table.cell(dashTable, 0, 0, indexSymbol, text_color=textWhite, text_size=size.normal)
+    table.cell(dashTable, 1, 0, dashboardBias, text_color=biasColor, text_size=size.small)
+    table.cell(dashTable, 2, 0, "Conf", text_color=accent, text_size=size.small)
+    table.cell(dashTable, 3, 0, "Target", text_color=accent, text_size=size.small)
+    table.cell(dashTable, 4, 0, "Flip", text_color=accent, text_size=size.small)
+    table.cell(dashTable, 0, 1, str.length(manualContext) > 0 ? manualContext : "Spot " + str.tostring(spotClose, "#") + " | Spread " + str.tostring(activeSpread, "#"), text_color=textDim, text_size=size.small)
+    table.cell(dashTable, 1, 1, scoreText, text_color=biasColor, text_size=size.normal)
+    table.cell(dashTable, 2, 1, confidenceText, text_color=textWhite, text_size=size.normal)
+    table.cell(dashTable, 3, 1, targetLevel > 0 ? str.tostring(targetLevel, "#") : "--", text_color=textWhite, text_size=size.normal)
+    table.cell(dashTable, 4, 1, flipLevel > 0 ? str.tostring(flipLevel, "#") : "--", text_color=textWhite, text_size=size.normal)
+    table.cell(dashTable, 0, 2, "Market", text_color=accent, text_size=size.tiny)
+    table.cell(dashTable, 1, 2, "Dealer", text_color=accent, text_size=size.tiny)
+    table.cell(dashTable, 2, 2, "Liquidity", text_color=accent, text_size=size.tiny)
+    table.cell(dashTable, 3, 2, "Whale", text_color=accent, text_size=size.tiny)
+    table.cell(dashTable, 4, 2, "Invalid", text_color=accent, text_size=size.tiny)
+    table.cell(dashTable, 0, 3, str.length(manualMarket) > 0 ? manualMarket : derivedBias, text_color=biasColor, text_size=size.small)
+    table.cell(dashTable, 1, 3, str.length(manualDealer) > 0 ? manualDealer : "--", text_color=textWhite, text_size=size.small)
+    table.cell(dashTable, 2, 3, str.length(manualLiquidity) > 0 ? manualLiquidity : str.tostring(levelCount) + " levels", text_color=textWhite, text_size=size.small)
+    table.cell(dashTable, 3, 3, str.length(manualWhale) > 0 ? manualWhale : str.length(manualEdge) > 0 ? manualEdge : "--", text_color=textWhite, text_size=size.small)
+    table.cell(dashTable, 4, 3, invalidationLevel > 0 ? str.tostring(invalidationLevel, "#") : "--", text_color=color.rgb(255, 171, 37), text_size=size.small)
+
+targetPlot = showPlanLines and targetLevel > 0 ? targetLevel - activeSpread : na
+invalidPlot = showPlanLines and invalidationLevel > 0 ? invalidationLevel - activeSpread : na
+flipPlot = showPlanLines and flipLevel > 0 ? flipLevel - activeSpread : na
+plot(targetPlot, "OpenGamma target", color=color.rgb(55, 230, 120), linewidth=2, style=plot.style_linebr)
+plot(invalidPlot, "OpenGamma invalidation", color=color.rgb(255, 171, 37), linewidth=2, style=plot.style_linebr)
+plot(flipPlot, "OpenGamma flip", color=color.rgb(141, 199, 255), linewidth=1, style=plot.style_linebr)

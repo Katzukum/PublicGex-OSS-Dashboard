@@ -4,12 +4,14 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, create_engine
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, create_engine, event
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
 DB_CONNECTION_STR = "sqlite:///gex_data.db"
 DB_PATH = Path("gex_data.db")
+DB_BUSY_TIMEOUT_SECONDS = float(os.getenv("GEX_DB_TIMEOUT_SECONDS", "30"))
+DB_BUSY_TIMEOUT_MS = int(DB_BUSY_TIMEOUT_SECONDS * 1000)
 
 Base = declarative_base()
 
@@ -86,18 +88,116 @@ class RawOptionGreek(Base):
     )
 
 
-def get_engine():
-    return create_engine(DB_CONNECTION_STR)
+class SignalEvent(Base):
+    """One emitted dashboard/NinjaTrader signal payload for one symbol."""
+
+    __tablename__ = "signal_events"
+
+    id = Column(Integer, primary_key=True)
+    emitted_at = Column(DateTime, default=datetime.now, index=True)
+    symbol = Column(String, index=True)
+    spot_price = Column(Float)
+    regime = Column(String, index=True)
+    bias = Column(String, index=True)
+    bias_score = Column(Float)
+    confidence = Column(Float)
+    target = Column(Float, nullable=True)
+    invalidation = Column(Float, nullable=True)
+    flip = Column(Float, nullable=True)
+    market_state = Column(String, default="")
+    dealer_state = Column(String, default="")
+    liquidity_state = Column(String, default="")
+    whale_state = Column(String, default="")
+    setup_key = Column(String, index=True)
+    direction_key = Column(String, index=True)
+    payload_json = Column(Text, default="")
+
+    outcomes = relationship("SignalOutcome", back_populates="signal", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("idx_signal_symbol_time", "symbol", "emitted_at"),
+        Index("idx_signal_setup_time", "setup_key", "emitted_at"),
+        Index("idx_signal_direction_time", "direction_key", "emitted_at"),
+    )
+
+
+class SignalOutcome(Base):
+    """Future outcome label for one emitted signal at one time horizon."""
+
+    __tablename__ = "signal_outcomes"
+
+    id = Column(Integer, primary_key=True)
+    signal_event_id = Column(Integer, ForeignKey("signal_events.id"), nullable=False, index=True)
+    horizon_minutes = Column(Integer, index=True)
+    labeled_at = Column(DateTime, default=datetime.now, index=True)
+    horizon_at = Column(DateTime, index=True)
+    observed_at = Column(DateTime, index=True)
+    end_spot = Column(Float)
+    move_points = Column(Float)
+    move_pct = Column(Float)
+    directional_move_points = Column(Float, nullable=True)
+    max_favorable_points = Column(Float, nullable=True)
+    max_adverse_points = Column(Float, nullable=True)
+    hit_target = Column(Boolean, default=False)
+    hit_invalidation = Column(Boolean, default=False)
+    target_first = Column(Boolean, default=False)
+    invalidation_first = Column(Boolean, default=False)
+    is_win = Column(Boolean, nullable=True)
+    outcome_label = Column(String, index=True)
+
+    signal = relationship("SignalEvent", back_populates="outcomes")
+
+    __table_args__ = (
+        UniqueConstraint("signal_event_id", "horizon_minutes", name="uq_signal_outcome_horizon"),
+        Index("idx_outcome_horizon_label", "horizon_minutes", "outcome_label"),
+    )
+
+
+def _configure_sqlite_connection(dbapi_connection, _connection_record):
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA foreign_keys = ON")
+        try:
+            cursor.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError:
+            # A currently busy rollback-journal database should not prevent app startup.
+            pass
+        cursor.execute("PRAGMA synchronous = NORMAL")
+    finally:
+        cursor.close()
+
+
+def _connection_string_for_path(db_path: Path) -> str:
+    db_path = Path(db_path)
+    if db_path == DB_PATH:
+        return DB_CONNECTION_STR
+    return f"sqlite:///{db_path.as_posix()}"
+
+
+def get_engine(db_path: Path = DB_PATH):
+    engine = create_engine(
+        _connection_string_for_path(db_path),
+        connect_args={"timeout": DB_BUSY_TIMEOUT_SECONDS, "check_same_thread": False},
+    )
+    event.listen(engine, "connect", _configure_sqlite_connection)
+    return engine
 
 
 def get_session_factory(engine=None):
-    return sessionmaker(bind=engine or get_engine())
+    return sessionmaker(bind=engine or get_engine(), expire_on_commit=False)
+
+
+def _sqlite_connect(db_path: Path):
+    conn = sqlite3.connect(db_path, timeout=DB_BUSY_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout = {DB_BUSY_TIMEOUT_MS}")
+    return conn
 
 
 def _table_columns(db_path: Path, table: str) -> set[str]:
     if not db_path.exists():
         return set()
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return {row[1] for row in rows}
 
@@ -128,7 +228,7 @@ def backup_database(db_path: Path = DB_PATH) -> Path | None:
     backup_path = db_path.with_name(f"{db_path.stem}_legacy_{timestamp}{db_path.suffix}")
     shutil.move(str(db_path), str(backup_path))
 
-    for suffix in ("-wal", "-shm"):
+    for suffix in ("-wal", "-shm", "-journal"):
         sidecar = Path(str(db_path) + suffix)
         if sidecar.exists():
             shutil.move(str(sidecar), str(backup_path) + suffix)
@@ -138,21 +238,25 @@ def backup_database(db_path: Path = DB_PATH) -> Path | None:
 
 def reset_database(db_path: Path = DB_PATH) -> Path | None:
     backup_path = backup_database(db_path)
-    engine = get_engine()
+    engine = get_engine(db_path)
     Base.metadata.create_all(engine)
     return backup_path
 
 
-def initialize_database(reset_old_schema: bool = True, allow_legacy_on_lock: bool = False):
-    if reset_old_schema and not schema_is_current(DB_PATH):
+def initialize_database(
+    reset_old_schema: bool = True,
+    allow_legacy_on_lock: bool = False,
+    db_path: Path = DB_PATH,
+):
+    if reset_old_schema and not schema_is_current(db_path):
         try:
-            backup_database(DB_PATH)
+            backup_database(db_path)
         except PermissionError:
             if allow_legacy_on_lock:
-                return get_engine()
+                return get_engine(db_path)
             raise
 
-    engine = get_engine()
+    engine = get_engine(db_path)
     Base.metadata.create_all(engine)
     return engine
 
@@ -161,5 +265,17 @@ def compact_database(db_path: Path = DB_PATH) -> None:
     if not db_path.exists():
         return
 
-    with sqlite3.connect(db_path) as conn:
+    with _sqlite_connect(db_path) as conn:
         conn.execute("VACUUM")
+
+
+def optimize_database(db_path: Path = DB_PATH) -> None:
+    if not db_path.exists():
+        return
+
+    with _sqlite_connect(db_path) as conn:
+        conn.execute("PRAGMA optimize")
+        try:
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except sqlite3.OperationalError:
+            pass

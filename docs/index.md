@@ -5,6 +5,10 @@ Welcome to the **PublicGex OSS Dashboard**, a real-time market regime analysis t
 ## Purpose
 This project bridges the gap between raw option chain data (from Public.com) and actionable trading signals in NinjaTrader 8. It calculates "Gamma Flips," "Magnets," and "Market Regimes" (e.g., Grind Up vs. Crash) in real-time.
 
+For a non-programming explanation of the data thesis, assumptions, and math behind the dashboard, see [OpenGamma Dashboard Data Thesis](dashboard_data_thesis.md).
+
+Project conventions and implementation preferences are tracked in [Development Notes](development-notes.md).
+
 ## System Architecture
 
 The system consists of four main components interacting via TCP sockets and SQLite.

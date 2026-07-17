@@ -12,16 +12,17 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import load_dotenv
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, text
 from sqlalchemy.orm import Session
 
+from gex_levels import aggregate_gamma_levels
 from models import (
     CollectionRun,
     GexSnapshot,
     RawOptionGreek,
-    compact_database,
     get_session_factory,
     initialize_database,
+    optimize_database,
     reset_database,
 )
 
@@ -29,7 +30,10 @@ DEFAULT_SETTINGS = {
     "refresh_interval": 180,
     "theme": "dark",
     "symbols": ["SPY"],
-    "backend_update_delay": 180,
+    "api_rate_limit_per_second": 10.0,
+    "api_rate_limit_utilization": 0.6,
+    "min_poll_interval_seconds": 15,
+    "max_poll_interval_seconds": 120,
     "raw_retention_days": 30,
     "weights": {"SPY": 1.0},
     "weights_whale": {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20},
@@ -62,11 +66,12 @@ class ConfigError(ValueError):
 
 
 class RateLimiter:
-    """Simple blocking rate limiter to respect API tokens."""
+    """Simple blocking per-second limiter with per-run request accounting."""
 
-    def __init__(self, requests_per_minute: int):
-        self.delay = 60.0 / max(1, requests_per_minute)
+    def __init__(self, requests_per_second: float):
+        self.delay = 1.0 / max(0.1, requests_per_second)
         self.last_call = 0.0
+        self.request_count = 0
 
     def wait(self):
         now = time.time()
@@ -74,6 +79,10 @@ class RateLimiter:
         if elapsed < self.delay:
             time.sleep(self.delay - elapsed)
         self.last_call = time.time()
+        self.request_count += 1
+
+    def reset_count(self):
+        self.request_count = 0
 
 
 def load_public_sdk():
@@ -112,22 +121,90 @@ def load_public_sdk():
 
 @contextmanager
 def collector_lock():
-    now = time.time()
-    if LOCK_PATH.exists() and now - LOCK_PATH.stat().st_mtime > LOCK_STALE_SECONDS:
-        logger.warning("Removing stale collector lock: %s", LOCK_PATH)
-        LOCK_PATH.unlink(missing_ok=True)
-
     fd = None
+    acquired = False
     try:
-        fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode("utf-8"))
-        yield True
-    except FileExistsError:
-        yield False
+        for _ in range(2):
+            remove_stale_collector_lock()
+            try:
+                fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode("utf-8"))
+                acquired = True
+                break
+            except FileExistsError:
+                if not remove_stale_collector_lock():
+                    break
+
+        yield acquired
     finally:
         if fd is not None:
             os.close(fd)
             LOCK_PATH.unlink(missing_ok=True)
+
+
+def _read_lock_pid() -> Optional[int]:
+    try:
+        text = LOCK_PATH.read_text(encoding="utf-8").strip()
+        return int(text) if text else None
+    except (OSError, ValueError):
+        return None
+
+
+def _process_is_running(pid: Optional[int]) -> bool:
+    if not pid or pid <= 0:
+        return False
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            process_query_limited_information = 0x1000
+            still_active = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+            if not handle:
+                return False
+
+            try:
+                exit_code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return exit_code.value == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def remove_stale_collector_lock() -> bool:
+    if not LOCK_PATH.exists():
+        return False
+
+    now = time.time()
+    lock_age = now - LOCK_PATH.stat().st_mtime
+    lock_pid = _read_lock_pid()
+
+    if lock_pid and not _process_is_running(lock_pid):
+        logger.warning("Removing orphaned collector lock for dead pid %s: %s", lock_pid, LOCK_PATH)
+        LOCK_PATH.unlink(missing_ok=True)
+        return True
+
+    if lock_age > LOCK_STALE_SECONDS:
+        logger.warning("Removing stale collector lock: %s", LOCK_PATH)
+        LOCK_PATH.unlink(missing_ok=True)
+        return True
+
+    return False
 
 
 def load_settings(path: str = "settings.json") -> dict:
@@ -145,10 +222,19 @@ def load_settings(path: str = "settings.json") -> dict:
         raise ConfigError("settings.symbols must be a non-empty list")
 
     try:
-        settings["backend_update_delay"] = max(10, int(settings.get("backend_update_delay", 180)))
         settings["raw_retention_days"] = max(1, int(settings.get("raw_retention_days", 30)))
+        settings["api_rate_limit_per_second"] = max(0.1, float(settings.get("api_rate_limit_per_second", 10.0)))
+        settings["api_rate_limit_utilization"] = min(
+            1.0,
+            max(0.1, float(settings.get("api_rate_limit_utilization", 0.6))),
+        )
+        settings["min_poll_interval_seconds"] = max(1, int(settings.get("min_poll_interval_seconds", 15)))
+        settings["max_poll_interval_seconds"] = max(
+            settings["min_poll_interval_seconds"],
+            int(settings.get("max_poll_interval_seconds", 120)),
+        )
     except (TypeError, ValueError) as e:
-        raise ConfigError("backend_update_delay and raw_retention_days must be integers") from e
+        raise ConfigError("Polling and retention settings must be valid numbers") from e
 
     return settings
 
@@ -158,16 +244,16 @@ def load_runtime_config() -> dict:
     settings = load_settings()
 
     try:
-        api_rate_limit = int(os.getenv("API_RATE_LIMIT", "60"))
+        api_rate_limit = float(os.getenv("API_RATE_LIMIT_PER_SECOND", settings["api_rate_limit_per_second"]))
     except ValueError as e:
-        raise ConfigError("API_RATE_LIMIT must be an integer") from e
+        raise ConfigError("API_RATE_LIMIT_PER_SECOND must be a number") from e
 
     config = {
         "settings": settings,
         "symbols": [str(s).upper() for s in settings["symbols"]],
         "api_key": (os.getenv("PUBLIC_API_KEY") or "").strip(),
         "account_id": (os.getenv("PUBLIC_ACCOUNT_ID") or "").strip(),
-        "api_rate_limit": max(1, api_rate_limit),
+        "api_rate_limit_per_second": max(0.1, api_rate_limit),
     }
 
     if not config["api_key"]:
@@ -176,6 +262,16 @@ def load_runtime_config() -> dict:
         raise ConfigError("PUBLIC_ACCOUNT_ID is missing. Add it to .env.")
 
     return config
+
+
+def calculate_poll_delay(settings: dict, request_count: int, api_rate_limit_per_second: Optional[float] = None) -> float:
+    effective_rps = api_rate_limit_per_second or settings["api_rate_limit_per_second"]
+    usable_rps = max(0.1, effective_rps * settings["api_rate_limit_utilization"])
+    rate_limited_seconds = max(0.0, request_count / usable_rps)
+    return min(
+        settings["max_poll_interval_seconds"],
+        max(settings["min_poll_interval_seconds"], rate_limited_seconds),
+    )
 
 
 def json_list(values: list[str]) -> str:
@@ -348,6 +444,21 @@ def get_0dte_expiration(client, symbol: str, rate_limiter: RateLimiter) -> Optio
     target_date = get_target_expiration(symbol)
     logger.info("Targeting strict 0DTE expiration %s for %s", target_date, symbol)
 
+    return get_expiration_for_date(client, symbol, target_date, rate_limiter, already_waited=True)
+
+
+def get_expiration_for_date(
+    client,
+    symbol: str,
+    target_date: date,
+    rate_limiter: RateLimiter,
+    already_waited: bool = False,
+) -> Optional[str]:
+    if not already_waited:
+        rate_limiter.wait()
+
+    logger.info("Targeting explicit expiration %s for %s", target_date, symbol)
+
     try:
         itype = get_instrument_type(symbol)
         req = OptionExpirationsRequest(instrument=OrderInstrument(symbol=symbol, type=itype))
@@ -407,7 +518,17 @@ def get_option_greeks_batch(client, osi_symbols: list[str], account_id: str, rat
     return results
 
 
-def process_symbol(client, session: Session, run: CollectionRun, symbol: str, config: dict, rate_limiter: RateLimiter):
+def process_symbol(
+    client,
+    session: Session,
+    run: CollectionRun,
+    symbol: str,
+    config: dict,
+    rate_limiter: RateLimiter,
+    target_expiration: Optional[date] = None,
+    emit_events: bool = True,
+    strike_window_count: Optional[int] = None,
+):
     logger.info("Starting collection for %s...", symbol)
     timestamp = datetime.now()
 
@@ -423,9 +544,14 @@ def process_symbol(client, session: Session, run: CollectionRun, symbol: str, co
         if spot_price == 0:
             return {"symbol": symbol, "status": "failed", "message": "Spot price is 0"}
 
-        expiration_str = get_0dte_expiration(client, symbol, rate_limiter)
+        if target_expiration:
+            expiration_str = get_expiration_for_date(client, symbol, target_expiration, rate_limiter)
+        else:
+            expiration_str = get_0dte_expiration(client, symbol, rate_limiter)
+
         if not expiration_str:
-            msg = f"No target-day 0DTE expiration found for {symbol}; skipped."
+            target_label = target_expiration.isoformat() if target_expiration else "target-day 0DTE"
+            msg = f"No {target_label} expiration found for {symbol}; skipped."
             logger.info(msg)
             return {"symbol": symbol, "status": "skipped", "message": msg}
 
@@ -438,19 +564,40 @@ def process_symbol(client, session: Session, run: CollectionRun, symbol: str, co
         )
         options_list = extract_all_options(client.get_option_chain(req))
 
-        relevant_options = []
-        upper_bound = spot_price * (1 + STRIKE_RANGE_PCT)
-        lower_bound = spot_price * (1 - STRIKE_RANGE_PCT)
-        logger.info("Filtering %s: Spot %.2f | Range %.2f - %.2f", symbol, spot_price, lower_bound, upper_bound)
-
+        parsed_options = []
         for opt in options_list:
             instrument = get_val(opt, ["instrument"])
             strike = float(get_val(instrument, ["strike_price", "strikePrice", "strike"], 0))
             osi = get_val(instrument, ["symbol", "ticker", "osi_symbol"]) or get_val(opt, ["symbol", "ticker"])
             if strike == 0:
                 strike, _ = parse_osi_from_symbol(osi)
-            if lower_bound <= strike <= upper_bound:
-                relevant_options.append((opt, strike, osi))
+            if strike:
+                parsed_options.append((opt, strike, osi))
+
+        if strike_window_count:
+            strike_count = max(1, int(strike_window_count))
+            distinct_strikes = sorted({strike for _, strike, _ in parsed_options})
+            below = [strike for strike in distinct_strikes if strike < spot_price][-strike_count:]
+            at_spot = [strike for strike in distinct_strikes if strike == spot_price]
+            above = [strike for strike in distinct_strikes if strike > spot_price][:strike_count]
+            selected_strikes = set(below + at_spot + above)
+            relevant_options = [(opt, strike, osi) for opt, strike, osi in parsed_options if strike in selected_strikes]
+            logger.info(
+                "Filtering %s: Spot %.2f | %s strikes below, %s at spot, %s above",
+                symbol,
+                spot_price,
+                len(below),
+                len(at_spot),
+                len(above),
+            )
+        else:
+            relevant_options = []
+            upper_bound = spot_price * (1 + STRIKE_RANGE_PCT)
+            lower_bound = spot_price * (1 - STRIKE_RANGE_PCT)
+            logger.info("Filtering %s: Spot %.2f | Range %.2f - %.2f", symbol, spot_price, lower_bound, upper_bound)
+            for opt, strike, osi in parsed_options:
+                if lower_bound <= strike <= upper_bound:
+                    relevant_options.append((opt, strike, osi))
 
         if not relevant_options:
             return {"symbol": symbol, "status": "failed", "message": "No valid near-the-money contracts"}
@@ -577,22 +724,23 @@ def process_symbol(client, session: Session, run: CollectionRun, symbol: str, co
         session.bulk_save_objects([RawOptionGreek(snapshot_id=snapshot.id, **row) for row in raw_rows])
         session.commit()
 
-        logger.info("Saved %s records for %s. Net GEX: $%,.2f", len(raw_rows), symbol, total_net_gex)
+        logger.info("Saved %s records for %s. Net GEX: $%s", len(raw_rows), symbol, f"{total_net_gex:,.2f}")
 
-        from event_utils import send_event
+        if emit_events:
+            from event_utils import send_event
 
-        send_event("data_refresh", {"symbol": symbol, "timestamp": str(timestamp), "snapshot_id": snapshot.id})
-        if prev_snap and prev_magnet_strike != 0 and magnet_strike != prev_magnet_strike:
-            send_event(
-                "magnet_change",
-                {
-                    "symbol": symbol,
-                    "old_magnet": prev_magnet_strike,
-                    "new_magnet": magnet_strike,
-                    "strength": magnet_strength,
-                    "timestamp": str(timestamp),
-                },
-            )
+            send_event("data_refresh", {"symbol": symbol, "timestamp": str(timestamp), "snapshot_id": snapshot.id})
+            if prev_snap and prev_magnet_strike != 0 and magnet_strike != prev_magnet_strike:
+                send_event(
+                    "magnet_change",
+                    {
+                        "symbol": symbol,
+                        "old_magnet": prev_magnet_strike,
+                        "new_magnet": magnet_strike,
+                        "strength": magnet_strength,
+                        "timestamp": str(timestamp),
+                    },
+                )
 
         return {
             "symbol": symbol,
@@ -622,6 +770,7 @@ def build_overview_data(session: Session, settings: dict) -> dict:
         "compass": {"x_score": 0, "y_score": 0, "label": "NEUTRAL", "strategy": ""},
         "components": [],
         "gamma_levels": {"NDX": [], "SPX": []},
+        "cockpit_levels": {"NDX": [], "SPX": []},
     }
 
     weighted_vol_score = 0
@@ -643,7 +792,16 @@ def build_overview_data(session: Session, settings: dict) -> dict:
         weighted_trend_score += trend_sign * weight
         total_weight += weight
         overview_data["components"].append(
-            {"symbol": symbol, "spot": spot, "flip_strike": flip, "net_gex": net_gex}
+            {
+                "symbol": symbol,
+                "spot": spot,
+                "flip_strike": flip,
+                "net_gex": net_gex,
+                "effective_gex": snap.effective_gex or 0,
+                "trend_score": trend_sign,
+                "confidence": 1.0,
+                "flip_quality": "stored",
+            }
         )
 
     if total_weight > 0:
@@ -673,35 +831,24 @@ def build_overview_data(session: Session, settings: dict) -> dict:
                 "spot": idx_snap.spot_price,
                 "flip_strike": idx_snap.flip_strike or 0,
                 "net_gex": idx_snap.total_net_gex,
+                "effective_gex": idx_snap.effective_gex or 0,
+                "trend_score": (1 if idx_snap.spot_price > (idx_snap.flip_strike or 0) else -1) if (idx_snap.flip_strike or 0) > 0 else (1 if idx_snap.total_net_gex > 0 else -1),
+                "confidence": 1.0,
+                "flip_quality": "stored",
                 "acceleration": calculate_gex_slope(idx_snap.spot_price, raw_rows),
             }
         )
 
-        levels_below = (
-            session.query(RawOptionGreek.strike_price, func.sum(RawOptionGreek.gex_value).label("net_gex"))
-            .filter(RawOptionGreek.snapshot_id == idx_snap.id, RawOptionGreek.strike_price < idx_snap.spot_price)
-            .group_by(RawOptionGreek.strike_price)
-            .order_by(func.abs(func.sum(RawOptionGreek.gex_value)).desc())
-            .limit(5)
-            .all()
+        overview_data["gamma_levels"][idx_symbol] = aggregate_gamma_levels(
+            raw_rows,
+            spot=idx_snap.spot_price,
+            per_side=5,
         )
-        levels_above = (
-            session.query(RawOptionGreek.strike_price, func.sum(RawOptionGreek.gex_value).label("net_gex"))
-            .filter(RawOptionGreek.snapshot_id == idx_snap.id, RawOptionGreek.strike_price >= idx_snap.spot_price)
-            .group_by(RawOptionGreek.strike_price)
-            .order_by(func.abs(func.sum(RawOptionGreek.gex_value)).desc())
-            .limit(5)
-            .all()
+        overview_data["cockpit_levels"][idx_symbol] = aggregate_gamma_levels(
+            raw_rows,
+            spot=idx_snap.spot_price,
+            per_side=None,
         )
-
-        for level in sorted(levels_below + levels_above, key=lambda row: row.strike_price):
-            overview_data["gamma_levels"][idx_symbol].append(
-                {
-                    "strike": level.strike_price,
-                    "gex": level.net_gex,
-                    "type": "resistance" if level.net_gex > 0 else "support",
-                }
-            )
 
     return overview_data
 
@@ -716,11 +863,127 @@ def apply_retention(session: Session, retention_days: int):
     session.commit()
 
 
+def ensure_one_off_index_table(engine) -> None:
+    with engine.begin() as conn:
+        conn.exec_driver_sql("""
+            CREATE TABLE IF NOT EXISTS one_off_profile_index (
+                symbol TEXT NOT NULL,
+                expiration_date TEXT NOT NULL,
+                snapshot_id INTEGER,
+                run_id INTEGER,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (symbol, expiration_date)
+            )
+        """)
+
+
+def existing_one_off_snapshot_id(session: Session, symbol: str, target_expiration: date) -> Optional[int]:
+    row = session.execute(
+        text("""
+            SELECT snapshot_id
+            FROM one_off_profile_index
+            WHERE symbol = :symbol AND expiration_date = :expiration_date
+        """),
+        {"symbol": symbol, "expiration_date": target_expiration.isoformat()},
+    ).fetchone()
+    return int(row.snapshot_id) if row and row.snapshot_id else None
+
+
+def replace_one_off_profile_key(
+    session: Session,
+    symbol: str,
+    target_expiration: date,
+    keep_snapshot_id: Optional[int] = None,
+) -> None:
+    snapshot_ids = set()
+    indexed_snapshot_id = existing_one_off_snapshot_id(session, symbol, target_expiration)
+    if indexed_snapshot_id:
+        snapshot_ids.add(indexed_snapshot_id)
+
+    rows = session.execute(
+        text("""
+            SELECT s.id
+            FROM gex_snapshots s
+            JOIN raw_option_greeks r ON r.snapshot_id = s.id
+            WHERE s.symbol = :symbol AND r.expiration_date = :expiration_date
+            GROUP BY s.id
+        """),
+        {"symbol": symbol, "expiration_date": target_expiration.isoformat()},
+    ).fetchall()
+    snapshot_ids.update(int(row.id) for row in rows)
+    if keep_snapshot_id:
+        snapshot_ids.discard(int(keep_snapshot_id))
+
+    if snapshot_ids:
+        run_ids = [
+            row[0]
+            for row in session.query(GexSnapshot.collection_run_id)
+            .filter(GexSnapshot.id.in_(snapshot_ids))
+            .all()
+            if row[0]
+        ]
+        session.execute(delete(RawOptionGreek).where(RawOptionGreek.snapshot_id.in_(snapshot_ids)))
+        session.execute(delete(GexSnapshot).where(GexSnapshot.id.in_(snapshot_ids)))
+        for run_id in run_ids:
+            remaining = session.query(GexSnapshot.id).filter(GexSnapshot.collection_run_id == run_id).first()
+            if not remaining:
+                session.execute(delete(CollectionRun).where(CollectionRun.id == run_id))
+
+    if not keep_snapshot_id:
+        session.execute(
+            text("""
+                DELETE FROM one_off_profile_index
+                WHERE symbol = :symbol AND expiration_date = :expiration_date
+            """),
+            {"symbol": symbol, "expiration_date": target_expiration.isoformat()},
+        )
+    session.commit()
+
+
+def upsert_one_off_profile_index(
+    session: Session,
+    symbol: str,
+    target_expiration: date,
+    snapshot_id: int,
+    run_id: int,
+) -> None:
+    session.execute(
+        text("""
+            INSERT INTO one_off_profile_index (
+                symbol,
+                expiration_date,
+                snapshot_id,
+                run_id,
+                updated_at
+            )
+            VALUES (
+                :symbol,
+                :expiration_date,
+                :snapshot_id,
+                :run_id,
+                :updated_at
+            )
+            ON CONFLICT(symbol, expiration_date) DO UPDATE SET
+                snapshot_id = excluded.snapshot_id,
+                run_id = excluded.run_id,
+                updated_at = excluded.updated_at
+        """),
+        {
+            "symbol": symbol,
+            "expiration_date": target_expiration.isoformat(),
+            "snapshot_id": snapshot_id,
+            "run_id": run_id,
+            "updated_at": datetime.now().isoformat(),
+        },
+    )
+    session.commit()
+
+
 def maybe_compact_database():
     now = time.time()
     if COMPACT_MARKER_PATH.exists() and now - COMPACT_MARKER_PATH.stat().st_mtime < COMPACT_INTERVAL_SECONDS:
         return
-    compact_database()
+    optimize_database()
     COMPACT_MARKER_PATH.write_text(datetime.now().isoformat(), encoding="utf-8")
 
 
@@ -730,13 +993,21 @@ def run_collection_once() -> dict:
         config = load_runtime_config()
     except ConfigError as e:
         logger.error("%s", e)
-        return {"ok": False, "message": str(e), "run_id": None, "saved": [], "failed": [], "skipped": []}
+        return {"ok": False, "message": str(e), "run_id": None, "saved": [], "failed": [], "skipped": [], "request_count": 0}
 
     try:
         engine = initialize_database()
     except Exception as e:
         logger.error("Database initialization failed: %s", e)
-        return {"ok": False, "message": f"Database initialization failed: {e}", "run_id": None, "saved": [], "failed": [], "skipped": []}
+        return {
+            "ok": False,
+            "message": f"Database initialization failed: {e}",
+            "run_id": None,
+            "saved": [],
+            "failed": [],
+            "skipped": [],
+            "request_count": 0,
+        }
     SessionLocal = get_session_factory(engine)
     session = SessionLocal()
     run = CollectionRun(started_at=started, status="running", symbols_requested=json_list(config["symbols"]))
@@ -746,10 +1017,13 @@ def run_collection_once() -> dict:
     saved = []
     failed = []
     skipped = []
+    request_count = 0
+    rate_limiter = None
 
     try:
         client = get_client(config)
-        rate_limiter = RateLimiter(config["api_rate_limit"])
+        rate_limiter = RateLimiter(config["api_rate_limit_per_second"])
+        rate_limiter.reset_count()
 
         for symbol in config["symbols"]:
             result = process_symbol(client, session, run, symbol, config, rate_limiter)
@@ -760,19 +1034,20 @@ def run_collection_once() -> dict:
             else:
                 failed.append(symbol)
 
+        if saved:
+            try:
+                apply_retention(session, config["settings"]["raw_retention_days"])
+                maybe_compact_database()
+            except Exception as e:
+                logger.warning("Retention/database maintenance failed: %s", e)
+
         try:
             overview_data = build_overview_data(session, config["settings"])
             send_event_to_backend({"type": "MARKET_UPDATE", "data": overview_data})
         except Exception as e:
             logger.warning("Event broadcast failed: %s", e)
 
-        if saved:
-            try:
-                apply_retention(session, config["settings"]["raw_retention_days"])
-                maybe_compact_database()
-            except Exception as e:
-                logger.warning("Retention/compaction failed: %s", e)
-
+        request_count = rate_limiter.request_count
         ok = bool(saved or skipped) and not (failed and not saved and not skipped)
         if saved:
             message = f"Saved data for {len(saved)} symbols"
@@ -789,9 +1064,20 @@ def run_collection_once() -> dict:
         run.symbols_skipped = json_list(skipped)
         session.commit()
 
-        return {"ok": ok, "message": message, "run_id": run.id, "saved": saved, "failed": failed, "skipped": skipped}
+        return {
+            "ok": ok,
+            "message": message,
+            "run_id": run.id,
+            "saved": saved,
+            "failed": failed,
+            "skipped": skipped,
+            "request_count": request_count,
+            "api_rate_limit_per_second": config["api_rate_limit_per_second"],
+        }
 
     except Exception as e:
+        if rate_limiter is not None:
+            request_count = rate_limiter.request_count
         logger.exception("Global collection error")
         run.status = "failed"
         run.message = str(e)
@@ -800,10 +1086,135 @@ def run_collection_once() -> dict:
         run.symbols_failed = json_list(failed or config["symbols"])
         run.symbols_skipped = json_list(skipped)
         session.commit()
-        return {"ok": False, "message": str(e), "run_id": run.id, "saved": saved, "failed": failed, "skipped": skipped}
+        return {
+            "ok": False,
+            "message": str(e),
+            "run_id": run.id,
+            "saved": saved,
+            "failed": failed,
+            "skipped": skipped,
+            "request_count": request_count,
+            "api_rate_limit_per_second": config["api_rate_limit_per_second"],
+        }
     finally:
         session.close()
         logger.info("Run complete.")
+
+
+def run_one_off_profile(symbol: str, target_expiration: date, db_path: Path) -> dict:
+    symbol = str(symbol or "").strip().upper()
+    started = datetime.now()
+
+    try:
+        config = load_runtime_config()
+    except ConfigError as e:
+        logger.error("%s", e)
+        return {"ok": False, "message": str(e), "run_id": None, "snapshot_id": None, "request_count": 0}
+
+    try:
+        one_off_engine = initialize_database(db_path=db_path)
+        ensure_one_off_index_table(one_off_engine)
+    except Exception as e:
+        logger.error("One-off database initialization failed: %s", e)
+        return {
+            "ok": False,
+            "message": f"One-off database initialization failed: {e}",
+            "run_id": None,
+            "snapshot_id": None,
+            "request_count": 0,
+        }
+
+    SessionLocal = get_session_factory(one_off_engine)
+    session = SessionLocal()
+
+    run = CollectionRun(
+        started_at=started,
+        status="running",
+        message=f"One-off profile for {symbol} {target_expiration.isoformat()}",
+        symbols_requested=json_list([symbol]),
+    )
+    session.add(run)
+    session.commit()
+
+    rate_limiter = None
+    try:
+        config["symbols"] = [symbol]
+        client = get_client(config)
+        rate_limiter = RateLimiter(config["api_rate_limit_per_second"])
+        rate_limiter.reset_count()
+        result = process_symbol(
+            client,
+            session,
+            run,
+            symbol,
+            config,
+            rate_limiter,
+            target_expiration=target_expiration,
+            emit_events=False,
+            strike_window_count=25,
+        )
+
+        request_count = rate_limiter.request_count
+        ok = result.get("status") == "saved"
+        run.status = "success" if ok else result.get("status", "failed")
+        run.message = result.get("message", "")
+        run.finished_at = datetime.now()
+        run.symbols_succeeded = json_list([symbol] if ok else [])
+        run.symbols_failed = json_list([symbol] if result.get("status") == "failed" else [])
+        run.symbols_skipped = json_list([symbol] if result.get("status") == "skipped" else [])
+        session.commit()
+
+        if ok:
+            replace_one_off_profile_key(
+                session,
+                symbol,
+                target_expiration,
+                keep_snapshot_id=int(result.get("snapshot_id")),
+            )
+            upsert_one_off_profile_index(
+                session,
+                symbol,
+                target_expiration,
+                int(result.get("snapshot_id")),
+                int(run.id),
+            )
+
+        try:
+            optimize_database(db_path)
+        except Exception as e:
+            logger.warning("One-off database maintenance failed: %s", e)
+
+        return {
+            "ok": ok,
+            "message": result.get("message", ""),
+            "run_id": run.id,
+            "snapshot_id": result.get("snapshot_id"),
+            "symbol": symbol,
+            "expiration_date": target_expiration.isoformat(),
+            "request_count": request_count,
+            "api_rate_limit_per_second": config["api_rate_limit_per_second"],
+        }
+    except Exception as e:
+        request_count = rate_limiter.request_count if rate_limiter is not None else 0
+        logger.exception("One-off collection error")
+        run.status = "failed"
+        run.message = str(e)
+        run.finished_at = datetime.now()
+        run.symbols_failed = json_list([symbol])
+        session.commit()
+        return {
+            "ok": False,
+            "message": str(e),
+            "run_id": run.id,
+            "snapshot_id": None,
+            "symbol": symbol,
+            "expiration_date": target_expiration.isoformat(),
+            "request_count": request_count,
+        }
+    finally:
+        session.close()
+        one_off_engine.dispose()
+        logger.info("One-off run complete.")
 
 
 def main_once() -> dict:
@@ -811,7 +1222,7 @@ def main_once() -> dict:
         if not acquired:
             message = "Collector is already running; refresh skipped."
             logger.warning(message)
-            return {"ok": False, "message": message, "run_id": None, "saved": [], "failed": [], "skipped": []}
+            return {"ok": False, "message": message, "run_id": None, "saved": [], "failed": [], "skipped": [], "request_count": 0}
         return run_collection_once()
 
 
@@ -819,12 +1230,21 @@ def run_loop():
     logger.info("Starting polling collector. Press Ctrl+C to stop.")
     while True:
         result = main_once()
-        logger.info("Collector result: %s", result["message"])
         try:
             settings = load_settings()
-            delay = settings["backend_update_delay"]
+            delay = calculate_poll_delay(
+                settings,
+                int(result.get("request_count") or 0),
+                result.get("api_rate_limit_per_second"),
+            )
         except ConfigError:
-            delay = DEFAULT_SETTINGS["backend_update_delay"]
+            delay = DEFAULT_SETTINGS["min_poll_interval_seconds"]
+        logger.info(
+            "Collector result: %s | public_requests=%s | next_poll=%.1fs",
+            result["message"],
+            result.get("request_count", 0),
+            delay,
+        )
         time.sleep(delay)
 
 

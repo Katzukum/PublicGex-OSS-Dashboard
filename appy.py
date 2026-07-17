@@ -1,27 +1,83 @@
 import eel
 import pandas as pd
+import atexit
 import json
+import re
 import socket
+import subprocess
+import sys
 import threading
-from datetime import datetime
+from datetime import date, datetime, time as dt_time
+from pathlib import Path
 from sqlalchemy import text
 
-from models import initialize_database, schema_is_current
+from backtest_gamma_butterflies import (
+    DEFAULT_PIT_WALL_COUNT,
+    _available_symmetric_width,
+    _center_strike,
+    _leg_price,
+    _price_fly,
+    _score_gamma_wall_pit_levels,
+    _score_hybrid_levels,
+    _strike_key,
+    _strike_summary,
+    _rows_by_strike_and_side,
+)
+from gex_levels import aggregate_gamma_levels
+from models import get_engine, initialize_database, schema_is_current
 
 # --- Configuration ---
 eel.init('web')
+APP_ROOT = Path(__file__).resolve().parent
+ONE_OFF_DB_PATH = APP_ROOT / "one_off_gex_data.db"
+collector_process = None
 
 DEFAULT_SETTINGS = {
-    "refresh_interval": 180,
+    "refresh_interval": 10,
     "theme": "dark",
     "symbols": ["SPY"],
-    "backend_update_delay": 180,
+    "api_rate_limit_per_second": 10.0,
+    "api_rate_limit_utilization": 0.6,
+    "min_poll_interval_seconds": 15,
+    "max_poll_interval_seconds": 120,
     "raw_retention_days": 30,
     "weights": {"SPY": 1.0},
     "weights_whale": {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20},
 }
 
 # --- Event/Notification Server ---
+
+def start_collector_process():
+    """Start the Public.com collector as a child of the dashboard process."""
+    global collector_process
+    if collector_process and collector_process.poll() is None:
+        return collector_process
+
+    print("Starting Public.com collector backend...")
+    collector_process = subprocess.Popen(
+        [sys.executable, "publicData.py"],
+        cwd=str(APP_ROOT),
+    )
+    return collector_process
+
+
+def stop_collector_process():
+    """Stop the dashboard-owned collector process, if it is still running."""
+    global collector_process
+    if not collector_process or collector_process.poll() is not None:
+        return
+
+    print("Stopping Public.com collector backend...")
+    collector_process.terminate()
+    try:
+        collector_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        print("Collector did not stop quickly; forcing shutdown.")
+        collector_process.kill()
+        collector_process.wait(timeout=5)
+
+
+atexit.register(stop_collector_process)
 
 # --- 0DTE Optimization Helpers ---
 
@@ -260,17 +316,32 @@ def run_event_server(port=5005):
         while True:
             client_sock, addr = server.accept()
             try:
-                data = client_sock.recv(4096)
+                client_sock.settimeout(5)
+                chunks = []
+                while True:
+                    try:
+                        chunk = client_sock.recv(65536)
+                    except socket.timeout:
+                        break
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+
+                data = b"".join(chunks)
                 if data:
                     # Decode and parse
                     msg = json.loads(data.decode('utf-8'))
                     print(f"Event received: {msg.get('type', 'UNKNOWN')}")
 
-                    # 1. Handle Market Updates (Forward to NinjaTrader)
+                    # 1. Handle Market Updates (Forward canonical dashboard state to NinjaTrader)
                     if msg.get('type') == 'MARKET_UPDATE' and 'data' in msg:
                         try:
                             from ninjatrader_broadcaster import send_regime_update
-                            send_regime_update(msg['data'])
+                            overview_data = get_market_overview()
+                            if overview_data.get("error"):
+                                raise RuntimeError(overview_data["error"])
+                            msg['data'] = overview_data
+                            send_regime_update(overview_data)
                             print(f"[Bridge] Forwarded market update to NinjaTrader")
                         except Exception as e:
                             print(f"[Bridge] Failed to forward to NinjaTrader: {e}")
@@ -318,6 +389,43 @@ def _load_settings() -> dict:
     merged.update(settings)
     return merged
 
+def _validate_settings(settings: dict) -> dict:
+    symbols = settings.get("symbols", [])
+    if not isinstance(symbols, list) or not [str(s).strip() for s in symbols]:
+        raise ValueError("At least one symbol is required.")
+
+    normalized_symbols = []
+    for symbol in symbols:
+        symbol_text = str(symbol).strip().upper()
+        if not symbol_text:
+            continue
+        if not symbol_text.replace(".", "").replace("-", "").isalnum():
+            raise ValueError(f"Invalid symbol: {symbol}")
+        normalized_symbols.append(symbol_text)
+
+    refresh_interval = max(5, int(settings.get("refresh_interval", DEFAULT_SETTINGS["refresh_interval"])))
+    rate_limit = max(0.1, float(settings.get("api_rate_limit_per_second", DEFAULT_SETTINGS["api_rate_limit_per_second"])))
+    utilization = float(settings.get("api_rate_limit_utilization", DEFAULT_SETTINGS["api_rate_limit_utilization"]))
+    if utilization < 0.1 or utilization > 1.0:
+        raise ValueError("Limit utilization must be between 0.1 and 1.0.")
+
+    min_poll = max(1, int(settings.get("min_poll_interval_seconds", DEFAULT_SETTINGS["min_poll_interval_seconds"])))
+    max_poll = int(settings.get("max_poll_interval_seconds", DEFAULT_SETTINGS["max_poll_interval_seconds"]))
+    if max_poll < min_poll:
+        raise ValueError("Maximum poll seconds must be greater than or equal to minimum poll seconds.")
+
+    retention_days = max(1, int(settings.get("raw_retention_days", DEFAULT_SETTINGS["raw_retention_days"])))
+
+    settings["symbols"] = normalized_symbols
+    settings["refresh_interval"] = refresh_interval
+    settings["api_rate_limit_per_second"] = rate_limit
+    settings["api_rate_limit_utilization"] = utilization
+    settings["min_poll_interval_seconds"] = min_poll
+    settings["max_poll_interval_seconds"] = max_poll
+    settings["raw_retention_days"] = retention_days
+    settings["theme"] = settings.get("theme") if settings.get("theme") in {"dark", "light"} else DEFAULT_SETTINGS["theme"]
+    return settings
+
 def _normalized_composition(target_weights: dict) -> str:
     total = sum(float(w or 0) for w in target_weights.values())
     if total <= 0:
@@ -347,7 +455,7 @@ def get_settings() -> dict:
     return _load_settings()
 
 @eel.expose
-def save_settings(new_settings: dict) -> bool:
+def save_settings(new_settings: dict) -> dict:
     """Updates the settings.json file with new values.
 
     Merges the provided settings into the existing file to preserve
@@ -357,7 +465,7 @@ def save_settings(new_settings: dict) -> bool:
         new_settings: A dictionary of settings to update.
 
     Returns:
-        True if successful.
+        A result object with ok/message/settings fields.
     """
     import json
     try:
@@ -369,11 +477,65 @@ def save_settings(new_settings: dict) -> bool:
 
     # Merge new settings into existing
     existing.update(new_settings)
+    try:
+        existing = _validate_settings(existing)
+    except (TypeError, ValueError) as e:
+        return {"ok": False, "message": str(e)}
 
     with open('settings.json', 'w', encoding='utf-8') as f:
         json.dump(existing, f, indent=2)
     print(f"Settings merged and saved: {existing.keys()}")
-    return True
+    return {"ok": True, "message": "Settings saved.", "settings": existing}
+
+@eel.expose
+def get_backend_status() -> dict:
+    """Returns latest collector and snapshot freshness from the local DB."""
+    try:
+        with engine.connect() as conn:
+            run = conn.execute(text("""
+                SELECT id, started_at, finished_at, status, message
+                FROM collection_runs
+                ORDER BY started_at DESC
+                LIMIT 1
+            """)).fetchone()
+            snap = conn.execute(text("""
+                SELECT symbol, timestamp
+                FROM gex_snapshots
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)).fetchone()
+
+        now = datetime.now()
+        latest_snapshot_at = getattr(snap, "timestamp", None) if snap else None
+        latest_run_started = getattr(run, "started_at", None) if run else None
+        latest_run_finished = getattr(run, "finished_at", None) if run else None
+
+        snapshot_age_seconds = None
+        if latest_snapshot_at:
+            parsed_snapshot_at = parse_timestamp(latest_snapshot_at)
+            if parsed_snapshot_at:
+                snapshot_age_seconds = max(0, (now - parsed_snapshot_at).total_seconds())
+
+        run_age_seconds = None
+        if latest_run_started:
+            parsed_run_started = parse_timestamp(latest_run_started)
+            if parsed_run_started:
+                run_age_seconds = max(0, (now - parsed_run_started).total_seconds())
+
+        return {
+            "ok": bool(run),
+            "run_id": getattr(run, "id", None) if run else None,
+            "run_status": getattr(run, "status", None) if run else None,
+            "run_message": getattr(run, "message", None) if run else None,
+            "run_started_at": str(latest_run_started) if latest_run_started else None,
+            "run_finished_at": str(latest_run_finished) if latest_run_finished else None,
+            "run_age_seconds": run_age_seconds,
+            "latest_symbol": getattr(snap, "symbol", None) if snap else None,
+            "latest_snapshot_at": str(latest_snapshot_at) if latest_snapshot_at else None,
+            "snapshot_age_seconds": snapshot_age_seconds,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 @eel.expose
 def get_dashboard_data(symbol: str = "SPY") -> dict:
@@ -392,33 +554,45 @@ def get_dashboard_data(symbol: str = "SPY") -> dict:
             - history (list): List of dicts for the time-series chart.
             - error (str): If data is missing or query fails.
     """
+    return _dashboard_data_from_engine(engine, symbol, DB_SCHEMA_CURRENT)
+
+
+def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = True, snapshot_id: int | None = None) -> dict:
+    symbol = str(symbol or "").strip().upper()
     try:
-        with engine.connect() as conn:
-            # 1. Get Latest Snapshot
-            query_snap = text("""
-                SELECT *
-                FROM gex_snapshots
-                WHERE symbol = :symbol
-                ORDER BY timestamp DESC
-                LIMIT 1
-            """)
-            snap_row = conn.execute(query_snap, {"symbol": symbol}).fetchone()
+        with db_engine.connect() as conn:
+            if snapshot_id:
+                query_snap = text("""
+                    SELECT *
+                    FROM gex_snapshots
+                    WHERE id = :snapshot_id
+                    LIMIT 1
+                """)
+                snap_row = conn.execute(query_snap, {"snapshot_id": snapshot_id}).fetchone()
+            else:
+                query_snap = text("""
+                    SELECT *
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """)
+                snap_row = conn.execute(query_snap, {"symbol": symbol}).fetchone()
 
             if not snap_row:
                 return {
-                    "error": f"No data found for {symbol}. Run publicData.py for strict target-day 0DTE collection.",
+                    "error": f"No data found for {symbol}.",
                     "snapshot": None,
                     "profile": [],
                     "history": []
                 }
 
             latest_time = snap_row.timestamp
+            symbol = snap_row.symbol or symbol
 
-            # 2. Fetch Profile Data (For the Bar Chart & Table)
-            # We need raw rows to separate Calls vs Puts in JS
-            if DB_SCHEMA_CURRENT:
+            if schema_current:
                 query_profile = text("""
-                    SELECT strike_price, option_type, gex_value, open_interest
+                    SELECT strike_price, option_type, gex_value, open_interest, expiration_date
                     FROM raw_option_greeks
                     WHERE snapshot_id = :snapshot_id
                     ORDER BY strike_price ASC
@@ -426,26 +600,34 @@ def get_dashboard_data(symbol: str = "SPY") -> dict:
                 df_profile = pd.read_sql(query_profile, conn, params={"snapshot_id": snap_row.id})
             else:
                 query_profile = text("""
-                    SELECT strike_price, option_type, gex_value, open_interest
+                    SELECT strike_price, option_type, gex_value, open_interest, expiration_date
                     FROM raw_option_greeks
                     WHERE symbol = :symbol AND timestamp = :ts
                     ORDER BY strike_price ASC
                 """)
                 df_profile = pd.read_sql(query_profile, conn, params={"symbol": symbol, "ts": latest_time})
 
-            # Convert Row to Dict safely
             spot = snap_row.spot_price or 0
+            expiration_date = None
+            if not df_profile.empty and "expiration_date" in df_profile:
+                expiration_date = str(df_profile["expiration_date"].dropna().iloc[0]) if not df_profile["expiration_date"].dropna().empty else None
+
             snapshot = {
+                "id": snap_row.id,
                 "symbol": symbol,
                 "timestamp": str(latest_time),
+                "expiration_date": expiration_date,
                 "spot_price": spot,
                 "total_net_gex": snap_row.total_net_gex or 0,
+                "total_call_gex": snap_row.total_call_gex or 0,
+                "total_put_gex": snap_row.total_put_gex or 0,
                 "max_call_gex_strike": snap_row.max_call_gex_strike or 0,
                 "max_put_gex_strike": snap_row.max_put_gex_strike or 0,
+                "flip_strike": snap_row.flip_strike or 0,
+                "effective_gex": snap_row.effective_gex or 0,
                 "gex_slope": calculate_gex_slope(spot, df_profile.to_dict(orient='records'))
             }
 
-            # 4. Fetch History (For the Line Chart)
             query_history = text("""
                 SELECT timestamp, total_net_gex, spot_price
                 FROM (
@@ -458,11 +640,9 @@ def get_dashboard_data(symbol: str = "SPY") -> dict:
                 ORDER BY timestamp ASC
             """)
             df_hist = pd.read_sql(query_history, conn, params={"symbol": symbol})
+            if "timestamp" in df_hist:
+                df_hist['timestamp'] = df_hist['timestamp'].apply(lambda x: str(x))
 
-            # Convert timestamps to string for JSON
-            df_hist['timestamp'] = df_hist['timestamp'].apply(lambda x: str(x))
-
-            # Structure for Frontend
             return {
                 "snapshot": snapshot,
                 "profile": df_profile.to_dict(orient='records'),
@@ -471,6 +651,415 @@ def get_dashboard_data(symbol: str = "SPY") -> dict:
 
     except Exception as e:
         print(f"Error: {e}")
+        return {"error": str(e)}
+
+
+def _parse_one_off_date(value: str) -> date:
+    raw = str(value or "").strip()
+    for fmt in ("%Y-%m-%d", "%m-%d-%y", "%m/%d/%y", "%m-%d-%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError("Date must be like 07-07-26 or 2026-07-07.")
+
+
+def _validate_one_off_symbol(symbol: str) -> str:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("Symbol is required.")
+    if not re.fullmatch(r"[A-Z0-9.-]{1,12}", normalized):
+        raise ValueError("Symbol can only contain letters, numbers, dots, and hyphens.")
+    return normalized
+
+
+def _ensure_one_off_index(conn) -> None:
+    conn.exec_driver_sql("""
+        CREATE TABLE IF NOT EXISTS one_off_profile_index (
+            symbol TEXT NOT NULL,
+            expiration_date TEXT NOT NULL,
+            snapshot_id INTEGER,
+            run_id INTEGER,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (symbol, expiration_date)
+        )
+    """)
+    conn.exec_driver_sql("""
+        INSERT OR IGNORE INTO one_off_profile_index (
+            symbol,
+            expiration_date,
+            snapshot_id,
+            run_id,
+            updated_at
+        )
+        WITH grouped AS (
+            SELECT
+                s.symbol AS symbol,
+                MIN(r.expiration_date) AS expiration_date,
+                s.id AS snapshot_id,
+                s.collection_run_id AS run_id,
+                s.timestamp AS timestamp
+            FROM gex_snapshots s
+            JOIN raw_option_greeks r ON r.snapshot_id = s.id
+            GROUP BY s.id
+        )
+        SELECT
+            g.symbol,
+            g.expiration_date,
+            g.snapshot_id,
+            g.run_id,
+            g.timestamp
+        FROM grouped g
+        WHERE g.expiration_date IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1
+              FROM grouped newer
+              WHERE newer.symbol = g.symbol
+                AND newer.expiration_date = g.expiration_date
+                AND newer.timestamp > g.timestamp
+          )
+    """)
+
+
+@eel.expose
+def build_one_off_profile(symbol: str, expiration_date: str) -> dict:
+    try:
+        normalized_symbol = _validate_one_off_symbol(symbol)
+        target_date = _parse_one_off_date(expiration_date)
+
+        from publicData import run_one_off_profile
+
+        result = run_one_off_profile(normalized_symbol, target_date, ONE_OFF_DB_PATH)
+        if not result.get("ok"):
+            result["db_path"] = str(ONE_OFF_DB_PATH)
+            return result
+
+        one_off_engine = get_engine(ONE_OFF_DB_PATH)
+        try:
+            data = _dashboard_data_from_engine(
+                one_off_engine,
+                normalized_symbol,
+                schema_is_current(ONE_OFF_DB_PATH),
+                snapshot_id=result.get("snapshot_id"),
+            )
+        finally:
+            one_off_engine.dispose()
+        if data.get("error"):
+            return {
+                "ok": False,
+                "message": data["error"],
+                "db_path": str(ONE_OFF_DB_PATH),
+                **result,
+            }
+
+        return {
+            **result,
+            "ok": True,
+            "db_path": str(ONE_OFF_DB_PATH),
+            "data": data,
+        }
+    except Exception as e:
+        return {"ok": False, "message": str(e), "db_path": str(ONE_OFF_DB_PATH)}
+
+
+@eel.expose
+def get_one_off_profiles() -> list[dict]:
+    try:
+        one_off_engine = initialize_database(db_path=ONE_OFF_DB_PATH)
+        try:
+            with one_off_engine.begin() as conn:
+                _ensure_one_off_index(conn)
+                rows = conn.execute(text("""
+                    SELECT
+                        i.snapshot_id,
+                        i.symbol,
+                        i.expiration_date,
+                        i.updated_at,
+                        s.timestamp,
+                        COUNT(r.id) AS contract_count,
+                        s.spot_price,
+                        s.total_net_gex
+                    FROM one_off_profile_index i
+                    JOIN gex_snapshots s ON s.id = i.snapshot_id
+                    LEFT JOIN raw_option_greeks r ON r.snapshot_id = i.snapshot_id
+                    GROUP BY i.symbol, i.expiration_date, i.snapshot_id
+                    ORDER BY i.updated_at DESC
+                    LIMIT 20
+                """)).fetchall()
+        finally:
+            one_off_engine.dispose()
+        return [
+            dict(row._mapping) | {
+                "timestamp": str(row.timestamp),
+                "updated_at": str(row.updated_at),
+                "expiration_date": str(row.expiration_date),
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        print(f"Error loading one-off profiles: {e}")
+        return []
+
+
+@eel.expose
+def get_one_off_profile(snapshot_id: int) -> dict:
+    try:
+        one_off_engine = initialize_database(db_path=ONE_OFF_DB_PATH)
+        try:
+            return _dashboard_data_from_engine(
+                one_off_engine,
+                "",
+                schema_is_current(ONE_OFF_DB_PATH),
+                snapshot_id=int(snapshot_id),
+            )
+        finally:
+            one_off_engine.dispose()
+    except Exception as e:
+        return {"error": str(e)}
+
+def _latest_snapshot_and_raw_rows(conn, symbol: str):
+    snap_row = conn.execute(
+        text("""
+            SELECT *
+            FROM gex_snapshots
+            WHERE symbol = :symbol
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """),
+        {"symbol": symbol},
+    ).fetchone()
+    if not snap_row:
+        return None, []
+
+    if DB_SCHEMA_CURRENT:
+        raw_query = text("""
+            SELECT
+                expiration_date,
+                osi_symbol,
+                strike_price,
+                option_type,
+                delta,
+                gamma,
+                open_interest,
+                underlying_price,
+                gex_value
+            FROM raw_option_greeks
+            WHERE snapshot_id = :snapshot_id
+            ORDER BY strike_price ASC, option_type ASC
+        """)
+        raw_rows = conn.execute(raw_query, {"snapshot_id": snap_row.id}).fetchall()
+    else:
+        raw_query = text("""
+            SELECT
+                expiration_date,
+                osi_symbol,
+                strike_price,
+                option_type,
+                delta,
+                gamma,
+                open_interest,
+                underlying_price,
+                gex_value
+            FROM raw_option_greeks
+            WHERE symbol = :symbol AND timestamp = :ts
+            ORDER BY strike_price ASC, option_type ASC
+        """)
+        raw_rows = conn.execute(raw_query, {"symbol": symbol, "ts": snap_row.timestamp}).fetchall()
+
+    return snap_row, [dict(row._mapping) for row in raw_rows]
+
+
+def _setup_side(center: float, spot: float) -> str:
+    return "CALL" if center >= spot else "PUT"
+
+
+def _build_butterfly_idea(raw_rows: list[dict], summary: dict, spot: float) -> dict:
+    center_data = _center_strike(summary, "gex")
+    if not center_data:
+        return {"status": "unavailable", "reason": "No GEX profile available"}
+
+    center = _strike_key(center_data["strike"])
+    width = _available_symmetric_width(center, summary.keys(), None)
+    if width is None:
+        return {"status": "unavailable", "reason": "No symmetric strikes around the GEX center"}
+
+    lower = _strike_key(center - width)
+    upper = _strike_key(center + width)
+    side = _setup_side(center, spot)
+    priced = _price_fly(
+        raw_rows,
+        lower,
+        center,
+        upper,
+        spot,
+        side=side,
+        price_method="greeks",
+        min_debit=0.0,
+    )
+    if not priced:
+        return {"status": "unavailable", "reason": f"Could not price {side.lower()} butterfly legs"}
+
+    debit = priced.debit
+    max_profit = max(width - debit, 0)
+    return {
+        "status": "ready",
+        "kind": "Butterfly",
+        "method": "Largest GEX body",
+        "side": side,
+        "center": center,
+        "lower": lower,
+        "upper": upper,
+        "width": width,
+        "estimated_debit": debit,
+        "estimated_debit_dollars": debit * 100,
+        "max_profit": max_profit,
+        "max_profit_dollars": max_profit * 100,
+        "max_loss": debit,
+        "lower_breakeven": lower + debit,
+        "upper_breakeven": upper - debit,
+        "net_gex": center_data["net_gex"],
+        "call_gex": center_data["call_gex"],
+        "put_gex": center_data["put_gex"],
+        "rationale": "Backtest favored the largest GEX strike as the body for pin-sensitive butterflies.",
+    }
+
+
+def _priced_debit_spread(lookup: dict, spot: float, side: str, long_strike: float, short_strike: float):
+    long_row = lookup.get((_strike_key(long_strike), side))
+    short_row = lookup.get((_strike_key(short_strike), side))
+    if not long_row or not short_row:
+        return None
+
+    long_price = _leg_price(long_row, spot, side, "greeks")
+    short_price = _leg_price(short_row, spot, side, "greeks")
+    if long_price is None or short_price is None:
+        return None
+
+    debit = long_price - short_price
+    if debit <= 0:
+        return None
+    return {
+        "long_price": long_price,
+        "short_price": short_price,
+        "debit": debit,
+    }
+
+
+def _build_debit_spread_idea(raw_rows: list[dict], summary: dict, spot: float) -> dict:
+    center_data = _center_strike(summary, "gamma-pit-walls")
+    if not center_data:
+        return {"status": "unavailable", "reason": "No major-wall gamma pit available"}
+
+    center = _strike_key(center_data["strike"])
+    side = _setup_side(center, spot)
+    strikes = sorted(summary.keys())
+    if side == "CALL":
+        long_candidates = [strike for strike in strikes if strike < center]
+        if not long_candidates:
+            return {"status": "unavailable", "reason": "No lower strike for call debit spread"}
+        long_strike = max(long_candidates)
+        short_strike = center
+        width = short_strike - long_strike
+        breakeven = long_strike
+    else:
+        long_candidates = [strike for strike in strikes if strike > center]
+        if not long_candidates:
+            return {"status": "unavailable", "reason": "No upper strike for put debit spread"}
+        long_strike = min(long_candidates)
+        short_strike = center
+        width = long_strike - short_strike
+        breakeven = long_strike
+
+    lookup = _rows_by_strike_and_side(raw_rows)
+    priced = _priced_debit_spread(lookup, spot, side, long_strike, short_strike)
+    if not priced:
+        return {"status": "unavailable", "reason": f"Could not price {side.lower()} debit spread legs"}
+
+    debit = priced["debit"]
+    max_profit = max(width - debit, 0)
+    breakeven = breakeven + debit if side == "CALL" else breakeven - debit
+    return {
+        "status": "ready",
+        "kind": "Debit Spread",
+        "method": "Major-wall gamma pit",
+        "side": side,
+        "long_strike": _strike_key(long_strike),
+        "short_strike": _strike_key(short_strike),
+        "target": center,
+        "width": width,
+        "estimated_debit": debit,
+        "estimated_debit_dollars": debit * 100,
+        "max_profit": max_profit,
+        "max_profit_dollars": max_profit * 100,
+        "max_loss": debit,
+        "breakeven": breakeven,
+        "long_price": priced["long_price"],
+        "short_price": priced["short_price"],
+        "pit_score": center_data["pit_score"],
+        "pit_left_wall_strike": center_data["pit_left_wall_strike"],
+        "pit_left_wall_gex": center_data["pit_left_wall_gex"],
+        "pit_right_wall_strike": center_data["pit_right_wall_strike"],
+        "pit_right_wall_gex": center_data["pit_right_wall_gex"],
+        "net_gex": center_data["net_gex"],
+        "rationale": "Backtest showed major-wall pits were touched intraday more often than they settled as fly bodies.",
+    }
+
+
+@eel.expose
+def get_trade_setups(symbol: str = "SPX") -> dict:
+    try:
+        symbol = str(symbol or "SPX").upper()
+        with engine.connect() as conn:
+            snap_row, raw_rows = _latest_snapshot_and_raw_rows(conn, symbol)
+            if not snap_row:
+                return {"error": f"No data found for {symbol}"}
+            if not raw_rows:
+                return {"error": f"No option rows found for {symbol}"}
+
+            spot = float(getattr(snap_row, "spot_price", 0) or 0)
+            timestamp = parse_timestamp(getattr(snap_row, "timestamp", None)) or datetime.now()
+            summary = _strike_summary(
+                raw_rows,
+                spot=spot,
+                timestamp=timestamp,
+                settlement_time=dt_time(16, 0),
+            )
+            _score_hybrid_levels(summary, 0.7, 0.3)
+            _score_gamma_wall_pit_levels(summary, DEFAULT_PIT_WALL_COUNT)
+
+            profile = [
+                {
+                    "strike": item["strike"],
+                    "net_gex": item["net_gex"],
+                    "call_gex": item["call_gex"],
+                    "put_gex": item["put_gex"],
+                    "net_charm": item["net_charm"],
+                    "hybrid_score": item["hybrid_score"],
+                    "pit_score": item["pit_score"],
+                }
+                for item in sorted(summary.values(), key=lambda row: row["strike"])
+            ]
+
+            return {
+                "symbol": symbol,
+                "timestamp": str(getattr(snap_row, "timestamp", "")),
+                "snapshot_id": getattr(snap_row, "id", None),
+                "spot": spot,
+                "pricing_model": "Greek-implied theoretical mid from stored snapshot delta/gamma",
+                "pit_wall_count": DEFAULT_PIT_WALL_COUNT,
+                "profile": profile,
+                "ideas": {
+                    "butterfly": _build_butterfly_idea(raw_rows, summary, spot),
+                    "debit_spread": _build_debit_spread_idea(raw_rows, summary, spot),
+                },
+                "backtest_lens": {
+                    "butterfly": "GEX-centered flies led the sample.",
+                    "debit_spread": "Major-wall pits had the strongest intraday touch profile among pit variants.",
+                    "sample_warning": "Small sample; prices are model-implied, not bid/ask fills.",
+                },
+            }
+    except Exception as e:
+        print(f"Error in trade setups: {e}")
         return {"error": str(e)}
 
 @eel.expose
@@ -489,7 +1078,9 @@ def get_market_overview() -> dict:
             "compass_whale": {},
             "components": [],
             "tilt": [],
-            "gamma_levels": {"NDX": [], "SPX": []}
+            "gamma_levels": {"NDX": [], "SPX": []},
+            "cockpit_levels": {"NDX": [], "SPX": []},
+            "edge_stats": {}
         }
 
         def _gamma_levels_for_symbol(symbol, conn, per_side=5):
@@ -502,45 +1093,23 @@ def get_market_overview() -> dict:
 
             if DB_SCHEMA_CURRENT:
                 query_levels = text("""
-                    SELECT strike_price, SUM(gex_value) AS net_gex
+                    SELECT strike_price, option_type, gex_value, open_interest
                     FROM raw_option_greeks
                     WHERE snapshot_id = :snapshot_id
-                    GROUP BY strike_price
+                    ORDER BY strike_price
                 """)
                 level_rows = conn.execute(query_levels, {"snapshot_id": snap_row.id}).fetchall()
             else:
                 query_levels = text("""
-                    SELECT strike_price, SUM(gex_value) AS net_gex
+                    SELECT strike_price, option_type, gex_value, open_interest
                     FROM raw_option_greeks
                     WHERE symbol = :symbol AND timestamp = :ts
-                    GROUP BY strike_price
+                    ORDER BY strike_price
                 """)
                 level_rows = conn.execute(query_levels, {"symbol": symbol, "ts": snap_row.timestamp}).fetchall()
 
             spot = getattr(snap_row, 'spot_price', 0) or 0
-            below = []
-            above = []
-            for row in level_rows:
-                gex = getattr(row, 'net_gex', 0) or 0
-                strike = getattr(row, 'strike_price', 0) or 0
-                if strike <= 0 or gex == 0:
-                    continue
-
-                item = {
-                    "strike": strike,
-                    "gex": gex,
-                    "type": "resistance" if gex > 0 else "support",
-                }
-                if strike < spot:
-                    below.append(item)
-                else:
-                    above.append(item)
-
-            selected = (
-                sorted(below, key=lambda item: abs(item["gex"]), reverse=True)[:per_side] +
-                sorted(above, key=lambda item: abs(item["gex"]), reverse=True)[:per_side]
-            )
-            return sorted(selected, key=lambda item: item["strike"])
+            return aggregate_gamma_levels(level_rows, spot=spot, per_side=per_side)
 
         def _calculate_compass_state(target_weights, conn):
             x_score_sum = 0
@@ -747,6 +1316,7 @@ def get_market_overview() -> dict:
                     "flip_strike": data['flip_strike'],
                     "distance_pct": data.get('distance_pct', 0),
                     "net_gex": data['net_gex'],
+                    "effective_gex": data.get('effective_gex', 0),
                     "regime": data['regime'],
                     "acceleration": data.get('acceleration', 0),
                     "vol_score": data.get('vol_score', 0),
@@ -767,16 +1337,21 @@ def get_market_overview() -> dict:
 
             for idx_symbol in ["NDX", "SPX"]:
                 overview_data["gamma_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn)
+                overview_data["cockpit_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn, per_side=None)
 
-        # Broadcast
         try:
-            from ninjatrader_broadcaster import send_regime_update
-            broadcast_payload = overview_data.copy()
-            # Default to Traders for simple clients
-            broadcast_payload['compass'] = overview_data['compass_traders']
-            send_regime_update(broadcast_payload)
+            from ninjatrader_broadcaster import _dashboard_payload_for_symbol
+            from signal_performance import edge_stats_for_dashboard, label_due_outcomes
+
+            label_due_outcomes()
+            for idx_symbol in ["NDX", "SPX"]:
+                dashboard_payload = _dashboard_payload_for_symbol(idx_symbol, overview_data)
+                overview_data["edge_stats"][idx_symbol] = edge_stats_for_dashboard(
+                    dashboard_payload,
+                    overview_data.get("compass", {}).get("label", "NEUTRAL"),
+                )
         except Exception as e:
-            print(f"NinjaTrader broadcast error: {e}")
+            overview_data["edge_stats_error"] = str(e)
 
         return overview_data
 
@@ -784,38 +1359,16 @@ def get_market_overview() -> dict:
         print(f"Error in market overview: {e}")
         return {"error": str(e)}
 
-@eel.expose
-def trigger_data_refresh() -> dict:
-    """Invokes the data collector script (publicData.py) immediately.
-
-    Spawns a subprocess using the current Python interpreter.
-
-    Returns:
-        A structured result from the collector.
-    """
-    import subprocess
-    import sys
-    try:
-        print("Triggering data refresh...")
-        # Run publicData.py using the same python interpreter
-        proc = subprocess.run([sys.executable, "publicData.py", "--once"], capture_output=True, text=True)
-        output = (proc.stdout or "").strip().splitlines()
-        if output:
-            try:
-                result = json.loads(output[-1])
-                print(f"Data refresh complete: {result.get('message')}")
-                return result
-            except json.JSONDecodeError:
-                pass
-        message = (proc.stderr or proc.stdout or "Collector finished without a structured result.").strip()
-        return {"ok": proc.returncode == 0, "message": message, "run_id": None}
-    except Exception as e:
-        print(f"Failed to refresh data: {e}")
-        return {"ok": False, "message": str(e), "run_id": None}
-
 # --- Run App ---
-if __name__ == '__main__':
+def main():
+    start_collector_process()
     try:
         eel.start('index.html', size=(1500, 900), port=8080)
     except OSError:
         eel.start('index.html', mode='edge', size=(1500, 900), port=8080)
+    finally:
+        stop_collector_process()
+
+
+if __name__ == '__main__':
+    main()

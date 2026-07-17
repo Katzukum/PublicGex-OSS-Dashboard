@@ -39,4 +39,4 @@ if is_pos_gex and is_bull_trend:
 ```
 
 > [!WARNING]
-> Increasing the number of symbols increases the time the Data Collector takes to complete a loop. Ensure `API_RATE_LIMIT` in `.env` is high enough.
+> Increasing the number of symbols increases the number of Public.com requests per loop. Set `API_RATE_LIMIT_PER_SECOND` and the polling bounds high enough for the added symbols while leaving utilization below 1.0.

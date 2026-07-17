@@ -45,16 +45,17 @@ Detailed documentation is available in the `docs/` directory:
     copy .env.example .env
     ```
 
-4.  **Run the Dashboard**:
+4.  **Run the app**:
     ```bash
-    python appy.py
+    python app.py
     ```
+    This starts the dashboard, Public.com collector, event bridge, and NinjaTrader broadcaster. Closing the dashboard stops the collector.
 
-5.  **Start Data Collection** (in a new terminal):
+5.  **Run the collector by itself** (optional):
     ```bash
     python publicData.py
     ```
-    This starts the polling collector. Use `python publicData.py --once` for a single refresh.
+    Use this only for headless collection/debugging. The dashboard starts and stops this process automatically when you use `python app.py`.
 
 6.  **Reset the local database schema** (optional):
     ```bash

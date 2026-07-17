@@ -19,7 +19,7 @@ The ETL (Extract, Transform, Load) worker.
     *   `process_symbol(client, session, run, symbol, config, rate_limiter)`: Processes one symbol for a collection run.
     *   `calculate_flip_point(gex_by_strike)`: Mathematical logic for the flip.
     *   CLI modes:
-        *   `python publicData.py`: polling collector using `backend_update_delay`.
+        *   `python publicData.py`: rate-aware polling collector using the configured Public.com request ceiling and poll bounds.
         *   `python publicData.py --once`: one collection pass.
         *   `python publicData.py --reset-db`: backs up the current DB and creates the current schema.
 

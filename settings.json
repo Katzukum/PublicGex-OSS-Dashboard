@@ -1,5 +1,5 @@
 {
-  "refresh_interval": 180,
+  "refresh_interval": 10,
   "theme": "light",
   "symbols": [
     "SPY",
@@ -8,7 +8,10 @@
     "SPX",
     "NDX"
   ],
-  "backend_update_delay": 180,
+  "api_rate_limit_per_second": 10,
+  "api_rate_limit_utilization": 0.6,
+  "min_poll_interval_seconds": 15,
+  "max_poll_interval_seconds": 120,
   "raw_retention_days": 30,
   "weights": {
     "SPY": 0.5,
@@ -18,6 +21,6 @@
   "weights_whale": {
     "SPX": 0.45,
     "NDX": 0.35,
-    "IWM": 0.20
+    "IWM": 0.2
   }
 }

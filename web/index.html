@@ -8,7 +8,7 @@
     <link
         href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800;900&display=swap"
         rel="stylesheet">
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script type="text/javascript" src="/eel.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -29,6 +29,10 @@
                     <span class="nav-icon">[]</span>
                     <span>Cockpit</span>
                 </button>
+                <button class="nav-btn" onclick="switchView('setups')" data-view="setups">
+                    <span class="nav-icon">+-</span>
+                    <span>Setups</span>
+                </button>
                 <button class="nav-btn" onclick="switchView('dashboard')" data-view="dashboard">
                     <span class="nav-icon">~</span>
                     <span>Gamma</span>
@@ -44,6 +48,10 @@
                 <button class="nav-btn" onclick="switchView('analysis')" data-view="analysis">
                     <span class="nav-icon">#</span>
                     <span>Strike Matrix</span>
+                </button>
+                <button class="nav-btn" onclick="switchView('one-off')" data-view="one-off">
+                    <span class="nav-icon">@</span>
+                    <span>One-Off</span>
                 </button>
                 <button class="nav-btn" onclick="switchView('settings')" data-view="settings">
                     <span class="nav-icon">*</span>
@@ -79,10 +87,10 @@
                 </div>
                 <div class="command-stat data-health">
                     <span>Data</span>
-                    <strong><i></i> Feed Healthy</strong>
+                    <strong id="backendStatus" class="status-unknown"><i></i> Checking</strong>
                 </div>
                 <div class="command-actions">
-                    <button class="icon-btn" type="button" onclick="manualRefresh()" data-tooltip="Refresh data">R</button>
+                    <button class="icon-btn" type="button" onclick="manualRefresh()" data-tooltip="Reload local data">R</button>
                     <button class="icon-btn" type="button" onclick="switchView('settings')" data-tooltip="Settings">*</button>
                     <button class="icon-btn" type="button" onclick="toggleFullscreen()" data-tooltip="Fullscreen">[]</button>
                 </div>
@@ -151,6 +159,30 @@
                     </article>
                 </div>
 
+                <section class="edge-panel panel">
+                    <div class="panel-header">
+                        <h2>Empirical Edge</h2>
+                        <small id="edgeStatsSource">Waiting for labeled outcomes</small>
+                    </div>
+                    <div id="edgeStatsGrid" class="edge-stats-grid">
+                        <article class="edge-stat">
+                            <span>15m</span>
+                            <strong>--</strong>
+                            <em>n=0 | med --</em>
+                        </article>
+                        <article class="edge-stat">
+                            <span>30m</span>
+                            <strong>--</strong>
+                            <em>n=0 | med --</em>
+                        </article>
+                        <article class="edge-stat">
+                            <span>60m</span>
+                            <strong>--</strong>
+                            <em>n=0 | med --</em>
+                        </article>
+                    </div>
+                </section>
+
                 <section class="chart-panel panel">
                     <div class="panel-header">
                         <h2>Gamma Liquidity Profile</h2>
@@ -173,6 +205,59 @@
                 </section>
 
                 <section id="cockpitPillars" class="asset-card-grid" aria-label="Cross asset pressure cards"></section>
+            </section>
+
+            <section id="view-setups" class="view-section setups-view" style="display: none;">
+                <div class="setup-hero panel">
+                    <div>
+                        <span>Selected Asset</span>
+                        <strong id="setupSymbol">--</strong>
+                    </div>
+                    <div>
+                        <span>Cockpit Bias</span>
+                        <strong id="setupCockpitBias" class="amber-text">WAIT</strong>
+                    </div>
+                    <div>
+                        <span>Confidence</span>
+                        <strong id="setupConfidence">--</strong>
+                    </div>
+                    <div>
+                        <span>Target</span>
+                        <strong id="setupCockpitTarget">--</strong>
+                    </div>
+                    <div>
+                        <span>Snapshot</span>
+                        <strong id="setupTimestamp">--</strong>
+                    </div>
+                </div>
+
+                <div class="setup-grid">
+                    <article id="butterflySetupCard" class="setup-card panel"></article>
+                    <article id="debitSpreadSetupCard" class="setup-card panel"></article>
+                </div>
+
+                <section class="chart-panel panel">
+                    <div class="panel-header">
+                        <h2>Setup Map</h2>
+                        <small id="setupPricingModel">Waiting for setup data</small>
+                    </div>
+                    <div id="setupProfileChart" class="plot-area setup-chart"></div>
+                </section>
+
+                <div class="setup-context-grid">
+                    <article class="setup-context panel">
+                        <span>Butterfly Lens</span>
+                        <strong id="setupButterflyLens">--</strong>
+                    </article>
+                    <article class="setup-context panel">
+                        <span>Debit Spread Lens</span>
+                        <strong id="setupSpreadLens">--</strong>
+                    </article>
+                    <article class="setup-context panel">
+                        <span>Data Note</span>
+                        <strong id="setupSampleWarning">--</strong>
+                    </article>
+                </div>
             </section>
 
             <section id="view-market-signal" class="view-section" style="display: none;">
@@ -290,6 +375,88 @@
                 </div>
             </section>
 
+            <section id="view-one-off" class="view-section one-off-view" style="display: none;">
+                <div class="panel one-off-control">
+                    <div class="panel-header">
+                        <h2>One-Off Profile</h2>
+                        <small id="oneOffDbPath">one_off_gex_data.db</small>
+                    </div>
+                    <div class="one-off-form">
+                        <div class="form-group">
+                            <label>Symbol</label>
+                            <input type="text" id="oneOffSymbol" value="NVDA" placeholder="NVDA" maxlength="12">
+                        </div>
+                        <div class="form-group">
+                            <label>Expiration Date</label>
+                            <input type="text" id="oneOffDate" placeholder="07-07-26">
+                        </div>
+                        <button class="save-btn" id="oneOffBuildBtn" onclick="buildOneOffProfile()">Build Profile</button>
+                    </div>
+                </div>
+
+                <div class="one-off-kpi-grid">
+                    <div class="panel kpi-card">
+                        <span>Profile</span>
+                        <strong id="oneOffProfileLabel">--</strong>
+                    </div>
+                    <div class="panel kpi-card">
+                        <span>Spot</span>
+                        <strong id="oneOffSpot">--</strong>
+                    </div>
+                    <div class="panel kpi-card">
+                        <span>Expiration</span>
+                        <strong id="oneOffExpiration">--</strong>
+                    </div>
+                    <div class="panel kpi-card">
+                        <span>Contracts</span>
+                        <strong id="oneOffContracts">--</strong>
+                    </div>
+                    <div class="panel kpi-card">
+                        <span>Net GEX</span>
+                        <strong id="oneOffNetGex">--</strong>
+                    </div>
+                </div>
+
+                <section class="panel chart-panel">
+                    <div class="panel-header">
+                        <h2>Gamma Liquidity Profile</h2>
+                        <small id="oneOffStatus">Ready</small>
+                    </div>
+                    <div id="oneOffProfileChart" class="plot-area"></div>
+                </section>
+
+                <div class="one-off-grid">
+                    <section class="panel one-off-table-panel">
+                        <div class="panel-header">
+                            <h2>Strike Matrix</h2>
+                            <small id="oneOffSnapshotTime">--</small>
+                        </div>
+                        <div class="analysis-table-wrapper">
+                            <table class="analysis-table">
+                                <thead>
+                                    <tr>
+                                        <th>Strike</th>
+                                        <th>Net GEX</th>
+                                        <th>Call GEX</th>
+                                        <th>Put GEX</th>
+                                        <th>Open Interest</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="oneOffTableBody"></tbody>
+                            </table>
+                        </div>
+                    </section>
+
+                    <section class="panel one-off-recent-panel">
+                        <div class="panel-header">
+                            <h2>Recent Pulls</h2>
+                            <small id="oneOffRecentCount">0</small>
+                        </div>
+                        <div id="oneOffRecentList" class="one-off-recent-list"></div>
+                    </section>
+                </div>
+            </section>
+
             <section id="view-settings" class="view-section" style="display: none;">
                 <div class="panel settings-card">
                     <div class="panel-header">
@@ -297,8 +464,8 @@
                     </div>
                     <div class="settings-form">
                         <div class="form-group">
-                            <label>Auto-refresh interval</label>
-                            <input type="number" id="settingInterval" min="10" value="60">
+                            <label>Dashboard reload interval</label>
+                            <input type="number" id="settingInterval" min="5" value="10">
                         </div>
                         <div class="form-group">
                             <label>Theme</label>
@@ -312,8 +479,20 @@
                             <input type="text" id="settingSymbols" placeholder="SPY,QQQ">
                         </div>
                         <div class="form-group">
-                            <label>Backend update delay</label>
-                            <input type="number" id="settingBackendDelay" min="10" value="180">
+                            <label>Public limit req/sec</label>
+                            <input type="number" id="settingRateLimit" min="0.1" step="0.1" value="10">
+                        </div>
+                        <div class="form-group">
+                            <label>Limit utilization</label>
+                            <input type="number" id="settingRateUtilization" min="0.1" max="1" step="0.05" value="0.6">
+                        </div>
+                        <div class="form-group">
+                            <label>Minimum poll seconds</label>
+                            <input type="number" id="settingMinPoll" min="1" value="15">
+                        </div>
+                        <div class="form-group">
+                            <label>Maximum poll seconds</label>
+                            <input type="number" id="settingMaxPoll" min="1" value="120">
                         </div>
                         <div class="form-group">
                             <label>Raw data retention</label>
