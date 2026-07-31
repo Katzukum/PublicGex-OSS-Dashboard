@@ -27,6 +27,9 @@ const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono"
 const CHART_TEXT = '#96a3af';
 const CHART_GRID = 'rgba(122,148,170,0.14)';
 const chartInstances = {};
+const chartZoomState = {};
+const chartInteractionHandlers = {};
+const profileAutoscaleState = {};
 
 function formatStatusAge(seconds) {
     if (seconds === null || seconds === undefined) return 'n/a';
@@ -100,7 +103,13 @@ function resizeCharts(ids = Object.keys(chartInstances)) {
 function setChartOption(id, option) {
     const chart = getChart(id);
     if (!chart) return;
+    persistChartZoom(id);
+    const storedZoom = option?.dataZoom ? chartZoomState[id] : null;
+    chart.dispatchAction({ type: 'hideTip' });
     chart.setOption(option, true);
+    if (storedZoom) {
+        requestAnimationFrame(() => applyChartZoomState(chart, storedZoom));
+    }
     resizeCharts([id]);
 }
 
@@ -109,11 +118,11 @@ function zoomDataOptions(startValue = null, endValue = null) {
         type: 'inside',
         xAxisIndex: 0,
         filterMode: 'none',
-        zoomOnMouseWheel: true,
-        moveOnMouseWheel: true,
+        zoomOnMouseWheel: false,
+        moveOnMouseWheel: false,
         moveOnMouseMove: true,
         preventDefaultMouseMove: true,
-        throttle: 50
+        throttle: 80
     };
 
     if (Number.isFinite(startValue) && Number.isFinite(endValue) && startValue < endValue) {
@@ -122,6 +131,65 @@ function zoomDataOptions(startValue = null, endValue = null) {
     }
 
     return [insideZoom];
+}
+
+function captureChartZoomState(chart) {
+    const dataZoom = chart?.getOption?.()?.dataZoom?.[0];
+    if (!dataZoom) return null;
+
+    const state = {};
+    if (Number.isFinite(dataZoom.start) && Number.isFinite(dataZoom.end)) {
+        state.start = dataZoom.start;
+        state.end = dataZoom.end;
+    }
+    if (dataZoom.startValue !== undefined && dataZoom.startValue !== null) {
+        state.startValue = dataZoom.startValue;
+    }
+    if (dataZoom.endValue !== undefined && dataZoom.endValue !== null) {
+        state.endValue = dataZoom.endValue;
+    }
+
+    return Object.keys(state).length ? state : null;
+}
+
+function persistChartZoom(id) {
+    const chart = chartInstances[id];
+    if (!chart || chart.isDisposed()) return;
+    const state = captureChartZoomState(chart);
+    if (state) chartZoomState[id] = state;
+}
+
+function applyChartZoomState(chart, state) {
+    if (!chart || chart.isDisposed() || !state) return;
+
+    const action = { type: 'dataZoom', dataZoomIndex: 0 };
+    if (Number.isFinite(state.start) && Number.isFinite(state.end)) {
+        action.start = state.start;
+        action.end = state.end;
+    } else if (state.startValue !== undefined && state.endValue !== undefined) {
+        action.startValue = state.startValue;
+        action.endValue = state.endValue;
+    } else {
+        return;
+    }
+
+    chart.dispatchAction(action);
+}
+
+function resetChartZoom(id) {
+    delete chartZoomState[id];
+    const chart = chartInstances[id];
+    if (!chart || chart.isDisposed()) return;
+    chart.dispatchAction({
+        type: 'dataZoom',
+        dataZoomIndex: 0,
+        start: 0,
+        end: 100
+    });
+}
+
+function resetChartsZoom(ids = Object.keys(chartZoomState)) {
+    ids.forEach(resetChartZoom);
 }
 
 function nearestAxisIndex(axisValues, rawValue) {
@@ -138,46 +206,109 @@ function nearestAxisIndex(axisValues, rawValue) {
     return exactIndex >= 0 ? exactIndex : 0;
 }
 
+function currentZoomIndices(chart, axisValues) {
+    const maxIndex = axisValues.length - 1;
+    const state = captureChartZoomState(chart) || {};
+
+    if (state.startValue !== undefined && state.endValue !== undefined) {
+        const startIndex = nearestAxisIndex(axisValues, state.startValue);
+        const endIndex = nearestAxisIndex(axisValues, state.endValue);
+        return {
+            startIndex: Math.max(0, Math.min(startIndex, endIndex)),
+            endIndex: Math.min(maxIndex, Math.max(startIndex, endIndex))
+        };
+    }
+
+    const startPct = Number.isFinite(state.start) ? state.start : 0;
+    const endPct = Number.isFinite(state.end) ? state.end : 100;
+    return {
+        startIndex: Math.max(0, Math.round(maxIndex * startPct / 100)),
+        endIndex: Math.min(maxIndex, Math.round(maxIndex * endPct / 100))
+    };
+}
+
+function zoomChartToIndexRange(chart, axisValues, startIndex, endIndex) {
+    const maxIndex = axisValues.length - 1;
+    const boundedStart = Math.max(0, Math.min(startIndex, maxIndex));
+    const boundedEnd = Math.max(boundedStart, Math.min(endIndex, maxIndex));
+
+    chart.dispatchAction({
+        type: 'dataZoom',
+        dataZoomIndex: 0,
+        startValue: axisValues[boundedStart],
+        endValue: axisValues[boundedEnd]
+    });
+}
+
 function zoomChartAroundIndex(chart, axisValues, dataIndex, zoomSize) {
     const halfWindow = zoomSize / 2;
     const startIndex = Math.max(Math.floor(dataIndex - halfWindow), 0);
     const endIndex = Math.min(Math.ceil(dataIndex + halfWindow), axisValues.length - 1);
 
-    chart.dispatchAction({
-        type: 'dataZoom',
-        dataZoomIndex: 0,
-        startValue: axisValues[startIndex],
-        endValue: axisValues[endIndex]
-    });
+    zoomChartToIndexRange(chart, axisValues, startIndex, endIndex);
+}
+
+function wheelZoomChart(chart, axisValues, event, zoomSize = 6) {
+    if (!chart || !axisValues?.length) return;
+    const point = [event.offsetX, event.offsetY];
+    if (!chart.containPixel({ gridIndex: 0 }, point)) return;
+
+    event.event?.preventDefault?.();
+    const wheelDelta = Number(event.wheelDelta ?? -(event.event?.deltaY || 0));
+    if (!Number.isFinite(wheelDelta) || wheelDelta === 0) return;
+
+    const [rawX] = chart.convertFromPixel({ gridIndex: 0 }, point);
+    const centerIndex = nearestAxisIndex(axisValues, rawX);
+    const { startIndex, endIndex } = currentZoomIndices(chart, axisValues);
+    const currentSpan = Math.max(2, endIndex - startIndex + 1);
+    const minSpan = Math.max(2, Math.min(zoomSize, axisValues.length));
+    const factor = wheelDelta > 0 ? 0.88 : 1.12;
+    const nextSpan = Math.max(minSpan, Math.min(axisValues.length, Math.round(currentSpan * factor)));
+    const leftShare = currentSpan > 1 ? (centerIndex - startIndex) / (currentSpan - 1) : 0.5;
+    let nextStart = Math.round(centerIndex - (nextSpan - 1) * Math.max(0, Math.min(1, leftShare)));
+    let nextEnd = nextStart + nextSpan - 1;
+
+    if (nextStart < 0) {
+        nextEnd -= nextStart;
+        nextStart = 0;
+    }
+    if (nextEnd > axisValues.length - 1) {
+        nextStart -= nextEnd - (axisValues.length - 1);
+        nextEnd = axisValues.length - 1;
+    }
+
+    zoomChartToIndexRange(chart, axisValues, nextStart, nextEnd);
 }
 
 function attachClickZoom(id, axisValues, zoomSize = 6) {
     const chart = getChart(id);
     if (!chart || !axisValues?.length) return;
+    const previous = chartInteractionHandlers[id];
 
-    chart.off('click');
-    chart.on('click', params => {
-        if (params.componentType !== 'series' || params.dataIndex == null) return;
-        zoomChartAroundIndex(chart, axisValues, params.dataIndex, zoomSize);
-    });
+    if (previous?.dataZoom) chart.off('dataZoom', previous.dataZoom);
+    if (previous?.dblclick) chart.getZr().off('dblclick', previous.dblclick);
+    if (previous?.mousewheel) chart.getZr().off('mousewheel', previous.mousewheel);
 
-    chart.getZr().off('click');
-    chart.getZr().on('click', event => {
+    const dataZoom = event => {
+        chartZoomState[id] = captureChartZoomState(chart) || chartZoomState[id];
+        const autoscale = profileAutoscaleState[id];
+        if (autoscale?.rows?.length) {
+            const { startValue, endValue } = resolveZoomRange(event, autoscale.strikes);
+            applyProfileAxisBounds(chart, autoscale.rows, startValue, endValue);
+        }
+    };
+    const dblclick = event => {
         const point = [event.offsetX, event.offsetY];
         if (!chart.containPixel({ gridIndex: 0 }, point)) return;
         const [rawX] = chart.convertFromPixel({ gridIndex: 0 }, point);
         zoomChartAroundIndex(chart, axisValues, nearestAxisIndex(axisValues, rawX), zoomSize);
-    });
+    };
+    const mousewheel = event => wheelZoomChart(chart, axisValues, event, zoomSize);
 
-    chart.off('dblclick');
-    chart.on('dblclick', () => {
-        chart.dispatchAction({
-            type: 'dataZoom',
-            dataZoomIndex: 0,
-            start: 0,
-            end: 100
-        });
-    });
+    chart.on('dataZoom', dataZoom);
+    chart.getZr().on('dblclick', dblclick);
+    chart.getZr().on('mousewheel', mousewheel);
+    chartInteractionHandlers[id] = { dataZoom, dblclick, mousewheel };
 }
 
 function formatCompactNumber(value) {
@@ -253,10 +384,10 @@ function sweepZeroMarkerLevels(gammaSweep, fallback, spot) {
     const below = Number(gammaSweep?.zero_crossings?.below);
     const above = Number(gammaSweep?.zero_crossings?.above);
     if (Number.isFinite(below)) {
-        levels.push({ label: 'Zero γ below', value: below, color: '#ff454f', dash: 'dash' });
+        levels.push({ label: 'Zero Gamma below', value: below, color: '#ff454f', dash: 'dash' });
     }
     if (Number.isFinite(above) && (!Number.isFinite(below) || Math.abs(above - below) > 0.0001)) {
-        levels.push({ label: 'Zero γ above', value: above, color: '#ff454f', dash: 'dash' });
+        levels.push({ label: 'Zero Gamma above', value: above, color: '#ff454f', dash: 'dash' });
     }
     if (levels.length) return levels;
     return Number.isFinite(Number(fallback))
@@ -364,13 +495,10 @@ function applyProfileAxisBounds(chart, rows, startValue, endValue) {
 function attachProfileAxisAutoscale(id, rows) {
     const chart = getChart(id);
     if (!chart || !rows.length) return;
-    const strikes = rows.map(row => row.strike);
-
-    chart.off('dataZoom');
-    chart.on('dataZoom', event => {
-        const { startValue, endValue } = resolveZoomRange(event, strikes);
-        applyProfileAxisBounds(chart, rows, startValue, endValue);
-    });
+    profileAutoscaleState[id] = {
+        rows,
+        strikes: rows.map(row => row.strike)
+    };
 }
 
 function focusedStrikeWindow(strikes, markers, spotPrice) {
@@ -457,9 +585,9 @@ function profileTooltipFormatter(rows, valueFormatter = formatCompactNumber) {
 
         return [
             `<strong>${formatAxisPrice(nearest.strike)}</strong>`,
-            `<span style="color:#ff8b1a">●</span> Call GEX: ${valueFormatter(nearest.call)}`,
-            `<span style="color:#2388e8">●</span> Put GEX: ${valueFormatter(nearest.put)}`,
-            `<span style="color:#b177ff">●</span> Net GEX by Strike: ${valueFormatter(nearest.net)}`,
+            `<span style="color:#ff8b1a">&bull;</span> Call GEX: ${valueFormatter(nearest.call)}`,
+            `<span style="color:#2388e8">&bull;</span> Put GEX: ${valueFormatter(nearest.put)}`,
+            `<span style="color:#b177ff">&bull;</span> Net GEX by Strike: ${valueFormatter(nearest.net)}`,
         ].join('<br/>');
     };
 }
@@ -541,7 +669,6 @@ async function init() {
 function switchView(viewName) {
     document.querySelectorAll('.view-section').forEach(el => el.style.display = 'none');
     document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-    document.querySelector('.terminal-shell')?.classList.toggle('trace-active', viewName === 'trace');
 
     const target = document.getElementById(`view-${viewName}`);
     if (target) {
@@ -588,6 +715,8 @@ function switchView(viewName) {
 async function loadSymbol() {
     const symbol = document.getElementById('symbolSelector').value;
     if (!symbol) return;
+    const symbolChanged = cachedSymbol && cachedSymbol !== symbol;
+    if (symbolChanged) resetChartsZoom(Object.keys(chartInstances));
     const data = await eel.get_dashboard_data(symbol)();
 
     if (data.error) {
@@ -611,7 +740,7 @@ async function loadSymbol() {
     ) {
         loadOverview();
     }
-    if (document.getElementById('view-trace').style.display === 'block') {
+    if (document.getElementById('view-trace').style.display !== 'none') {
         loadTrace();
     }
     timeLeft = currentSettings.refresh_interval;
@@ -845,7 +974,7 @@ function renderSweepChart(chartId, gammaSweep, snapshot = {}) {
             xAxis: value,
             lineStyle: { color: '#ff454f', width: 1, type: 'dashed' },
             label: {
-                formatter: `Zero γ ${formatTargetPrice(value)}`,
+                formatter: `Zero Gamma ${formatTargetPrice(value)}`,
                 color: '#ff8b8f',
                 fontFamily: NUMERIC_FONT,
                 fontSize: 11
@@ -1021,12 +1150,18 @@ function traceMetricColor(metric = traceMode) {
 }
 
 function setTraceMode(mode) {
-    traceMode = ['net_gex', 'call_gex', 'put_gex'].includes(mode) ? mode : 'net_gex';
+    const nextMode = ['net_gex', 'call_gex', 'put_gex'].includes(mode) ? mode : 'net_gex';
+    const changed = nextMode !== traceMode;
+    traceMode = nextMode;
+    if (changed) resetChartsZoom(['traceHeatmapChart', 'traceProfileChart']);
     document.querySelectorAll('[data-trace-mode]').forEach(button => {
         button.classList.toggle('active', button.dataset.traceMode === traceMode);
     });
-    const select = document.getElementById('traceMetricSelect');
-    if (select && select.value !== traceMode) select.value = traceMode;
+    if (cachedTraceData) renderTraceView(cachedTraceData);
+}
+
+function resetTraceCharts() {
+    resetChartsZoom(['traceHeatmapChart', 'traceProfileChart']);
     if (cachedTraceData) renderTraceView(cachedTraceData);
 }
 
@@ -1054,15 +1189,27 @@ async function loadTrace() {
 function renderTraceView(data) {
     if (!data) return;
     const profileRows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    const heatmapRows = Array.isArray(data.heatmap) ? data.heatmap : [];
+    const buckets = [...new Set(heatmapRows.map(row => row.timestamp))].sort();
     const gross = profileRows.reduce((sum, row) => sum + Math.abs(Number(row.net_gex || 0)), 0);
     const net = Math.abs(Number(data.total_net_gex || 0));
     const stability = gross > 0 ? Math.round(Math.min(99, Math.max(1, (net / gross) * 100))) : 0;
     const date = data.timestamp ? new Date(data.timestamp) : null;
     const latestTime = date ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--';
+    const startTime = buckets[0] ? String(buckets[0]).slice(11, 16) : '--:--';
+    const endTime = buckets[buckets.length - 1] ? String(buckets[buckets.length - 1]).slice(11, 16) : latestTime;
 
-    document.getElementById('traceStability').innerText = stability ? `${stability}%` : '--';
-    document.getElementById('traceDate').innerText = date ? date.toISOString().slice(0, 10) : '----';
-    document.getElementById('traceTimelineValue').innerText = latestTime;
+    setText('traceSymbol', data.symbol || '--');
+    setText('traceSpot', data.spot_price ? formatTargetPrice(data.spot_price) : '--');
+    setText('traceNetGex', formatMoneyM(data.total_net_gex || 0, 0));
+    setText('traceStability', stability ? `${stability}%` : '--');
+    setText('traceCells', formatCompactNumber(data.range?.cells || heatmapRows.length || 0));
+    setText('traceUpdated', latestTime);
+    setText('traceStatus', `${traceMetricLabel()} | ${buckets.length || 0} time buckets`);
+    setText('traceStartTime', startTime);
+    setText('traceEndTime', endTime);
+    setText('traceTimelineValue', latestTime);
+    setText('traceScaleLabel', `${traceMetricLabel()} ($ Notional)`);
 
     renderTraceHeatmap(data);
     renderTraceProfile(data);
@@ -1129,17 +1276,23 @@ function renderTraceHeatmap(data) {
     const flip = Number(data.flip_strike);
 
     const colorRange = traceMode === 'call_gex'
-        ? ['#fff7fb', '#c9a7f4', '#6e35df']
+        ? ['#111820', '#8f5a17', '#ff8b1a']
         : traceMode === 'put_gex'
-            ? ['#e43a71', '#f4d5e1', '#fff7fb']
-            : ['#e43a71', '#fff7fb', '#6e35df'];
+            ? ['#2388e8', '#262d6e', '#111820']
+            : ['#2388e8', '#111820', '#ff8b1a'];
 
     const markerLines = [];
     if (Number.isFinite(currentSpot) && currentSpot > 0) {
         markerLines.push({
             yAxis: currentSpot,
             lineStyle: { color: '#ffffff', width: 1 },
-            label: { formatter: `Spot ${formatTargetPrice(currentSpot)}`, color: '#ffffff', fontSize: 11 }
+            label: {
+                formatter: 'Spot',
+                position: 'insideEndTop',
+                color: '#ffffff',
+                fontFamily: NUMERIC_FONT,
+                fontSize: 11
+            }
         });
     }
     if (Number.isFinite(flip) && flip > 0) {
@@ -1152,8 +1305,9 @@ function renderTraceHeatmap(data) {
 
     const option = {
         ...baseChartOptions({ valueFormatter: formatMillionsValue }),
-        backgroundColor: '#101316',
-        grid: { top: 22, left: 78, right: 54, bottom: 54, containLabel: true },
+        backgroundColor: 'transparent',
+        grid: { top: 28, left: 60, right: 18, bottom: 40, containLabel: true },
+        dataZoom: zoomDataOptions(),
         tooltip: {
             trigger: 'item',
             backgroundColor: '#071018',
@@ -1162,6 +1316,15 @@ function renderTraceHeatmap(data) {
             formatter: params => {
                 if (params.seriesName === 'Spot Path') {
                     return `<strong>${buckets[params.value[0]]?.slice(11, 16) || ''}</strong><br/>Spot: ${formatTargetPrice(params.value[1])}`;
+                }
+                if (params.seriesName === 'Price Candles') {
+                    return [
+                        `<strong>${buckets[params.dataIndex]?.slice(11, 16) || ''}</strong>`,
+                        `Open: ${formatTargetPrice(params.value[0])}`,
+                        `Close: ${formatTargetPrice(params.value[1])}`,
+                        `Low: ${formatTargetPrice(params.value[2])}`,
+                        `High: ${formatTargetPrice(params.value[3])}`
+                    ].join('<br/>');
                 }
                 const time = buckets[params.value[0]]?.slice(11, 16) || '';
                 return [
@@ -1187,19 +1350,19 @@ function renderTraceHeatmap(data) {
             type: 'category',
             data: buckets,
             axisLabel: {
-                ...chartText(12, '#e8edf2'),
+                ...chartText(11),
                 formatter: (value, index) => index % labelStep === 0 ? String(value).slice(11, 16) : ''
             },
-            axisLine: { lineStyle: { color: '#303842' } },
+            axisLine: { lineStyle: { color: '#223140' } },
             splitLine: { show: false }
         },
         yAxis: {
             type: 'value',
             name: 'Strike / Price ($)',
-            nameTextStyle: chartText(13, '#f0f2f5'),
-            axisLabel: { ...chartText(12, '#f0f2f5'), formatter: formatAxisPrice },
-            axisLine: { lineStyle: { color: '#303842' } },
-            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(11), formatter: formatAxisPrice },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } },
             ...yBounds
         },
         series: [
@@ -1207,9 +1370,8 @@ function renderTraceHeatmap(data) {
                 name: traceMetricLabel(),
                 type: 'heatmap',
                 data: heatmapData,
-                blurSize: 12,
                 progressive: 2500,
-                itemStyle: { opacity: 0.86 },
+                itemStyle: { opacity: 0.78 },
                 emphasis: { itemStyle: { borderColor: '#ffffff', borderWidth: 1 } }
             },
             {
@@ -1217,12 +1379,12 @@ function renderTraceHeatmap(data) {
                 type: 'candlestick',
                 data: candleData,
                 itemStyle: {
-                    color: '#f7f4ee',
-                    color0: '#32343a',
-                    borderColor: '#9b9da3',
-                    borderColor0: '#565965'
+                    color: '#f2f5f8',
+                    color0: '#101720',
+                    borderColor: '#d8e3ee',
+                    borderColor0: '#667584'
                 },
-                barWidth: '42%',
+                barWidth: '36%',
                 z: 6
             },
             {
@@ -1230,15 +1392,15 @@ function renderTraceHeatmap(data) {
                 type: 'line',
                 symbol: 'none',
                 data: priceData,
-                lineStyle: { color: '#3f4eb3', width: 2 },
+                lineStyle: { color: '#2f9bff', width: 2 },
                 z: 7,
                 markLine: markerLines.length ? { symbol: 'none', silent: true, data: markerLines } : undefined
             }
         ]
     };
 
-    chart.setOption(option, true);
-    resizeCharts(['traceHeatmapChart']);
+    setChartOption('traceHeatmapChart', option);
+    attachClickZoom('traceHeatmapChart', buckets, 18);
 }
 
 function renderTraceProfile(data) {
@@ -1261,8 +1423,8 @@ function renderTraceProfile(data) {
     const maxAbs = Math.max(...values.map(value => Math.abs(value)), 1);
     const option = {
         ...baseChartOptions({ valueFormatter: formatMillionsValue }),
-        backgroundColor: '#101316',
-        grid: { top: 12, left: 42, right: 10, bottom: 52, containLabel: true },
+        backgroundColor: 'transparent',
+        grid: { top: 12, left: 42, right: 10, bottom: 34, containLabel: true },
         tooltip: {
             trigger: 'item',
             backgroundColor: '#071018',
@@ -1276,14 +1438,14 @@ function renderTraceProfile(data) {
             type: 'value',
             min: Math.min(bounds.min, -maxAbs),
             max: Math.max(bounds.max, maxAbs),
-            axisLabel: { ...chartText(12, '#e8edf2'), formatter: value => `${value.toFixed(0)}M` },
-            axisLine: { lineStyle: { color: '#303842' } },
-            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } }
+            axisLabel: { ...chartText(11), formatter: value => `${value.toFixed(0)}M` },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } }
         },
         yAxis: {
             type: 'value',
             axisLabel: { show: false },
-            axisLine: { lineStyle: { color: '#303842' } },
+            axisLine: { lineStyle: { color: '#223140' } },
             splitLine: { show: false },
             ...yBounds
         },
@@ -1315,7 +1477,7 @@ function renderTraceProfile(data) {
                     const value = Array.isArray(params.value) ? Number(params.value[0]) : Number(params.value);
                     if (metric === 'call_gex') return '#ff8b1a';
                     if (metric === 'put_gex') return '#2388e8';
-                    return value >= 0 ? '#6e35df' : '#e43a71';
+                    return value >= 0 ? '#b177ff' : '#ff454f';
                 }
             },
             markLine: {
@@ -1330,8 +1492,7 @@ function renderTraceProfile(data) {
         }]
     };
 
-    chart.setOption(option, true);
-    resizeCharts(['traceProfileChart']);
+    setChartOption('traceProfileChart', option);
 }
 
 // --- Analysis Table (Matches previous redesign) ---
