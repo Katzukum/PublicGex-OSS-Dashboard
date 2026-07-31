@@ -60,6 +60,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double dashboardTarget = double.NaN;
         private double dashboardInvalidation = double.NaN;
         private double dashboardFlip = double.NaN;
+        private double modeledZeroGex = double.NaN;
         private string dashboardContext = "";
         private string dashboardMarket = "";
         private string dashboardDealer = "";
@@ -301,6 +302,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         dashboardInvalidation = invalidation;
                     if (TryExtractDashboardDouble(json, "dashboard_flip", out double flip))
                         dashboardFlip = flip;
+                    if (TryExtractDashboardDouble(json, "dashboard_modeled_zero_gex", out double modeledZero))
+                        modeledZeroGex = modeledZero;
                     if (TryExtractDashboardDouble(json, "dashboard_edge_win_rate", out double edgeWinRate))
                         dashboardEdgeWinRate = edgeWinRate;
                     if (TryExtractDashboardDouble(json, "dashboard_edge_median_move", out double edgeMedianMove))
@@ -669,7 +672,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         acceleration.ToString("R", CultureInfo.InvariantCulture),
                         currentRegime,
                         previousRegime,
-                        regimeCode.ToString(CultureInfo.InvariantCulture)));
+                        regimeCode.ToString(CultureInfo.InvariantCulture),
+                        modeledZeroGex.ToString("R", CultureInfo.InvariantCulture)));
 
                     foreach (var level in gammaLevels)
                     {
@@ -748,6 +752,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentRegime = string.IsNullOrEmpty(header[6]) ? "CACHED" : header[6];
                     previousRegime = string.IsNullOrEmpty(header[7]) ? previousRegime : header[7];
                     int.TryParse(header[8], NumberStyles.Integer, CultureInfo.InvariantCulture, out regimeCode);
+                    if (header.Length >= 10)
+                        double.TryParse(header[9], NumberStyles.Float, CultureInfo.InvariantCulture, out modeledZeroGex);
                     lastUpdate = "cached";
                     gammaLevels = cachedLevels
                         .OrderBy(l => l.FuturesPrice)
@@ -782,7 +788,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Get current state thread-safely
             string regime, prevRegime, update, idxSym, dashSymbol, dashBias, dashContext, dashMarket, dashDealer, dashLiquidity, dashWhale, dashEdgeSummary, dashEdgeSource;
             int code;
-            double idx, fut, sprd, accel, dashScore, dashConfidence, dashTarget, dashInvalidation, dashFlip, dashEdgeWinRate, dashEdgeMedianMove, dashEdgeSample;
+            double idx, fut, sprd, accel, dashScore, dashConfidence, dashTarget, dashInvalidation, dashFlip, modeledZero, dashEdgeWinRate, dashEdgeMedianMove, dashEdgeSample;
 
             lock (lockObj)
             {
@@ -802,6 +808,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dashTarget = dashboardTarget;
                 dashInvalidation = dashboardInvalidation;
                 dashFlip = dashboardFlip;
+                modeledZero = modeledZeroGex;
                 dashContext = dashboardContext;
                 dashMarket = dashboardMarket;
                 dashDealer = dashboardDealer;
@@ -1083,6 +1090,44 @@ namespace NinjaTrader.NinjaScript.Indicators
                                 RenderTarget.DrawLine(curvePoints[i], curvePoints[i + 1], curveBrush, 3.0f);
                             }
                         }
+                    }
+                }
+            }
+
+            if (!double.IsNaN(modeledZero) && !double.IsInfinity(modeledZero) && modeledZero > 0)
+            {
+                double modeledZeroFutures = modeledZero - sprd;
+                float y = chartScale.GetYByValue(modeledZeroFutures);
+
+                if (y >= ChartPanel.Y && y <= ChartPanel.Y + ChartPanel.H)
+                {
+                    using (SharpDX.Direct2D1.SolidColorBrush zeroBrush = new SharpDX.Direct2D1.SolidColorBrush(
+                        RenderTarget, new SharpDX.Color(255, 140, 0, 235)))
+                    using (SharpDX.Direct2D1.StrokeStyle zeroStroke = new SharpDX.Direct2D1.StrokeStyle(
+                        RenderTarget.Factory,
+                        new SharpDX.Direct2D1.StrokeStyleProperties
+                        {
+                            DashStyle = SharpDX.Direct2D1.DashStyle.Dot,
+                            DashCap = SharpDX.Direct2D1.CapStyle.Round,
+                            StartCap = SharpDX.Direct2D1.CapStyle.Round,
+                            EndCap = SharpDX.Direct2D1.CapStyle.Round
+                        }))
+                    using (SharpDX.DirectWrite.TextFormat zeroLabelFormat = new SharpDX.DirectWrite.TextFormat(
+                        Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold,
+                        SharpDX.DirectWrite.FontStyle.Normal, 11))
+                    {
+                        RenderTarget.DrawLine(
+                            new SharpDX.Vector2(ChartPanel.X, y),
+                            new SharpDX.Vector2(ChartPanel.X + ChartPanel.W, y),
+                            zeroBrush,
+                            3.0f,
+                            zeroStroke);
+
+                        RenderTarget.DrawText(
+                            $"Modeled 0 GEX {modeledZero:F0}",
+                            zeroLabelFormat,
+                            new SharpDX.RectangleF(ChartPanel.X + ChartPanel.W - 150, y - 17, 145, 16),
+                            zeroBrush);
                     }
                 }
             }

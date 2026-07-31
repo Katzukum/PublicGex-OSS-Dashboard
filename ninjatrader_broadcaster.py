@@ -10,6 +10,7 @@ Attributes:
 import socket
 import json
 import logging
+import math
 import threading
 import time
 from datetime import datetime
@@ -182,6 +183,22 @@ def _ninjatrader_levels_for_symbol(overview_data: dict, symbol: str) -> List[dic
         annotated_levels.append(annotated)
 
     return annotated_levels
+
+def _modeled_zero_gex_for_symbol(overview_data: dict, symbol: str) -> Optional[float]:
+    by_symbol = overview_data.get("modeled_zero_gex", {}) or {}
+    value = by_symbol.get(symbol)
+    if value in (None, ""):
+        return None
+
+    try:
+        level = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(level) or level <= 0:
+        return None
+
+    return round(level, 4)
 
 def _component_trend_score(component: dict) -> float:
     if "trend_score" in component:
@@ -462,6 +479,7 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         "dashboard_target": plan["target"],
         "dashboard_invalidation": plan["invalidation"],
         "dashboard_flip": round(flip, 4) if flip > 0 else None,
+        "dashboard_modeled_zero_gex": _modeled_zero_gex_for_symbol(overview_data, symbol),
         "dashboard_context": context,
         "dashboard_market": f"Market: {_vote_label(market_vote['score'])}",
         "dashboard_dealer": f"Dealer: {dealer_vote['label']}",
@@ -504,6 +522,8 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
         ndx_dashboard = _dashboard_payload_for_symbol("NDX", overview_data)
         spx_dashboard = _dashboard_payload_for_symbol("SPX", overview_data)
         generic_dashboard = ndx_dashboard if ndx_data else spx_dashboard
+        modeled_zero_ndx = _modeled_zero_gex_for_symbol(overview_data, "NDX")
+        modeled_zero_spx = _modeled_zero_gex_for_symbol(overview_data, "SPX")
         
         # Build payload with all index prices
         payload = {
@@ -526,8 +546,10 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
             # NDX data (for NQ charts)
             "spot_ndx": ndx_data.get("spot", 0),
             "flip_ndx": ndx_data.get("flip_strike", 0),
+            "modeled_zero_gex_ndx": modeled_zero_ndx,
             "accel_ndx": round(ndx_data.get("acceleration", 0), 2),
             "accel_spx": round(spx_data.get("acceleration", 0), 2),
+            "modeled_zero_gex_spx": modeled_zero_spx,
             # NinjaTrader gets every level, with the existing filter marked as key.
             "gamma_levels_ndx": _ninjatrader_levels_for_symbol(overview_data, "NDX"),
             "gamma_levels_spx": _ninjatrader_levels_for_symbol(overview_data, "SPX"),

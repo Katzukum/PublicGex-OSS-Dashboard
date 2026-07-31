@@ -189,10 +189,15 @@
                         <div class="chart-controls">
                             <span><b class="legend-call"></b> Call GEX</span>
                             <span><b class="legend-put"></b> Put GEX</span>
-                            <span><b class="legend-net"></b> Net GEX</span>
+                            <span><b class="legend-net"></b> Net GEX by Strike</span>
                         </div>
+                        <label class="sweep-switch">
+                            <input id="cockpitGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
+                            <span>V1 Sweep Panel</span>
+                        </label>
                     </div>
                     <div id="cockpitProfileChart" class="plot-area cockpit-chart"></div>
+                    <div id="cockpitSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
                     <div class="metric-strip">
                         <div><span>Total Call GEX</span><strong id="stripCallGex">--</strong></div>
                         <div><span>Total Put GEX</span><strong id="stripPutGex">--</strong></div>
@@ -340,8 +345,13 @@
                 <div class="panel chart-panel">
                     <div class="panel-header">
                         <h2>Gamma Liquidity Profile</h2>
+                        <label class="sweep-switch">
+                            <input id="gammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
+                            <span>V1 Sweep Panel</span>
+                        </label>
                     </div>
                     <div id="profileChart" class="plot-area"></div>
+                    <div id="gammaSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
                 </div>
                 <div class="panel chart-panel">
                     <div class="panel-header">
@@ -421,8 +431,13 @@
                     <div class="panel-header">
                         <h2>Gamma Liquidity Profile</h2>
                         <small id="oneOffStatus">Ready</small>
+                        <label class="sweep-switch">
+                            <input id="oneOffGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
+                            <span>V1 Sweep Panel</span>
+                        </label>
                     </div>
                     <div id="oneOffProfileChart" class="plot-area"></div>
+                    <div id="oneOffSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
                 </section>
 
                 <div class="one-off-grid">

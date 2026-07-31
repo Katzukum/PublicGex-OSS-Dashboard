@@ -23,6 +23,7 @@ from backtest_gamma_butterflies import (
     _strike_summary,
     _rows_by_strike_and_side,
 )
+from gamma_sweep import build_gamma_sweep
 from gex_levels import aggregate_gamma_levels
 from models import get_engine, initialize_database, schema_is_current
 
@@ -592,7 +593,7 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
 
             if schema_current:
                 query_profile = text("""
-                    SELECT strike_price, option_type, gex_value, open_interest, expiration_date
+                    SELECT strike_price, option_type, delta, gamma, gex_value, open_interest, underlying_price, expiration_date
                     FROM raw_option_greeks
                     WHERE snapshot_id = :snapshot_id
                     ORDER BY strike_price ASC
@@ -646,7 +647,8 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
             return {
                 "snapshot": snapshot,
                 "profile": df_profile.to_dict(orient='records'),
-                "history": df_hist.to_dict(orient='records')
+                "history": df_hist.to_dict(orient='records'),
+                "gamma_sweep": build_gamma_sweep(df_profile.to_dict(orient='records'), spot, symbol),
             }
 
     except Exception as e:
@@ -855,10 +857,7 @@ def _latest_snapshot_and_raw_rows(conn, symbol: str):
                 osi_symbol,
                 strike_price,
                 option_type,
-                delta,
-                gamma,
                 open_interest,
-                underlying_price,
                 gex_value
             FROM raw_option_greeks
             WHERE symbol = :symbol AND timestamp = :ts
@@ -1080,6 +1079,7 @@ def get_market_overview() -> dict:
             "tilt": [],
             "gamma_levels": {"NDX": [], "SPX": []},
             "cockpit_levels": {"NDX": [], "SPX": []},
+            "modeled_zero_gex": {"NDX": None, "SPX": None},
             "edge_stats": {}
         }
 
@@ -1110,6 +1110,54 @@ def get_market_overview() -> dict:
 
             spot = getattr(snap_row, 'spot_price', 0) or 0
             return aggregate_gamma_levels(level_rows, spot=spot, per_side=per_side)
+
+        def _nearest_modeled_zero(gamma_sweep: dict, spot: float):
+            if not gamma_sweep or gamma_sweep.get("status") != "ok":
+                return None
+
+            crossings = gamma_sweep.get("zero_crossings", {}).get("all", []) or []
+            finite_crossings = []
+            for crossing in crossings:
+                try:
+                    value = float(crossing)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and value > 0:
+                    finite_crossings.append(value)
+
+            if not finite_crossings:
+                return None
+
+            try:
+                spot_value = float(spot)
+            except (TypeError, ValueError):
+                spot_value = 0
+
+            if spot_value and math.isfinite(spot_value):
+                return min(finite_crossings, key=lambda value: abs(value - spot_value))
+            return finite_crossings[0]
+
+        def _modeled_zero_gex_for_symbol(symbol, conn):
+            if not DB_SCHEMA_CURRENT:
+                return None
+
+            snap_row = conn.execute(
+                text("SELECT * FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC LIMIT 1"),
+                {"symbol": symbol}
+            ).fetchone()
+            if not snap_row:
+                return None
+
+            query_sweep_rows = text("""
+                SELECT strike_price, option_type, delta, gamma, gex_value, open_interest, underlying_price, expiration_date
+                FROM raw_option_greeks
+                WHERE snapshot_id = :snapshot_id
+                ORDER BY strike_price ASC
+            """)
+            rows = conn.execute(query_sweep_rows, {"snapshot_id": snap_row.id}).fetchall()
+            spot = getattr(snap_row, 'spot_price', 0) or 0
+            gamma_sweep = build_gamma_sweep([dict(row._mapping) for row in rows], spot, symbol)
+            return _nearest_modeled_zero(gamma_sweep, spot)
 
         def _calculate_compass_state(target_weights, conn):
             x_score_sum = 0
@@ -1338,6 +1386,7 @@ def get_market_overview() -> dict:
             for idx_symbol in ["NDX", "SPX"]:
                 overview_data["gamma_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn)
                 overview_data["cockpit_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn, per_side=None)
+                overview_data["modeled_zero_gex"][idx_symbol] = _modeled_zero_gex_for_symbol(idx_symbol, conn)
 
         try:
             from ninjatrader_broadcaster import _dashboard_payload_for_symbol

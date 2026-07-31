@@ -16,7 +16,9 @@ let cachedData = null;
 let cachedSymbol = null;
 let cachedOverview = null;
 let cachedTradeSetups = null;
+let cachedOneOffData = null;
 let cockpitModel = null;
+let gammaSweepOverlayEnabled = false;
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
 
 const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono", monospace';
@@ -203,6 +205,61 @@ function formatMillionsValue(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return '--';
     return `${formatMillionsAxis(n)}M`;
+}
+
+function formatShareCount(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    const abs = Math.abs(n);
+    if (abs >= 1000000) return `${(n / 1000000).toFixed(2)}M sh`;
+    if (abs >= 1000) return `${(n / 1000).toFixed(1)}k sh`;
+    return `${n.toFixed(0)} sh`;
+}
+
+function sweepRowsFromPayload(gammaSweep, divisor = 1) {
+    if (!gammaSweep || gammaSweep.status !== 'ok' || !Array.isArray(gammaSweep.points)) return [];
+    return gammaSweep.points
+        .map(point => ({
+            spot: Number(point.spot),
+            netGex: Number(point.net_gex) / divisor,
+            hedgeShares: Number(point.hedge_shares)
+        }))
+        .filter(point => Number.isFinite(point.spot) && Number.isFinite(point.netGex) && Number.isFinite(point.hedgeShares));
+}
+
+function nearestSweepPoint(rows, spot) {
+    const target = Number(spot);
+    if (!rows.length || !Number.isFinite(target)) return null;
+    return rows.reduce((best, row) => (
+        !best || Math.abs(row.spot - target) < Math.abs(best.spot - target) ? row : best
+    ), null);
+}
+
+function sweepZeroLabel(gammaSweep, fallback) {
+    const below = Number(gammaSweep?.zero_crossings?.below);
+    const above = Number(gammaSweep?.zero_crossings?.above);
+    const hasBelow = Number.isFinite(below);
+    const hasAbove = Number.isFinite(above);
+    if (hasBelow && hasAbove) return `B ${formatTargetPrice(below)} / A ${formatTargetPrice(above)}`;
+    if (hasBelow) return `B ${formatTargetPrice(below)}`;
+    if (hasAbove) return `A ${formatTargetPrice(above)}`;
+    return fallback ? formatTargetPrice(fallback) : '--';
+}
+
+function sweepZeroMarkerLevels(gammaSweep, fallback, spot) {
+    const levels = [];
+    const below = Number(gammaSweep?.zero_crossings?.below);
+    const above = Number(gammaSweep?.zero_crossings?.above);
+    if (Number.isFinite(below)) {
+        levels.push({ label: 'Zero γ below', value: below, color: '#ff454f', dash: 'dash' });
+    }
+    if (Number.isFinite(above) && (!Number.isFinite(below) || Math.abs(above - below) > 0.0001)) {
+        levels.push({ label: 'Zero γ above', value: above, color: '#ff454f', dash: 'dash' });
+    }
+    if (levels.length) return levels;
+    return Number.isFinite(Number(fallback))
+        ? [{ label: 'Flip', value: fallback, color: '#ff454f', dash: 'dash' }]
+        : [];
 }
 
 function niceStep(value) {
@@ -400,7 +457,7 @@ function profileTooltipFormatter(rows, valueFormatter = formatCompactNumber) {
             `<strong>${formatAxisPrice(nearest.strike)}</strong>`,
             `<span style="color:#ff8b1a">●</span> Call GEX: ${valueFormatter(nearest.call)}`,
             `<span style="color:#2388e8">●</span> Put GEX: ${valueFormatter(nearest.put)}`,
-            `<span style="color:#b177ff">●</span> Net GEX: ${valueFormatter(nearest.net)}`,
+            `<span style="color:#b177ff">●</span> Net GEX by Strike: ${valueFormatter(nearest.net)}`,
         ].join('<br/>');
     };
 }
@@ -484,7 +541,12 @@ function switchView(viewName) {
     document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
 
     const target = document.getElementById(`view-${viewName}`);
-    if (target) target.style.display = ['cockpit', 'setups', 'one-off'].includes(viewName) ? 'grid' : 'block';
+    if (target) {
+        target.style.display = viewName === 'one-off'
+            ? 'flex'
+            : ['cockpit', 'setups'].includes(viewName) ? 'grid' : 'block';
+        if (viewName === 'one-off') target.scrollTop = 0;
+    }
 
     document.querySelectorAll(`[data-view="${viewName}"]`).forEach(btn => btn.classList.add('active'));
     if (viewName === 'dashboard') document.querySelector('[data-view="dashboard"]')?.classList.add('active');
@@ -508,11 +570,11 @@ function switchView(viewName) {
     }
     if (viewName === 'settings') document.querySelector('[data-view="settings"]')?.classList.add('active');
 
-    if (viewName === 'dashboard' && cachedData) resizeCharts(['profileChart', 'historyChart']);
+    if (viewName === 'dashboard' && cachedData) resizeCharts(['profileChart', 'gammaSweepChart', 'historyChart']);
     if (viewName === 'market-signal') resizeCharts(['tiltChart']);
-    if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart']);
+    if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart', 'cockpitSweepChart']);
     if (viewName === 'setups' && cachedData) resizeCharts(['setupProfileChart']);
-    if (viewName === 'one-off') resizeCharts(['oneOffProfileChart']);
+    if (viewName === 'one-off') resizeCharts(['oneOffProfileChart', 'oneOffSweepChart']);
 }
 
 async function loadSymbol() {
@@ -544,6 +606,27 @@ async function loadSymbol() {
     timeLeft = currentSettings.refresh_interval;
 }
 
+function toggleGammaSweepOverlay(enabled) {
+    gammaSweepOverlayEnabled = Boolean(enabled);
+    const dashboardToggle = document.getElementById('gammaSweepToggle');
+    const cockpitToggle = document.getElementById('cockpitGammaSweepToggle');
+    const oneOffToggle = document.getElementById('oneOffGammaSweepToggle');
+    if (dashboardToggle) dashboardToggle.checked = gammaSweepOverlayEnabled;
+    if (cockpitToggle) cockpitToggle.checked = gammaSweepOverlayEnabled;
+    if (oneOffToggle) oneOffToggle.checked = gammaSweepOverlayEnabled;
+    if (cachedData) {
+        renderProfileChart(cachedData.profile, cachedData.snapshot.spot_price);
+        renderSweepChart('gammaSweepChart', cachedData.gamma_sweep, cachedData.snapshot);
+    }
+    if (cachedData && cockpitModel) {
+        renderCockpitProfileChart(cachedData.profile, cachedData.snapshot.spot_price, cockpitModel, cachedData.gamma_sweep);
+        renderSweepChart('cockpitSweepChart', cachedData.gamma_sweep, cachedData.snapshot);
+    }
+    if (cachedOneOffData) {
+        renderSweepChart('oneOffSweepChart', cachedOneOffData.gamma_sweep, cachedOneOffData.snapshot);
+    }
+}
+
 function renderDashboard(data) {
     // Pre-process data for KPIs to find High/Low Vol Points
     let strikes = {};
@@ -564,6 +647,7 @@ function renderDashboard(data) {
 
     updateKPIs(data.snapshot, maxNetPos.strike, maxNetNeg.strike);
     renderProfileChart(data.profile, data.snapshot.spot_price);
+    renderSweepChart('gammaSweepChart', data.gamma_sweep, data.snapshot);
     renderHistoryChart(data.history);
 }
 
@@ -650,7 +734,7 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
         yAxis: [
             {
                 type: 'value',
-                name: 'Net Gamma Exposure',
+                name: 'Net GEX by Strike',
                 min: netBounds.min,
                 max: netBounds.max,
                 nameTextStyle: chartText(12, '#b177ff'),
@@ -689,7 +773,7 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
                 barWidth: 10
             },
             {
-                name: 'Net GEX',
+                name: 'Net GEX by Strike',
                 type: 'line',
                 smooth: true,
                 symbol: 'none',
@@ -720,6 +804,153 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
 
 function renderProfileChart(profileData, spotPrice) {
     renderProfileChartTo('profileChart', profileData, spotPrice);
+}
+
+function renderSweepChart(chartId, gammaSweep, snapshot = {}) {
+    const el = document.getElementById(chartId);
+    if (!el) return;
+
+    const rows = gammaSweepOverlayEnabled ? sweepRowsFromPayload(gammaSweep, 1000000) : [];
+    if (!rows.length) {
+        el.style.display = 'none';
+        const chart = chartInstances[chartId];
+        if (chart && !chart.isDisposed()) chart.clear();
+        return;
+    }
+
+    el.style.display = 'block';
+    const spot = Number(snapshot?.spot_price ?? gammaSweep?.current?.spot);
+    const current = gammaSweep?.current
+        ? {
+            spot: Number(gammaSweep.current.spot),
+            netGex: Number(gammaSweep.current.net_gex) / 1000000,
+            hedgeShares: Number(gammaSweep.current.hedge_shares)
+        }
+        : nearestSweepPoint(rows, spot);
+    const zeroCrossings = (gammaSweep?.zero_crossings?.all || [])
+        .map(Number)
+        .filter(Number.isFinite)
+        .map(value => ({
+            xAxis: value,
+            lineStyle: { color: '#ff454f', width: 1, type: 'dashed' },
+            label: {
+                formatter: `Zero γ ${formatTargetPrice(value)}`,
+                color: '#ff8b8f',
+                fontFamily: NUMERIC_FONT,
+                fontSize: 11
+            }
+        }));
+    const spotLine = Number.isFinite(spot) ? [{
+        xAxis: spot,
+        lineStyle: { color: '#ffffff', width: 1 },
+        label: {
+            formatter: 'Spot',
+            color: '#ffffff',
+            fontFamily: NUMERIC_FONT,
+            fontSize: 11
+        }
+    }] : [];
+
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        tooltip: {
+            ...baseChartOptions({ valueFormatter: formatMillionsValue }).tooltip,
+            formatter: params => {
+                const items = Array.isArray(params) ? params : [params];
+                const axisLabel = items[0]?.axisValueLabel || items[0]?.axisValue || '';
+                const lines = [`<strong>${axisLabel}</strong>`];
+                items.forEach(item => {
+                    const raw = Array.isArray(item.value) ? item.value[1] : item.value;
+                    const formatter = item.seriesName === 'Cumulative Hedge Demand'
+                        ? formatShareCount
+                        : formatMillionsValue;
+                    lines.push(`${item.marker}${item.seriesName}: ${formatter(Number(raw))}`);
+                });
+                return lines.join('<br/>');
+            }
+        },
+        grid: { top: 38, left: 62, right: 86, bottom: 42, containLabel: true },
+        dataZoom: zoomDataOptions(),
+        legend: {
+            top: 4,
+            right: 12,
+            textStyle: chartText(11),
+            itemWidth: 16,
+            itemHeight: 8
+        },
+        xAxis: {
+            type: 'value',
+            name: 'Hypothetical Spot',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(12), formatter: formatAxisPrice },
+            axisLine: { onZero: false, lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: CHART_GRID } },
+            ...strikeAxisBounds(rows.map(row => row.spot))
+        },
+        yAxis: [
+            {
+                type: 'value',
+                name: 'Modeled Net GEX (M)',
+                ...chartBounds(rows.map(row => row.netGex), 0.18),
+                nameTextStyle: chartText(12, '#00d37f'),
+                axisLabel: { ...chartText(12, '#00d37f'), formatter: formatMillionsAxis },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { lineStyle: { color: CHART_GRID } }
+            },
+            {
+                type: 'value',
+                name: 'Cumulative Hedge Demand',
+                ...chartBounds(rows.map(row => row.hedgeShares), 0.18),
+                nameTextStyle: chartText(12, '#f5a524'),
+                axisLabel: { ...chartText(12, '#f5a524'), formatter: formatShareCount },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { show: false }
+            }
+        ],
+        series: [
+            {
+                name: 'Modeled Net GEX Sweep',
+                type: 'line',
+                smooth: true,
+                symbol: 'none',
+                data: rows.map(row => [row.spot, row.netGex]),
+                lineStyle: { color: '#00d37f', width: 2, type: 'dashed' },
+                markLine: { symbol: 'none', silent: true, data: spotLine.concat(zeroCrossings) },
+                markPoint: current && Number.isFinite(current.netGex) ? {
+                    symbolSize: 44,
+                    data: [{
+                        coord: [current.spot, current.netGex],
+                        value: current.netGex,
+                        itemStyle: { color: '#00d37f' },
+                        label: { formatter: formatMillionsValue(current.netGex), color: '#06120d', fontSize: 10 }
+                    }]
+                } : undefined
+            },
+            {
+                name: 'Cumulative Hedge Demand',
+                type: 'line',
+                yAxisIndex: 1,
+                smooth: true,
+                symbol: 'none',
+                data: rows.map(row => [row.spot, row.hedgeShares]),
+                lineStyle: { color: '#f5a524', width: 2, type: 'dotted' },
+                markPoint: current && Number.isFinite(current.hedgeShares) ? {
+                    symbolSize: 44,
+                    data: [{
+                        coord: [current.spot, current.hedgeShares],
+                        value: current.hedgeShares,
+                        itemStyle: { color: '#f5a524' },
+                        label: { formatter: formatShareCount(current.hedgeShares), color: '#1a1001', fontSize: 10 }
+                    }]
+                } : undefined
+            }
+        ]
+    };
+
+    setChartOption(chartId, option);
+    attachClickZoom(chartId, rows.map(row => row.spot));
 }
 
 function renderHistoryChart(history) {
@@ -898,6 +1129,7 @@ function renderOneOffProfile(data, dbPath = '') {
         return;
     }
 
+    cachedOneOffData = data;
     const snap = data.snapshot;
     const rows = buildStrikeProfile(data.profile || []);
     oneOffSetText('oneOffProfileLabel', snap.symbol || '--');
@@ -910,6 +1142,7 @@ function renderOneOffProfile(data, dbPath = '') {
     if (dbPath) oneOffSetText('oneOffDbPath', dbPath.split(/[\\/]/).pop());
 
     renderProfileChartTo('oneOffProfileChart', data.profile || [], snap.spot_price || 0);
+    renderSweepChart('oneOffSweepChart', data.gamma_sweep, snap);
 
     const tbody = document.getElementById('oneOffTableBody');
     if (!tbody) return;
@@ -1480,7 +1713,8 @@ function renderCockpit(model, symbolData, overviewData) {
     setText('tileWhaleBadge', model.whale.confidence_label || whaleVote.badge);
     setText('tileWhaleDetail', model.whale.strategy || 'No whale composite.');
 
-    renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model);
+    renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model, symbolData.gamma_sweep);
+    renderSweepChart('cockpitSweepChart', symbolData.gamma_sweep, symbolData.snapshot);
     renderMetricStrip(symbolData, model);
     renderEdgeStats(overviewData.edge_stats?.[model.symbol]);
     renderCockpitPillars(overviewData.components || []);
@@ -1660,7 +1894,7 @@ function renderSetupProfileChart(setups, model) {
         },
         yAxis: {
             type: 'value',
-            name: 'Net GEX (M)',
+            name: 'Net GEX by Strike (M)',
             min: bounds.min,
             max: bounds.max,
             nameTextStyle: chartText(12, '#b177ff'),
@@ -1669,7 +1903,7 @@ function renderSetupProfileChart(setups, model) {
             splitLine: { lineStyle: { color: CHART_GRID } }
         },
         series: [{
-            name: 'Net GEX',
+            name: 'Net GEX by Strike',
             type: 'line',
             smooth: true,
             symbol: 'circle',
@@ -1731,7 +1965,7 @@ function renderMetricStrip(symbolData, model) {
     setClassText('stripNetGex', formatMoneyM(symbolData.snapshot.total_net_gex, 0), symbolData.snapshot.total_net_gex >= 0 ? 'green-text' : 'red-text');
     setClassText('stripGammaExposure', localNet >= 0 ? 'Long' : 'Short', localNet >= 0 ? 'green-text' : 'red-text');
     setClassText('stripGexChange', formatMoneyM(lastHist - firstHist, 0), lastHist - firstHist >= 0 ? 'green-text' : 'red-text');
-    setText('stripZeroGamma', model.flip ? formatTargetPrice(model.flip) : '--');
+    setText('stripZeroGamma', sweepZeroLabel(symbolData.gamma_sweep, model.flip));
     setClassText('stripGammaSlope', `${formatMoneyM(symbolData.snapshot.gex_slope || 0, 2)} / pt`, symbolData.snapshot.gex_slope >= 0 ? 'green-text' : 'red-text');
 }
 
@@ -1773,7 +2007,7 @@ function renderCockpitPillars(components) {
     });
 }
 
-function renderCockpitProfileChart(profileData, spotPrice, model) {
+function renderCockpitProfileChart(profileData, spotPrice, model, gammaSweep = null) {
     const strikeMap = {};
     profileData.forEach(row => {
         if (!strikeMap[row.strike_price]) strikeMap[row.strike_price] = { call: 0, put: 0, net: 0 };
@@ -1791,7 +2025,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
     const markerLevels = [
         { label: 'Target', value: model.target, color: '#ff454f', dash: 'dot' },
         { label: 'Spot', value: spotPrice, color: '#ffffff', dash: 'solid' },
-        { label: 'Flip', value: model.flip, color: '#ff454f', dash: 'dash' },
+        ...sweepZeroMarkerLevels(gammaSweep, model.flip, spotPrice),
         { label: 'Invalidation', value: model.invalidation, color: '#f5a524', dash: 'dash' }
     ].filter(level => Number.isFinite(level.value));
     const markerLines = buildMarkerLines(markerLevels, strikes);
@@ -1827,7 +2061,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
         yAxis: [
             {
                 type: 'value',
-                name: 'Net GEX (M)',
+                name: 'Net GEX by Strike (M)',
                 min: netBounds.min,
                 max: netBounds.max,
                 nameTextStyle: chartText(12, '#b177ff'),
@@ -1868,7 +2102,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
                 barWidth: 12
             },
             {
-                name: 'Net GEX',
+                name: 'Net GEX by Strike',
                 type: 'line',
                 yAxisIndex: 0,
                 smooth: true,

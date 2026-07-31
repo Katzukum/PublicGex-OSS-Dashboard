@@ -536,6 +536,23 @@ select {
     display: inline-block;
 }
 
+.sweep-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0;
+    white-space: nowrap;
+}
+
+.sweep-switch input {
+    width: auto;
+    min-height: auto;
+    accent-color: var(--net);
+}
+
 .legend-call { background: var(--call); }
 .legend-put { background: var(--put); }
 .legend-net {
@@ -552,6 +569,13 @@ select {
     flex: 1;
     min-height: 320px;
     height: clamp(320px, 38vh, 460px);
+}
+
+.sweep-chart {
+    min-height: 240px;
+    height: clamp(240px, 28vh, 340px);
+    border-top: 1px solid var(--border-soft);
+    margin-top: 8px;
 }
 
 .small-chart {
@@ -1202,14 +1226,21 @@ table {
 }
 
 .one-off-view {
-    display: grid;
-    grid-template-rows: auto auto minmax(360px, 0.9fr) minmax(260px, 0.7fr);
+    display: flex;
+    flex-direction: column;
     gap: 10px;
-    height: 100%;
+    min-height: 100%;
+    height: auto;
+    overflow: auto;
 }
 
 .one-off-control {
-    overflow: hidden;
+    flex: 0 0 auto;
+    min-height: 106px;
+    overflow: visible;
+    position: sticky;
+    top: 0;
+    z-index: 5;
 }
 
 .one-off-form {
@@ -1226,8 +1257,26 @@ table {
     gap: 10px;
 }
 
+.one-off-view > .chart-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    min-height: auto;
+    overflow: visible;
+}
+
+.one-off-view #oneOffProfileChart {
+    min-height: 360px;
+    height: 360px;
+}
+
+.one-off-view #oneOffSweepChart {
+    flex: 0 0 auto;
+}
+
 .one-off-grid {
-    min-height: 0;
+    flex: 0 0 auto;
+    min-height: 360px;
     display: grid;
     grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.55fr);
     gap: 10px;

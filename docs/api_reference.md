@@ -8,9 +8,11 @@ This section provides a technical overview of the codebase modules. The source c
 The main entry point for the Dashboard.
 *   **Location**: `[appy.py](../appy.py)`
 *   **Key Functions**:
-    *   `get_dashboard_data(symbol)`: Returns charts/profiles.
+    *   `get_dashboard_data(symbol)`: Returns charts/profiles, including `gamma_sweep` when enough stored contract Greeks are available.
     *   `get_market_overview()`: Calculates the global market compass.
     *   `run_event_server(port)`: Listens for updates from `publicData.py`.
+
+`gamma_sweep` is a modeled V1 payload derived from the current stored 0DTE profile. It contains `status`, `model`, `range`, `current`, `zero_crossings`, `skipped_contracts`, and `points`; each point has `spot`, `net_gex`, and `hedge_shares`.
 
 ### 2. `publicData.py` (Data Collector)
 The ETL (Extract, Transform, Load) worker.

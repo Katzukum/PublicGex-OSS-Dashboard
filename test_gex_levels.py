@@ -4,6 +4,7 @@ from gex_levels import aggregate_gamma_levels, level_net_gex, level_side_gex
 from ninjatrader_broadcaster import (
     _dashboard_payload_for_symbol,
     _local_net_gex,
+    _modeled_zero_gex_for_symbol,
     _nearest_significant,
     _ninjatrader_levels_for_symbol,
 )
@@ -115,6 +116,33 @@ class GammaLevelTests(unittest.TestCase):
         dashboard = _dashboard_payload_for_symbol("NDX", overview)
 
         self.assertEqual(dashboard["dashboard_liquidity_detail"], "No liquidity profile")
+
+    def test_modeled_zero_gex_for_symbol_returns_clean_level(self):
+        overview = {"modeled_zero_gex": {"NDX": 100.123456, "SPX": float("nan")}}
+
+        self.assertEqual(_modeled_zero_gex_for_symbol(overview, "NDX"), 100.1235)
+        self.assertIsNone(_modeled_zero_gex_for_symbol(overview, "SPX"))
+
+    def test_dashboard_payload_includes_modeled_zero_gex(self):
+        overview = {
+            "compass": {"label": "NEUTRAL", "y_score": 0, "confidence": 1},
+            "components": [
+                {
+                    "symbol": "NDX",
+                    "spot": 100,
+                    "flip_strike": 100,
+                    "effective_gex": 0,
+                    "confidence": 1,
+                }
+            ],
+            "gamma_levels": {"NDX": []},
+            "cockpit_levels": {"NDX": []},
+            "modeled_zero_gex": {"NDX": 101.25},
+        }
+
+        dashboard = _dashboard_payload_for_symbol("NDX", overview)
+
+        self.assertEqual(dashboard["dashboard_modeled_zero_gex"], 101.25)
 
 
 if __name__ == "__main__":
