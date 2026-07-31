@@ -334,6 +334,114 @@ select {
     font-size: 11px;
 }
 
+.trace-view {
+    display: grid;
+    grid-template-rows: auto minmax(420px, 1fr) minmax(190px, 0.38fr);
+    gap: 10px;
+    height: 100%;
+    overflow: hidden;
+}
+
+.trace-hero {
+    display: grid;
+    grid-template-columns: 1.25fr repeat(4, minmax(120px, 0.7fr));
+    min-height: 86px;
+    overflow: hidden;
+}
+
+.trace-hero > div {
+    padding: 12px 14px;
+    border-left: 1px solid var(--border-soft);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+}
+
+.trace-hero > div:first-child {
+    border-left: 0;
+}
+
+.trace-hero span {
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+}
+
+.trace-hero strong {
+    margin-top: 6px;
+    color: white;
+    font-family: var(--font-mono);
+    font-size: 20px;
+    line-height: 1.1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.trace-map-panel,
+.trace-profile-panel {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.trace-map-panel .panel-header,
+.trace-profile-panel .panel-header {
+    flex: 0 0 auto;
+}
+
+.trace-heatmap,
+.trace-profile {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.trace-heatmap {
+    height: 100%;
+}
+
+.trace-profile {
+    height: 210px;
+}
+
+.trace-header {
+    align-items: center;
+}
+
+.segmented-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #080d13;
+}
+
+.segmented-control button {
+    min-width: 58px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.segmented-control button:hover {
+    color: white;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.segmented-control button.active {
+    color: #03110f;
+    background: var(--teal);
+}
+
 .cockpit-hero {
     display: grid;
     grid-template-columns: 1.25fr 1fr repeat(4, minmax(120px, 0.65fr));
@@ -1486,6 +1594,10 @@ table {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    .trace-hero {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
     .setup-hero {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
@@ -1519,13 +1631,15 @@ table {
     }
 
     .setups-view,
-    .one-off-view {
+    .one-off-view,
+    .trace-view {
         overflow: auto;
         height: auto;
     }
 
     .setup-hero,
-    .setup-stat-grid {
+    .setup-stat-grid,
+    .trace-hero {
         grid-template-columns: 1fr;
     }
 }

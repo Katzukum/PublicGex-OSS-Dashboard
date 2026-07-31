@@ -7,7 +7,7 @@ import socket
 import subprocess
 import sys
 import threading
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from sqlalchemy import text
 
@@ -654,6 +654,156 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
     except Exception as e:
         print(f"Error: {e}")
         return {"error": str(e)}
+
+
+@eel.expose
+def get_trace_data(symbol: str = "SPX", minutes: int = 390) -> dict:
+    """Returns a TRACE-style intraday gamma heatmap grid for one symbol."""
+    symbol = str(symbol or "").strip().upper()
+    try:
+        lookback_minutes = max(30, min(int(minutes or 390), 480))
+    except (TypeError, ValueError):
+        lookback_minutes = 390
+
+    try:
+        with engine.connect() as conn:
+            latest = conn.execute(
+                text("""
+                    SELECT id, timestamp, symbol, spot_price, flip_strike, total_net_gex
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """),
+                {"symbol": symbol},
+            ).fetchone()
+
+            if not latest:
+                return {"error": f"No data found for {symbol}.", "symbol": symbol}
+
+            latest_time = parse_timestamp(latest.timestamp) or datetime.now()
+            start_time = latest_time - timedelta(minutes=lookback_minutes)
+
+            heatmap_rows = conn.execute(
+                text("""
+                    SELECT
+                        strftime('%Y-%m-%d %H:%M:00', r.timestamp) AS bucket,
+                        r.strike_price,
+                        SUM(r.gex_value) AS net_gex,
+                        SUM(CASE WHEN UPPER(r.option_type) LIKE '%CALL%' THEN r.gex_value ELSE 0 END) AS call_gex,
+                        SUM(CASE WHEN UPPER(r.option_type) LIKE '%PUT%' THEN r.gex_value ELSE 0 END) AS put_gex,
+                        SUM(r.open_interest) AS open_interest
+                    FROM raw_option_greeks r
+                    WHERE r.symbol = :symbol
+                      AND r.timestamp >= :start_time
+                      AND date(r.timestamp) = date(:latest_time)
+                    GROUP BY bucket, r.strike_price
+                    ORDER BY bucket ASC, r.strike_price ASC
+                """),
+                {
+                    "symbol": symbol,
+                    "start_time": start_time,
+                    "latest_time": latest_time,
+                },
+            ).fetchall()
+
+            spot_rows = conn.execute(
+                text("""
+                    SELECT
+                        strftime('%Y-%m-%d %H:%M:00', timestamp) AS bucket,
+                        AVG(spot_price) AS spot_price
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                      AND timestamp >= :start_time
+                      AND date(timestamp) = date(:latest_time)
+                    GROUP BY bucket
+                    ORDER BY bucket ASC
+                """),
+                {
+                    "symbol": symbol,
+                    "start_time": start_time,
+                    "latest_time": latest_time,
+                },
+            ).fetchall()
+
+            latest_profile_rows = conn.execute(
+                text("""
+                    SELECT
+                        strike_price,
+                        SUM(gex_value) AS net_gex,
+                        SUM(CASE WHEN UPPER(option_type) LIKE '%CALL%' THEN gex_value ELSE 0 END) AS call_gex,
+                        SUM(CASE WHEN UPPER(option_type) LIKE '%PUT%' THEN gex_value ELSE 0 END) AS put_gex,
+                        SUM(open_interest) AS open_interest
+                    FROM raw_option_greeks
+                    WHERE snapshot_id = :snapshot_id
+                    GROUP BY strike_price
+                    ORDER BY strike_price ASC
+                """),
+                {"snapshot_id": latest.id},
+            ).fetchall()
+
+        heatmap = [
+            {
+                "timestamp": str(row.bucket),
+                "time": str(row.bucket)[11:16],
+                "strike": float(row.strike_price or 0),
+                "net_gex": float(row.net_gex or 0),
+                "call_gex": float(row.call_gex or 0),
+                "put_gex": float(row.put_gex or 0),
+                "open_interest": int(row.open_interest or 0),
+            }
+            for row in heatmap_rows
+            if row.strike_price is not None
+        ]
+        spot_path = [
+            {
+                "timestamp": str(row.bucket),
+                "time": str(row.bucket)[11:16],
+                "spot_price": float(row.spot_price or 0),
+            }
+            for row in spot_rows
+        ]
+        latest_profile = [
+            {
+                "strike": float(row.strike_price or 0),
+                "net_gex": float(row.net_gex or 0),
+                "call_gex": float(row.call_gex or 0),
+                "put_gex": float(row.put_gex or 0),
+                "open_interest": int(row.open_interest or 0),
+            }
+            for row in latest_profile_rows
+            if row.strike_price is not None
+        ]
+        strikes = sorted({row["strike"] for row in heatmap})
+        buckets = sorted({row["timestamp"] for row in heatmap})
+        values = [row["net_gex"] for row in heatmap]
+
+        return {
+            "symbol": symbol,
+            "timestamp": str(latest.timestamp),
+            "spot_price": float(latest.spot_price or 0),
+            "flip_strike": float(latest.flip_strike or 0),
+            "total_net_gex": float(latest.total_net_gex or 0),
+            "range": {
+                "start": str(start_time),
+                "end": str(latest_time),
+                "minutes": lookback_minutes,
+                "buckets": len(buckets),
+                "strikes": len(strikes),
+                "cells": len(heatmap),
+                "min_strike": min(strikes) if strikes else None,
+                "max_strike": max(strikes) if strikes else None,
+                "min_net_gex": min(values) if values else 0,
+                "max_net_gex": max(values) if values else 0,
+            },
+            "heatmap": heatmap,
+            "spot_path": spot_path,
+            "latest_profile": latest_profile,
+        }
+
+    except Exception as e:
+        print(f"TRACE data error: {e}")
+        return {"error": str(e), "symbol": symbol}
 
 
 def _parse_one_off_date(value: str) -> date:

@@ -41,9 +41,9 @@
                     <span class="nav-icon">&lt;&gt;</span>
                     <span>Flow</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('dashboard')" data-view="volatility">
-                    <span class="nav-icon">o</span>
-                    <span>Volatility</span>
+                <button class="nav-btn" onclick="switchView('trace')" data-view="trace">
+                    <span class="nav-icon">::</span>
+                    <span>TRACE</span>
                 </button>
                 <button class="nav-btn" onclick="switchView('analysis')" data-view="analysis">
                     <span class="nav-icon">#</span>
@@ -359,6 +359,51 @@
                     </div>
                     <div id="historyChart" class="plot-area small-chart"></div>
                 </div>
+            </section>
+
+            <section id="view-trace" class="view-section trace-view" style="display: none;">
+                <div class="trace-hero panel">
+                    <div>
+                        <span>TRACE</span>
+                        <strong id="traceSymbol">--</strong>
+                    </div>
+                    <div>
+                        <span>Spot</span>
+                        <strong id="traceSpot">--</strong>
+                    </div>
+                    <div>
+                        <span>Net GEX</span>
+                        <strong id="traceNetGex">--</strong>
+                    </div>
+                    <div>
+                        <span>Cells</span>
+                        <strong id="traceCells">--</strong>
+                    </div>
+                    <div>
+                        <span>Range</span>
+                        <strong id="traceRange">--</strong>
+                    </div>
+                </div>
+
+                <section class="panel chart-panel trace-map-panel">
+                    <div class="panel-header trace-header">
+                        <h2>Gamma Exposure Map</h2>
+                        <div class="segmented-control" role="group" aria-label="TRACE metric">
+                            <button type="button" class="active" data-trace-mode="net_gex" onclick="setTraceMode('net_gex')">Net</button>
+                            <button type="button" data-trace-mode="call_gex" onclick="setTraceMode('call_gex')">Calls</button>
+                            <button type="button" data-trace-mode="put_gex" onclick="setTraceMode('put_gex')">Puts</button>
+                        </div>
+                    </div>
+                    <div id="traceHeatmapChart" class="plot-area trace-heatmap"></div>
+                </section>
+
+                <section class="panel chart-panel trace-profile-panel">
+                    <div class="panel-header">
+                        <h2>Latest Strike Pressure</h2>
+                        <small id="traceStatus">Waiting for local data</small>
+                    </div>
+                    <div id="traceProfileChart" class="plot-area trace-profile"></div>
+                </section>
             </section>
 
             <section id="view-analysis" class="view-section" style="display: none;">

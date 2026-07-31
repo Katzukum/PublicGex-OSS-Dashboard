@@ -17,8 +17,10 @@ let cachedSymbol = null;
 let cachedOverview = null;
 let cachedTradeSetups = null;
 let cachedOneOffData = null;
+let cachedTraceData = null;
 let cockpitModel = null;
 let gammaSweepOverlayEnabled = false;
+let traceMode = 'net_gex';
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
 
 const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono", monospace';
@@ -563,6 +565,10 @@ function switchView(viewName) {
         document.querySelector('[data-view="market-signal"]')?.classList.add('active');
         loadOverview();
     }
+    if (viewName === 'trace') {
+        document.querySelector('[data-view="trace"]')?.classList.add('active');
+        loadTrace();
+    }
     if (viewName === 'analysis') document.querySelector('[data-view="analysis"]')?.classList.add('active');
     if (viewName === 'one-off') {
         document.querySelector('[data-view="one-off"]')?.classList.add('active');
@@ -572,6 +578,7 @@ function switchView(viewName) {
 
     if (viewName === 'dashboard' && cachedData) resizeCharts(['profileChart', 'gammaSweepChart', 'historyChart']);
     if (viewName === 'market-signal') resizeCharts(['tiltChart']);
+    if (viewName === 'trace') resizeCharts(['traceHeatmapChart', 'traceProfileChart']);
     if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart', 'cockpitSweepChart']);
     if (viewName === 'setups' && cachedData) resizeCharts(['setupProfileChart']);
     if (viewName === 'one-off') resizeCharts(['oneOffProfileChart', 'oneOffSweepChart']);
@@ -602,6 +609,9 @@ async function loadSymbol() {
         document.getElementById('view-market-signal').style.display === 'block'
     ) {
         loadOverview();
+    }
+    if (document.getElementById('view-trace').style.display === 'block') {
+        loadTrace();
     }
     timeLeft = currentSettings.refresh_interval;
 }
@@ -995,6 +1005,264 @@ function renderHistoryChart(history) {
 
     setChartOption('historyChart', option);
     attachClickZoom('historyChart', history.map(d => d.timestamp), 16);
+}
+
+function traceMetricLabel(metric = traceMode) {
+    if (metric === 'call_gex') return 'Call GEX';
+    if (metric === 'put_gex') return 'Put GEX';
+    return 'Net GEX';
+}
+
+function traceMetricColor(metric = traceMode) {
+    if (metric === 'call_gex') return '#ff8b1a';
+    if (metric === 'put_gex') return '#2388e8';
+    return '#18c7b7';
+}
+
+function setTraceMode(mode) {
+    traceMode = ['net_gex', 'call_gex', 'put_gex'].includes(mode) ? mode : 'net_gex';
+    document.querySelectorAll('[data-trace-mode]').forEach(button => {
+        button.classList.toggle('active', button.dataset.traceMode === traceMode);
+    });
+    if (cachedTraceData) renderTraceView(cachedTraceData);
+}
+
+async function loadTrace() {
+    const symbol = document.getElementById('symbolSelector')?.value || cachedSymbol || 'SPX';
+    const statusEl = document.getElementById('traceStatus');
+    if (statusEl) statusEl.innerText = 'Loading';
+
+    try {
+        const data = await eel.get_trace_data(symbol, 390)();
+        if (data.error) {
+            if (statusEl) statusEl.innerText = data.error;
+            showToast('TRACE unavailable', data.error, 'info');
+            return;
+        }
+        cachedTraceData = data;
+        renderTraceView(data);
+    } catch (error) {
+        console.error('TRACE load failed', error);
+        if (statusEl) statusEl.innerText = 'Load failed';
+        showToast('TRACE unavailable', 'Could not load local heatmap data.', 'info');
+    }
+}
+
+function renderTraceView(data) {
+    if (!data) return;
+    document.getElementById('traceSymbol').innerText = data.symbol || '--';
+    document.getElementById('traceSpot').innerText = data.spot_price ? formatTargetPrice(data.spot_price) : '--';
+    document.getElementById('traceNetGex').innerText = formatMoneyM(data.total_net_gex || 0, 0);
+    document.getElementById('traceCells').innerText = formatCompactNumber(data.range?.cells || 0);
+    document.getElementById('traceRange').innerText = data.range?.buckets ? `${data.range.buckets}m` : '--';
+
+    const statusEl = document.getElementById('traceStatus');
+    if (statusEl) {
+        const ts = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : '--';
+        statusEl.innerText = `${traceMetricLabel()} | ${ts}`;
+    }
+
+    renderTraceHeatmap(data);
+    renderTraceProfile(data);
+}
+
+function renderTraceHeatmap(data) {
+    const heatmap = Array.isArray(data.heatmap) ? data.heatmap : [];
+    const spotPath = Array.isArray(data.spot_path) ? data.spot_path : [];
+    const chart = getChart('traceHeatmapChart');
+    if (!chart) return;
+
+    if (!heatmap.length) {
+        chart.clear();
+        return;
+    }
+
+    const buckets = [...new Set(heatmap.map(row => row.timestamp))].sort();
+    const bucketIndex = new Map(buckets.map((bucket, index) => [bucket, index]));
+    const valuesM = heatmap.map(row => Number(row[traceMode] || 0) / 1000000).filter(Number.isFinite);
+    const maxAbs = Math.max(...valuesM.map(value => Math.abs(value)), 1);
+    const minValue = traceMode === 'call_gex' ? 0 : traceMode === 'put_gex' ? -maxAbs : -maxAbs;
+    const maxValue = traceMode === 'put_gex' ? 0 : maxAbs;
+    const heatmapData = heatmap
+        .map(row => [bucketIndex.get(row.timestamp), Number(row.strike), Number(row[traceMode] || 0) / 1000000])
+        .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]) && Number.isFinite(row[2]));
+    const priceData = spotPath
+        .map(row => [bucketIndex.get(row.timestamp), Number(row.spot_price)])
+        .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]));
+    const strikes = heatmap.map(row => Number(row.strike)).filter(Number.isFinite);
+    const yBounds = strikes.length
+        ? { min: Math.min(...strikes), max: Math.max(...strikes) }
+        : {};
+    const labelStep = Math.max(1, Math.ceil(buckets.length / 8));
+    const currentSpot = Number(data.spot_price);
+    const flip = Number(data.flip_strike);
+
+    const colorRange = traceMode === 'call_gex'
+        ? ['#111820', '#8f5a17', '#ff8b1a']
+        : traceMode === 'put_gex'
+            ? ['#2388e8', '#262d6e', '#111820']
+            : ['#2388e8', '#111820', '#ff8b1a'];
+
+    const markerLines = [];
+    if (Number.isFinite(currentSpot) && currentSpot > 0) {
+        markerLines.push({
+            yAxis: currentSpot,
+            lineStyle: { color: '#ffffff', width: 1 },
+            label: { formatter: `Spot ${formatTargetPrice(currentSpot)}`, color: '#ffffff', fontSize: 11 }
+        });
+    }
+    if (Number.isFinite(flip) && flip > 0) {
+        markerLines.push({
+            yAxis: flip,
+            lineStyle: { color: '#ff454f', width: 1, type: 'dashed' },
+            label: { formatter: `Flip ${formatTargetPrice(flip)}`, color: '#ff8b8f', fontSize: 11 }
+        });
+    }
+
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        grid: { top: 36, left: 64, right: 88, bottom: 46, containLabel: true },
+        tooltip: {
+            trigger: 'item',
+            backgroundColor: '#071018',
+            borderColor: '#223140',
+            textStyle: chartText(12, '#f2f5f8'),
+            formatter: params => {
+                if (params.seriesName === 'Spot Path') {
+                    return `<strong>${buckets[params.value[0]]?.slice(11, 16) || ''}</strong><br/>Spot: ${formatTargetPrice(params.value[1])}`;
+                }
+                const time = buckets[params.value[0]]?.slice(11, 16) || '';
+                return [
+                    `<strong>${time}</strong>`,
+                    `Strike: ${formatAxisPrice(params.value[1])}`,
+                    `${traceMetricLabel()}: ${formatMillionsValue(params.value[2])}`
+                ].join('<br/>');
+            }
+        },
+        visualMap: {
+            min: minValue,
+            max: maxValue,
+            calculable: true,
+            orient: 'vertical',
+            right: 12,
+            top: 54,
+            bottom: 54,
+            textStyle: chartText(11),
+            inRange: { color: colorRange }
+        },
+        xAxis: {
+            type: 'category',
+            data: buckets,
+            axisLabel: {
+                ...chartText(11),
+                formatter: (value, index) => index % labelStep === 0 ? String(value).slice(11, 16) : ''
+            },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { show: false }
+        },
+        yAxis: {
+            type: 'value',
+            name: 'Strike',
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(11), formatter: formatAxisPrice },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } },
+            ...yBounds
+        },
+        series: [
+            {
+                name: traceMetricLabel(),
+                type: 'heatmap',
+                data: heatmapData,
+                progressive: 2500,
+                emphasis: { itemStyle: { borderColor: '#ffffff', borderWidth: 1 } }
+            },
+            {
+                name: 'Spot Path',
+                type: 'line',
+                symbol: 'none',
+                data: priceData,
+                lineStyle: { color: '#ffffff', width: 2 },
+                z: 5,
+                markLine: markerLines.length ? { symbol: 'none', silent: true, data: markerLines } : undefined
+            }
+        ]
+    };
+
+    chart.setOption(option, true);
+    resizeCharts(['traceHeatmapChart']);
+}
+
+function renderTraceProfile(data) {
+    const rows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    const chart = getChart('traceProfileChart');
+    if (!chart) return;
+
+    if (!rows.length) {
+        chart.clear();
+        return;
+    }
+
+    const metric = traceMode;
+    const values = rows.map(row => Number(row[metric] || 0) / 1000000);
+    const bounds = chartBounds(values, 0.18);
+    const strikes = rows.map(row => formatAxisPrice(row.strike));
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        grid: { top: 20, left: 68, right: 36, bottom: 34, containLabel: true },
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            backgroundColor: '#071018',
+            borderColor: '#223140',
+            textStyle: chartText(12, '#f2f5f8'),
+            formatter: params => {
+                const item = Array.isArray(params) ? params[0] : params;
+                return `<strong>${item.axisValue}</strong><br/>${traceMetricLabel()}: ${formatMillionsValue(item.value)}`;
+            }
+        },
+        xAxis: {
+            type: 'value',
+            min: bounds.min,
+            max: bounds.max,
+            axisLabel: { ...chartText(11), formatter: formatMillionsAxis },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: CHART_GRID } }
+        },
+        yAxis: {
+            type: 'category',
+            data: strikes,
+            axisLabel: { ...chartText(10), hideOverlap: true },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { show: false }
+        },
+        series: [{
+            name: traceMetricLabel(),
+            type: 'bar',
+            data: values,
+            barWidth: 5,
+            itemStyle: {
+                color: params => {
+                    const value = Number(params.value);
+                    if (metric === 'call_gex') return '#ff8b1a';
+                    if (metric === 'put_gex') return '#2388e8';
+                    return value >= 0 ? '#00d37f' : '#ff454f';
+                }
+            },
+            markLine: {
+                symbol: 'none',
+                silent: true,
+                data: [{
+                    xAxis: 0,
+                    lineStyle: { color: '#667584', width: 1, type: 'dotted' },
+                    label: { show: false }
+                }]
+            }
+        }]
+    };
+
+    chart.setOption(option, true);
+    resizeCharts(['traceProfileChart']);
 }
 
 // --- Analysis Table (Matches previous redesign) ---
