@@ -541,12 +541,13 @@ async function init() {
 function switchView(viewName) {
     document.querySelectorAll('.view-section').forEach(el => el.style.display = 'none');
     document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+    document.querySelector('.terminal-shell')?.classList.toggle('trace-active', viewName === 'trace');
 
     const target = document.getElementById(`view-${viewName}`);
     if (target) {
         target.style.display = viewName === 'one-off'
             ? 'flex'
-            : ['cockpit', 'setups'].includes(viewName) ? 'grid' : 'block';
+            : ['cockpit', 'setups', 'trace'].includes(viewName) ? 'grid' : 'block';
         if (viewName === 'one-off') target.scrollTop = 0;
     }
 
@@ -1024,6 +1025,8 @@ function setTraceMode(mode) {
     document.querySelectorAll('[data-trace-mode]').forEach(button => {
         button.classList.toggle('active', button.dataset.traceMode === traceMode);
     });
+    const select = document.getElementById('traceMetricSelect');
+    if (select && select.value !== traceMode) select.value = traceMode;
     if (cachedTraceData) renderTraceView(cachedTraceData);
 }
 
@@ -1050,25 +1053,52 @@ async function loadTrace() {
 
 function renderTraceView(data) {
     if (!data) return;
-    document.getElementById('traceSymbol').innerText = data.symbol || '--';
-    document.getElementById('traceSpot').innerText = data.spot_price ? formatTargetPrice(data.spot_price) : '--';
-    document.getElementById('traceNetGex').innerText = formatMoneyM(data.total_net_gex || 0, 0);
-    document.getElementById('traceCells').innerText = formatCompactNumber(data.range?.cells || 0);
-    document.getElementById('traceRange').innerText = data.range?.buckets ? `${data.range.buckets}m` : '--';
+    const profileRows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    const gross = profileRows.reduce((sum, row) => sum + Math.abs(Number(row.net_gex || 0)), 0);
+    const net = Math.abs(Number(data.total_net_gex || 0));
+    const stability = gross > 0 ? Math.round(Math.min(99, Math.max(1, (net / gross) * 100))) : 0;
+    const date = data.timestamp ? new Date(data.timestamp) : null;
+    const latestTime = date ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--';
 
-    const statusEl = document.getElementById('traceStatus');
-    if (statusEl) {
-        const ts = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : '--';
-        statusEl.innerText = `${traceMetricLabel()} | ${ts}`;
-    }
+    document.getElementById('traceStability').innerText = stability ? `${stability}%` : '--';
+    document.getElementById('traceDate').innerText = date ? date.toISOString().slice(0, 10) : '----';
+    document.getElementById('traceTimelineValue').innerText = latestTime;
 
     renderTraceHeatmap(data);
     renderTraceProfile(data);
 }
 
+function buildTraceCandles(spotTicks, buckets) {
+    const grouped = {};
+    (spotTicks || []).forEach(tick => {
+        const ts = String(tick.timestamp || '');
+        const bucket = ts.length >= 16 ? `${ts.slice(0, 16)}:00` : tick.timestamp;
+        const spot = Number(tick.spot_price);
+        if (!bucket || !Number.isFinite(spot)) return;
+        if (!grouped[bucket]) grouped[bucket] = [];
+        grouped[bucket].push(spot);
+    });
+
+    let previousClose = null;
+    return buckets.map(bucket => {
+        const values = grouped[bucket] || [];
+        if (!values.length) {
+            if (!Number.isFinite(previousClose)) return null;
+            return [previousClose, previousClose, previousClose, previousClose];
+        }
+        const open = Number.isFinite(previousClose) ? previousClose : values[0];
+        const close = values[values.length - 1];
+        const low = Math.min(open, close, ...values);
+        const high = Math.max(open, close, ...values);
+        previousClose = close;
+        return [open, close, low, high];
+    });
+}
+
 function renderTraceHeatmap(data) {
     const heatmap = Array.isArray(data.heatmap) ? data.heatmap : [];
     const spotPath = Array.isArray(data.spot_path) ? data.spot_path : [];
+    const spotTicks = Array.isArray(data.spot_ticks) ? data.spot_ticks : [];
     const chart = getChart('traceHeatmapChart');
     if (!chart) return;
 
@@ -1089,6 +1119,7 @@ function renderTraceHeatmap(data) {
     const priceData = spotPath
         .map(row => [bucketIndex.get(row.timestamp), Number(row.spot_price)])
         .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]));
+    const candleData = buildTraceCandles(spotTicks, buckets);
     const strikes = heatmap.map(row => Number(row.strike)).filter(Number.isFinite);
     const yBounds = strikes.length
         ? { min: Math.min(...strikes), max: Math.max(...strikes) }
@@ -1098,10 +1129,10 @@ function renderTraceHeatmap(data) {
     const flip = Number(data.flip_strike);
 
     const colorRange = traceMode === 'call_gex'
-        ? ['#111820', '#8f5a17', '#ff8b1a']
+        ? ['#fff7fb', '#c9a7f4', '#6e35df']
         : traceMode === 'put_gex'
-            ? ['#2388e8', '#262d6e', '#111820']
-            : ['#2388e8', '#111820', '#ff8b1a'];
+            ? ['#e43a71', '#f4d5e1', '#fff7fb']
+            : ['#e43a71', '#fff7fb', '#6e35df'];
 
     const markerLines = [];
     if (Number.isFinite(currentSpot) && currentSpot > 0) {
@@ -1121,7 +1152,8 @@ function renderTraceHeatmap(data) {
 
     const option = {
         ...baseChartOptions({ valueFormatter: formatMillionsValue }),
-        grid: { top: 36, left: 64, right: 88, bottom: 46, containLabel: true },
+        backgroundColor: '#101316',
+        grid: { top: 22, left: 78, right: 54, bottom: 54, containLabel: true },
         tooltip: {
             trigger: 'item',
             backgroundColor: '#071018',
@@ -1140,6 +1172,7 @@ function renderTraceHeatmap(data) {
             }
         },
         visualMap: {
+            show: false,
             min: minValue,
             max: maxValue,
             calculable: true,
@@ -1154,19 +1187,19 @@ function renderTraceHeatmap(data) {
             type: 'category',
             data: buckets,
             axisLabel: {
-                ...chartText(11),
+                ...chartText(12, '#e8edf2'),
                 formatter: (value, index) => index % labelStep === 0 ? String(value).slice(11, 16) : ''
             },
-            axisLine: { lineStyle: { color: '#223140' } },
+            axisLine: { lineStyle: { color: '#303842' } },
             splitLine: { show: false }
         },
         yAxis: {
             type: 'value',
-            name: 'Strike',
-            nameTextStyle: chartText(12),
-            axisLabel: { ...chartText(11), formatter: formatAxisPrice },
-            axisLine: { lineStyle: { color: '#223140' } },
-            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } },
+            name: 'Strike / Price ($)',
+            nameTextStyle: chartText(13, '#f0f2f5'),
+            axisLabel: { ...chartText(12, '#f0f2f5'), formatter: formatAxisPrice },
+            axisLine: { lineStyle: { color: '#303842' } },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
             ...yBounds
         },
         series: [
@@ -1174,16 +1207,31 @@ function renderTraceHeatmap(data) {
                 name: traceMetricLabel(),
                 type: 'heatmap',
                 data: heatmapData,
+                blurSize: 12,
                 progressive: 2500,
+                itemStyle: { opacity: 0.86 },
                 emphasis: { itemStyle: { borderColor: '#ffffff', borderWidth: 1 } }
+            },
+            {
+                name: 'Price Candles',
+                type: 'candlestick',
+                data: candleData,
+                itemStyle: {
+                    color: '#f7f4ee',
+                    color0: '#32343a',
+                    borderColor: '#9b9da3',
+                    borderColor0: '#565965'
+                },
+                barWidth: '42%',
+                z: 6
             },
             {
                 name: 'Spot Path',
                 type: 'line',
                 symbol: 'none',
                 data: priceData,
-                lineStyle: { color: '#ffffff', width: 2 },
-                z: 5,
+                lineStyle: { color: '#3f4eb3', width: 2 },
+                z: 7,
                 markLine: markerLines.length ? { symbol: 'none', silent: true, data: markerLines } : undefined
             }
         ]
@@ -1206,47 +1254,68 @@ function renderTraceProfile(data) {
     const metric = traceMode;
     const values = rows.map(row => Number(row[metric] || 0) / 1000000);
     const bounds = chartBounds(values, 0.18);
-    const strikes = rows.map(row => formatAxisPrice(row.strike));
+    const strikes = rows.map(row => Number(row.strike)).filter(Number.isFinite);
+    const yBounds = strikes.length
+        ? { min: Math.min(...strikes), max: Math.max(...strikes) }
+        : {};
+    const maxAbs = Math.max(...values.map(value => Math.abs(value)), 1);
     const option = {
         ...baseChartOptions({ valueFormatter: formatMillionsValue }),
-        grid: { top: 20, left: 68, right: 36, bottom: 34, containLabel: true },
+        backgroundColor: '#101316',
+        grid: { top: 12, left: 42, right: 10, bottom: 52, containLabel: true },
         tooltip: {
-            trigger: 'axis',
-            axisPointer: { type: 'shadow' },
+            trigger: 'item',
             backgroundColor: '#071018',
             borderColor: '#223140',
             textStyle: chartText(12, '#f2f5f8'),
             formatter: params => {
-                const item = Array.isArray(params) ? params[0] : params;
-                return `<strong>${item.axisValue}</strong><br/>${traceMetricLabel()}: ${formatMillionsValue(item.value)}`;
+                return `<strong>${formatAxisPrice(params.value[1])}</strong><br/>${traceMetricLabel()}: ${formatMillionsValue(params.value[0])}`;
             }
         },
         xAxis: {
             type: 'value',
-            min: bounds.min,
-            max: bounds.max,
-            axisLabel: { ...chartText(11), formatter: formatMillionsAxis },
-            axisLine: { lineStyle: { color: '#223140' } },
-            splitLine: { lineStyle: { color: CHART_GRID } }
+            min: Math.min(bounds.min, -maxAbs),
+            max: Math.max(bounds.max, maxAbs),
+            axisLabel: { ...chartText(12, '#e8edf2'), formatter: value => `${value.toFixed(0)}M` },
+            axisLine: { lineStyle: { color: '#303842' } },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } }
         },
         yAxis: {
-            type: 'category',
-            data: strikes,
-            axisLabel: { ...chartText(10), hideOverlap: true },
-            axisLine: { lineStyle: { color: '#223140' } },
-            splitLine: { show: false }
+            type: 'value',
+            axisLabel: { show: false },
+            axisLine: { lineStyle: { color: '#303842' } },
+            splitLine: { show: false },
+            ...yBounds
         },
         series: [{
             name: traceMetricLabel(),
-            type: 'bar',
-            data: values,
-            barWidth: 5,
+            type: 'custom',
+            data: rows.map(row => [Number(row[metric] || 0) / 1000000, Number(row.strike)]),
+            encode: { x: 0, y: 1 },
+            renderItem: (params, api) => {
+                const value = Number(api.value(0));
+                const strike = Number(api.value(1));
+                const zero = api.coord([0, strike]);
+                const end = api.coord([value, strike]);
+                const height = Math.max(3, Math.min(12, api.size([0, 5])[1] * 0.72));
+                const x = Math.min(zero[0], end[0]);
+                return {
+                    type: 'rect',
+                    shape: {
+                        x,
+                        y: end[1] - height / 2,
+                        width: Math.max(1, Math.abs(end[0] - zero[0])),
+                        height
+                    },
+                    style: api.style()
+                };
+            },
             itemStyle: {
                 color: params => {
-                    const value = Number(params.value);
+                    const value = Array.isArray(params.value) ? Number(params.value[0]) : Number(params.value);
                     if (metric === 'call_gex') return '#ff8b1a';
                     if (metric === 'put_gex') return '#2388e8';
-                    return value >= 0 ? '#00d37f' : '#ff454f';
+                    return value >= 0 ? '#6e35df' : '#e43a71';
                 }
             },
             markLine: {

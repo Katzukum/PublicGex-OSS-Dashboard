@@ -362,48 +362,82 @@
             </section>
 
             <section id="view-trace" class="view-section trace-view" style="display: none;">
-                <div class="trace-hero panel">
-                    <div>
-                        <span>TRACE</span>
-                        <strong id="traceSymbol">--</strong>
+                <div class="trace-toolbar">
+                    <button class="trace-icon-btn" type="button" data-tooltip="Fit view">[ ]</button>
+                    <select class="trace-select" id="traceMetricSelect" onchange="setTraceMode(this.value)">
+                        <option value="net_gex">GEX</option>
+                        <option value="call_gex">Calls</option>
+                        <option value="put_gex">Puts</option>
+                    </select>
+                    <label class="trace-toggle">
+                        <input type="checkbox" checked>
+                        <span></span>
+                        <strong>0dte GEX</strong>
+                    </label>
+                    <div class="trace-stability">
+                        <div class="trace-gauge"><span id="traceStability">--</span></div>
+                        <strong>Stability</strong>
                     </div>
-                    <div>
-                        <span>Spot</span>
-                        <strong id="traceSpot">--</strong>
+                    <label class="trace-toggle compact">
+                        <input type="checkbox">
+                        <span></span>
+                        <strong>Key levels</strong>
+                    </label>
+                    <select class="trace-select compact" id="traceIntervalSelect">
+                        <option>5m</option>
+                        <option>1m</option>
+                        <option>15m</option>
+                    </select>
+                    <div class="trace-zoom">
+                        <input type="range" min="1" max="100" value="52" aria-label="Zoom">
+                        <strong>Zoom</strong>
                     </div>
-                    <div>
-                        <span>Net GEX</span>
-                        <strong id="traceNetGex">--</strong>
+                    <select class="trace-select wide" id="traceScaleSelect">
+                        <option>Gamma</option>
+                        <option>Net GEX</option>
+                    </select>
+                    <div class="trace-date">
+                        <strong id="traceDate">----</strong>
+                        <span>&#9638;</span>
                     </div>
-                    <div>
-                        <span>Cells</span>
-                        <strong id="traceCells">--</strong>
+                    <button class="trace-icon-btn" type="button" data-tooltip="Fullscreen">[ ]</button>
+                    <button class="trace-icon-btn" type="button" data-tooltip="Controls">&equiv;</button>
+                    <label class="trace-cutoff">
+                        <input type="checkbox" checked>
+                        <span>Time Cutoff</span>
+                    </label>
+                </div>
+
+                <div class="trace-stage">
+                    <div class="trace-left">
+                        <div id="traceProfileChart" class="trace-profile"></div>
+                        <span>GEX by Strike</span>
                     </div>
-                    <div>
-                        <span>Range</span>
-                        <strong id="traceRange">--</strong>
+                    <div id="traceHeatmapChart" class="trace-heatmap"></div>
+                    <div class="trace-right-label">
+                        <span>HIRO</span>
+                    </div>
+                    <div class="trace-scale">
+                        <div class="trace-gradient"></div>
+                        <span>Gamma ($ Notional)</span>
                     </div>
                 </div>
 
-                <section class="panel chart-panel trace-map-panel">
-                    <div class="panel-header trace-header">
-                        <h2>Gamma Exposure Map</h2>
-                        <div class="segmented-control" role="group" aria-label="TRACE metric">
-                            <button type="button" class="active" data-trace-mode="net_gex" onclick="setTraceMode('net_gex')">Net</button>
-                            <button type="button" data-trace-mode="call_gex" onclick="setTraceMode('call_gex')">Calls</button>
-                            <button type="button" data-trace-mode="put_gex" onclick="setTraceMode('put_gex')">Puts</button>
-                        </div>
+                <div class="trace-timeline">
+                    <div class="trace-play-controls">
+                        <button type="button">&laquo;</button>
+                        <button type="button">&lsaquo;</button>
                     </div>
-                    <div id="traceHeatmapChart" class="plot-area trace-heatmap"></div>
-                </section>
-
-                <section class="panel chart-panel trace-profile-panel">
-                    <div class="panel-header">
-                        <h2>Latest Strike Pressure</h2>
-                        <small id="traceStatus">Waiting for local data</small>
+                    <div class="trace-track">
+                        <div class="trace-track-fill"></div>
+                        <div id="traceScrubber" class="trace-scrubber"><span id="traceTimelineValue">--:--</span></div>
                     </div>
-                    <div id="traceProfileChart" class="plot-area trace-profile"></div>
-                </section>
+                    <div class="trace-play-controls">
+                        <button type="button">&rsaquo;</button>
+                        <button type="button">&raquo;</button>
+                        <button type="button">&#9654;</button>
+                    </div>
+                </div>
             </section>
 
             <section id="view-analysis" class="view-section" style="display: none;">

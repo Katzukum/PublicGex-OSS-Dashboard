@@ -726,6 +726,22 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390) -> dict:
                 },
             ).fetchall()
 
+            spot_tick_rows = conn.execute(
+                text("""
+                    SELECT timestamp, spot_price
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                      AND timestamp >= :start_time
+                      AND date(timestamp) = date(:latest_time)
+                    ORDER BY timestamp ASC
+                """),
+                {
+                    "symbol": symbol,
+                    "start_time": start_time,
+                    "latest_time": latest_time,
+                },
+            ).fetchall()
+
             latest_profile_rows = conn.execute(
                 text("""
                     SELECT
@@ -763,6 +779,14 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390) -> dict:
             }
             for row in spot_rows
         ]
+        spot_ticks = [
+            {
+                "timestamp": str(row.timestamp),
+                "time": str(row.timestamp)[11:16],
+                "spot_price": float(row.spot_price or 0),
+            }
+            for row in spot_tick_rows
+        ]
         latest_profile = [
             {
                 "strike": float(row.strike_price or 0),
@@ -798,6 +822,7 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390) -> dict:
             },
             "heatmap": heatmap,
             "spot_path": spot_path,
+            "spot_ticks": spot_ticks,
             "latest_profile": latest_profile,
         }
 
