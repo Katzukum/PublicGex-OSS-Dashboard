@@ -435,7 +435,7 @@ def _build_trade_plan(
 def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
     components = overview_data.get("components", [])
     component = _symbol_component(components, symbol)
-    compass = overview_data.get("compass", {})
+    compass = overview_data.get("compass_traders") or overview_data.get("compass") or {}
     whale = overview_data.get("compass_whale", compass)
     key_levels_by_symbol = overview_data.get("gamma_levels", {}) or {}
     if symbol in key_levels_by_symbol:
@@ -498,7 +498,8 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
 
     Args:
         overview_data: The comprehensive market overview dictionary generated
-            by appy.py or publicData.py. Must contain 'compass' and 'components'.
+            by appy.py or publicData.py. Uses 'compass_traders' when present and
+            falls back to the legacy 'compass' key.
         port: The TCP port to broadcast to (default: 5010).
 
     Returns:
@@ -506,7 +507,7 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
               False if payload preparation failed.
     """
     try:
-        compass = overview_data.get("compass", {})
+        compass = overview_data.get("compass_traders") or overview_data.get("compass") or {}
         components = overview_data.get("components", [])
         
         # Extract data for each important symbol

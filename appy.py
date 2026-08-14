@@ -1307,6 +1307,7 @@ def get_market_overview() -> dict:
         weights_whale = settings.get('weights_whale', {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20})
 
         overview_data = {
+            "compass": {},
             "compass_traders": {},
             "compass_whale": {},
             "components": [],
@@ -1577,6 +1578,7 @@ def get_market_overview() -> dict:
             # 1. Calculate Traders Compass
             traders_state = _calculate_compass_state(weights_traders, conn)
             overview_data["compass_traders"] = traders_state
+            overview_data["compass"] = traders_state
 
             # 2. Calculate Whale Compass
             whale_state = _calculate_compass_state(weights_whale, conn)
@@ -1631,7 +1633,7 @@ def get_market_overview() -> dict:
                 dashboard_payload = _dashboard_payload_for_symbol(idx_symbol, overview_data)
                 overview_data["edge_stats"][idx_symbol] = edge_stats_for_dashboard(
                     dashboard_payload,
-                    overview_data.get("compass", {}).get("label", "NEUTRAL"),
+                    overview_data["compass_traders"].get("label", "NEUTRAL"),
                 )
         except Exception as e:
             overview_data["edge_stats_error"] = str(e)
