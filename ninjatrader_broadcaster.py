@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Default port for NinjaTrader communication
 NT_PORT = 5010
+DEFAULT_HOST = "127.0.0.1"
+CLIENT_SOCKET_TIMEOUT_SECONDS = 2.0
+MAX_CLIENTS = 32
 
 class NinjaBroadcaster:
     _instance = None
@@ -31,40 +34,103 @@ class NinjaBroadcaster:
             cls._instance = super(NinjaBroadcaster, cls).__new__(cls)
             cls._instance.clients = []
             cls._instance.lock = threading.Lock()
+            cls._instance.state_lock = threading.Lock()
             cls._instance.running = False
             cls._instance.server_socket = None
+            cls._instance.server_thread = None
         return cls._instance
 
-    def start_server(self, port=NT_PORT):
+    def start_server(self, port=NT_PORT, host=DEFAULT_HOST):
         """Starts the TCP Server in a background thread."""
-        if self.running:
-            return
-            
-        self.running = True
-        thread = threading.Thread(target=self._server_loop, args=(port,), daemon=True)
-        thread.start()
-        print(f"[NinjaBroadcaster] Server started on port {port}")
-        logger.info(f"NinjaBroadcaster Server started on port {port}")
+        with self.state_lock:
+            if self.running:
+                return True
 
-    def _server_loop(self, port):
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                server_socket.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
+                server_socket.bind((host, port))
+                server_socket.listen(MAX_CLIENTS)
+            except OSError as exc:
+                server_socket.close()
+                self.running = False
+                self.server_socket = None
+                logger.error("NinjaBroadcaster bind failed on %s:%s: %s", host, port, exc)
+                return False
+
+            self.running = True
+            self.server_socket = server_socket
+            self.server_thread = threading.Thread(
+                target=self._server_loop,
+                args=(server_socket,),
+                name="ninjatrader-broadcaster",
+                daemon=True,
+            )
+            self.server_thread.start()
+
+        print(f"[NinjaBroadcaster] Server started on {host}:{port}")
+        logger.info("NinjaBroadcaster Server started on %s:%s", host, port)
+        return True
+
+    def _server_loop(self, server_socket):
         try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.bind(('0.0.0.0', port))
-            self.server_socket.listen(10) # Backlog of 10
-            
             while self.running:
                 try:
-                    client_sock, addr = self.server_socket.accept()
+                    client_sock, addr = server_socket.accept()
+                    client_sock.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
                     print(f"[NinjaBroadcaster] Client connected: {addr}")
-                    
+
                     with self.lock:
-                        self.clients.append(client_sock)
-                except Exception as e:
+                        if len(self.clients) >= MAX_CLIENTS:
+                            accepted = False
+                        else:
+                            self.clients.append(client_sock)
+                            accepted = True
+                    if not accepted:
+                        logger.warning("Rejected NinjaTrader client: capacity %s reached", MAX_CLIENTS)
+                        client_sock.close()
+                except socket.timeout:
+                    continue
+                except OSError as e:
                     if self.running:
                         logger.error(f"Accept error: {e}")
-                        time.sleep(1)
-        except Exception as e:
-            logger.critical(f"Server loop failed: {e}")
+                    break
+        finally:
+            server_socket.close()
+            with self.state_lock:
+                if self.server_socket is server_socket:
+                    self.server_socket = None
+                self.running = False
+
+    def stop_server(self):
+        """Stop accepting clients, close active sockets, and join the server thread."""
+        with self.state_lock:
+            self.running = False
+            server_socket = self.server_socket
+            server_thread = self.server_thread
+            self.server_socket = None
+
+        if server_socket is not None:
+            try:
+                server_socket.close()
+            except OSError:
+                pass
+
+        with self.lock:
+            clients = list(self.clients)
+            self.clients.clear()
+        for client in clients:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+        if server_thread and server_thread.is_alive() and server_thread is not threading.current_thread():
+            server_thread.join(timeout=CLIENT_SOCKET_TIMEOUT_SECONDS + 1)
+        with self.state_lock:
+            if self.server_thread is server_thread:
+                self.server_thread = None
 
     def broadcast(self, payload: dict) -> None:
         """Sends JSON data to all connected NinjaTrader clients.
@@ -76,39 +142,46 @@ class NinjaBroadcaster:
             payload: A dictionary containing the regime or market data to send.
         """
         with self.lock:
-            if not self.clients:
-                # No clients connected
-                return
+            clients = list(self.clients)
+        if not clients:
+            return
 
         json_msg = json.dumps(payload) + "\n"
         encoded_msg = json_msg.encode('utf-8')
         
         to_remove = []
         
-        with self.lock:
-            for client in self.clients:
-                try:
-                    client.sendall(encoded_msg)
-                except Exception as e:
-                    logger.warning(f"Client disconnected during send: {e}")
-                    to_remove.append(client)
-            
-            # Clean up disconnected clients
+        for client in clients:
+            try:
+                client.sendall(encoded_msg)
+            except (OSError, socket.timeout) as e:
+                logger.warning(f"Client disconnected during send: {e}")
+                to_remove.append(client)
+
+        if to_remove:
+            with self.lock:
+                for dead_client in to_remove:
+                    if dead_client in self.clients:
+                        self.clients.remove(dead_client)
             for dead_client in to_remove:
-                if dead_client in self.clients:
-                    self.clients.remove(dead_client)
-                    try:
-                        dead_client.close()
-                    except:
-                        pass
-                        
-        print(f"[NinjaBroadcaster] Sent update to {len(self.clients)} charts.")
+                try:
+                    dead_client.close()
+                except OSError:
+                    pass
+
+        with self.lock:
+            client_count = len(self.clients)
+        print(f"[NinjaBroadcaster] Sent update to {client_count} charts.")
 
 # Global instance
 broadcaster = NinjaBroadcaster()
 
-def start_server(port=NT_PORT):
-    broadcaster.start_server(port)
+def start_server(port=NT_PORT, host=DEFAULT_HOST):
+    return broadcaster.start_server(port, host)
+
+
+def stop_server():
+    broadcaster.stop_server()
 
 # Regime code mapping for NinjaScript integer parsing
 REGIME_CODES = {

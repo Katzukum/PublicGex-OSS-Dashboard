@@ -33,7 +33,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Variables
         private TcpListener tcpListener;
         private Thread listenerThread;
+        private TcpClient activeClient;
         private volatile bool isRunning;
+        private readonly ManualResetEvent stopRequested = new ManualResetEvent(false);
+        private readonly object clientLock = new object();
 
         // Regime state (protected by lockObj)
         private volatile string currentRegime = "WAITING";
@@ -143,6 +146,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (listenerThread != null && listenerThread.IsAlive)
                 return;
 
+            stopRequested.Reset();
             isRunning = true;
             listenerThread = new Thread(ClientLoop)
             {
@@ -156,9 +160,20 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void StopListener()
         {
             isRunning = false;
+            stopRequested.Set();
+
+            TcpClient clientToClose = null;
+            lock (clientLock)
+            {
+                clientToClose = activeClient;
+                activeClient = null;
+            }
+            if (clientToClose != null)
+                clientToClose.Close();
 
             if (listenerThread != null && listenerThread.IsAlive)
-                listenerThread.Join(1000);
+                listenerThread.Join(3000);
+            listenerThread = null;
 
             Print("OpenGamma: TCP Client stopped");
         }
@@ -172,6 +187,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     // Attempt to connect to Python Server
                     client = new TcpClient();
+                    lock (clientLock)
+                    {
+                        activeClient = client;
+                    }
                     client.Connect(IPAddress.Loopback, ListenPort);
 
                     Print($"OpenGamma: Connected to Server on port {ListenPort}");
@@ -211,11 +230,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 finally
                 {
                     client?.Close();
+                    lock (clientLock)
+                    {
+                        if (ReferenceEquals(activeClient, client))
+                            activeClient = null;
+                    }
                 }
 
                 // Retry delay
-                if (isRunning)
-                    Thread.Sleep(5000);
+                if (isRunning && stopRequested.WaitOne(5000))
+                    break;
             }
         }
         #endregion
