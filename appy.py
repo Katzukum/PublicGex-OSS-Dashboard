@@ -32,6 +32,12 @@ eel.init('web')
 APP_ROOT = Path(__file__).resolve().parent
 ONE_OFF_DB_PATH = APP_ROOT / "one_off_gex_data.db"
 collector_process = None
+engine = None
+DB_SCHEMA_CURRENT = False
+event_thread = None
+event_stop_event = threading.Event()
+_runtime_lock = threading.RLock()
+_runtime_initialized = False
 
 DEFAULT_SETTINGS = {
     "refresh_interval": 10,
@@ -77,8 +83,6 @@ def stop_collector_process():
         collector_process.kill()
         collector_process.wait(timeout=5)
 
-
-atexit.register(stop_collector_process)
 
 # --- 0DTE Optimization Helpers ---
 
@@ -300,7 +304,7 @@ def calculate_gex_slope(spot, profile_data):
     # Slope = Rate of change of GEX per dollar
     return (g2 - g1) / (s2 - s1) if s2 != s1 else 0
 
-def run_event_server(port=5005):
+def run_event_server(port=5005, stop_event=None):
     """
     Listens on a local TCP socket for JSON messages from external scripts
     (like publicData.py) and forwards them to the frontend via Eel.
@@ -308,14 +312,22 @@ def run_event_server(port=5005):
     Args:
         port: The local port to bind to (default: 5005).
     """
+    if stop_event is None:
+        stop_event = event_stop_event
+
     print(f"Starting Event Server on port {port}...")
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(('127.0.0.1', port))
         server.listen(5)
+        server.settimeout(0.5)
 
-        while True:
-            client_sock, addr = server.accept()
+        while not stop_event.is_set():
+            try:
+                client_sock, addr = server.accept()
+            except socket.timeout:
+                continue
             try:
                 client_sock.settimeout(5)
                 chunks = []
@@ -358,27 +370,74 @@ def run_event_server(port=5005):
             finally:
                 client_sock.close()
 
+    except OSError as e:
+        if not stop_event.is_set():
+            print(f"Event Server Failed to Start: {e}")
     except Exception as e:
         print(f"Event Server Failed to Start: {e}")
     finally:
         server.close()
 
-# Start Server in Background Thread
-event_thread = threading.Thread(target=run_event_server, daemon=True)
-event_thread.start()
+def initialize_runtime():
+    """Initialize dashboard-owned database and socket services exactly once."""
+    global engine, DB_SCHEMA_CURRENT, event_thread, _runtime_initialized
 
-# Start NinjaTrader Broadcast Server (Port 5010)
-try:
-    from ninjatrader_broadcaster import start_server as start_nt_server
-    start_nt_server(5010)
-except ImportError:
-    print("Could not import ninjatrader_broadcaster")
+    with _runtime_lock:
+        if _runtime_initialized:
+            return engine
+
+        engine = initialize_database(allow_legacy_on_lock=True)
+        DB_SCHEMA_CURRENT = schema_is_current()
+        if not DB_SCHEMA_CURRENT:
+            print("Legacy database schema is still active. Close other DB users and run: python publicData.py --reset-db")
+
+        event_stop_event.clear()
+        event_thread = threading.Thread(
+            target=run_event_server,
+            kwargs={"stop_event": event_stop_event},
+            name="dashboard-event-server",
+            daemon=True,
+        )
+        event_thread.start()
+
+        try:
+            from ninjatrader_broadcaster import start_server as start_nt_server
+            start_nt_server(5010)
+        except ImportError:
+            print("Could not import ninjatrader_broadcaster")
+
+        _runtime_initialized = True
+        return engine
+
+
+def shutdown_runtime():
+    """Stop dashboard-owned processes, socket services, and database resources."""
+    global engine, DB_SCHEMA_CURRENT, event_thread, _runtime_initialized
+
+    with _runtime_lock:
+        stop_collector_process()
+        event_stop_event.set()
+        if event_thread and event_thread.is_alive():
+            event_thread.join(timeout=2)
+        event_thread = None
+
+        try:
+            from ninjatrader_broadcaster import stop_server as stop_nt_server
+        except (ImportError, AttributeError):
+            stop_nt_server = None
+        if stop_nt_server:
+            stop_nt_server()
+
+        if engine is not None:
+            engine.dispose()
+        engine = None
+        DB_SCHEMA_CURRENT = False
+        _runtime_initialized = False
+
+
+atexit.register(shutdown_runtime)
 
 # --- Database Connection ---
-engine = initialize_database(allow_legacy_on_lock=True)
-DB_SCHEMA_CURRENT = schema_is_current()
-if not DB_SCHEMA_CURRENT:
-    print("Legacy database schema is still active. Close other DB users and run: python publicData.py --reset-db")
 
 def _load_settings() -> dict:
     try:
@@ -1585,13 +1644,14 @@ def get_market_overview() -> dict:
 
 # --- Run App ---
 def main():
+    initialize_runtime()
     start_collector_process()
     try:
         eel.start('index.html', size=(1500, 900), port=8080)
     except OSError:
         eel.start('index.html', mode='edge', size=(1500, 900), port=8080)
     finally:
-        stop_collector_process()
+        shutdown_runtime()
 
 
 if __name__ == '__main__':
