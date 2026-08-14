@@ -63,6 +63,25 @@ Detailed documentation is available in the `docs/` directory:
     ```
     Existing `gex_data.db` is backed up before a fresh schema is created.
 
+## Verification
+
+Install the development dependencies and run the full Python suite:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Check the active JavaScript entry points:
+
+```bash
+node --check web/main.js
+node --check ui-playground/playground.js
+```
+
+Frontend unit tests use Node's built-in test runner and are included automatically
+by the Windows CI workflow when files matching `test_web_*.js` are present.
+
 ## ⚠️ Disclaimer
 
 This software is for educational purposes only. Do not use it as the sole basis for real-money trading decisions. Option Gamma is a theoretical model and market conditions can change rapidly.
