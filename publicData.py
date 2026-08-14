@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import re
 import socket
@@ -56,7 +57,15 @@ PublicApiClientConfiguration = None
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("gex_collector.log"), logging.StreamHandler()],
+    handlers=[
+        RotatingFileHandler(
+            "gex_collector.log",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        ),
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger(__name__)
 

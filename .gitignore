@@ -6,11 +6,17 @@ gex_data*.db
 gex_data*.db-wal
 gex_data*.db-shm
 gex_collector.log
+gex_collector.log.*
 gex_collector.lock
 gex_compact.marker
+one_off_gex_data.db
+gamma_*butterfly_backtest*.csv
+gamma_*backtest*.csv
 
 # Python
 __pycache__/
+.pytest_cache/
+pytest-cache-files-*/
 *.pyc
 *.pyo
 *.pyd
