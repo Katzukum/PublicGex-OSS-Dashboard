@@ -76,6 +76,7 @@ Check the active JavaScript entry points:
 
 ```bash
 node --check web/request_coordinator.js
+node --check web/trace_timeline.js
 node --check web/main.js
 node --check ui-playground/playground.js
 ```

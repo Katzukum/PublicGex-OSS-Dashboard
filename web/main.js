@@ -21,6 +21,8 @@ let cachedTraceData = null;
 let cockpitModel = null;
 let gammaSweepOverlayEnabled = false;
 let traceMode = 'net_gex';
+let traceTimelineBuckets = [];
+let traceTimelineWindowSize = 1;
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
 const symbolRequestCoordinator = createRequestCoordinator();
 let appliedSymbolGeneration = 0;
@@ -293,6 +295,9 @@ function attachClickZoom(id, axisValues, zoomSize = 6) {
 
     const dataZoom = event => {
         chartZoomState[id] = captureChartZoomState(chart) || chartZoomState[id];
+        if (id === 'traceHeatmapChart') {
+            syncTraceTimelineFromChart(chart, axisValues);
+        }
         const autoscale = profileAutoscaleState[id];
         if (autoscale?.rows?.length) {
             const { startValue, endValue } = resolveZoomRange(event, autoscale.strikes);
@@ -1186,6 +1191,55 @@ function resetTraceCharts() {
     if (cachedTraceData) renderTraceView(cachedTraceData);
 }
 
+function updateTraceTimelineControl(range) {
+    const slider = document.getElementById('traceTimelineSlider');
+    const fill = document.getElementById('traceTrackFill');
+    const scrubber = document.getElementById('traceScrubber');
+    if (slider) slider.value = String(range.index);
+    if (fill) fill.style.width = `${range.positionPct}%`;
+    if (scrubber) scrubber.style.left = `${range.positionPct}%`;
+    setText('traceTimelineValue', range.label || '--:--');
+}
+
+function configureTraceTimeline(buckets) {
+    traceTimelineBuckets = Array.isArray(buckets) ? buckets : [];
+    const slider = document.getElementById('traceTimelineSlider');
+    const latestIndex = Math.max(0, traceTimelineBuckets.length - 1);
+    const range = traceTimelineRange(traceTimelineBuckets, latestIndex);
+    traceTimelineWindowSize = Math.max(1, range.endIndex - range.startIndex + 1);
+    if (slider) {
+        slider.min = '0';
+        slider.max = String(latestIndex);
+        slider.disabled = traceTimelineBuckets.length <= 1;
+    }
+    updateTraceTimelineControl(range);
+}
+
+function scrubTraceTimeline(rawIndex) {
+    if (!traceTimelineBuckets.length) return;
+    const range = traceTimelineRange(
+        traceTimelineBuckets,
+        rawIndex,
+        traceTimelineWindowSize
+    );
+    updateTraceTimelineControl(range);
+    const chart = chartInstances.traceHeatmapChart;
+    if (!chart || chart.isDisposed()) return;
+    zoomChartToIndexRange(
+        chart,
+        traceTimelineBuckets,
+        range.startIndex,
+        range.endIndex
+    );
+}
+
+function syncTraceTimelineFromChart(chart, buckets = traceTimelineBuckets) {
+    if (!chart || !buckets?.length) return;
+    const { endIndex } = currentZoomIndices(chart, buckets);
+    const range = traceTimelineRange(buckets, endIndex, traceTimelineWindowSize);
+    updateTraceTimelineControl(range);
+}
+
 function isSymbolContextCurrent(symbol, requestContext = null) {
     const selectedSymbol = document.getElementById('symbolSelector')?.value;
     return selectedSymbol === symbol && (
@@ -1238,7 +1292,7 @@ function renderTraceView(data) {
     setText('traceStatus', `${traceMetricLabel()} | ${buckets.length || 0} time buckets`);
     setText('traceStartTime', startTime);
     setText('traceEndTime', endTime);
-    setText('traceTimelineValue', latestTime);
+    configureTraceTimeline(buckets);
     setText('traceScaleLabel', `${traceMetricLabel()} ($ Notional)`);
 
     renderTraceHeatmap(data);
@@ -1285,6 +1339,7 @@ function renderTraceHeatmap(data) {
     }
 
     const buckets = [...new Set(heatmap.map(row => row.timestamp))].sort();
+    const hadStoredZoom = Boolean(chartZoomState.traceHeatmapChart);
     const bucketIndex = new Map(buckets.map((bucket, index) => [bucket, index]));
     const valuesM = heatmap.map(row => Number(row[traceMode] || 0) / 1000000).filter(Number.isFinite);
     const maxAbs = Math.max(...valuesM.map(value => Math.abs(value)), 1);
@@ -1431,6 +1486,13 @@ function renderTraceHeatmap(data) {
 
     setChartOption('traceHeatmapChart', option);
     attachClickZoom('traceHeatmapChart', buckets, 18);
+    requestAnimationFrame(() => {
+        if (hadStoredZoom) {
+            syncTraceTimelineFromChart(chart, buckets);
+        } else {
+            scrubTraceTimeline(buckets.length - 1);
+        }
+    });
 }
 
 function renderTraceProfile(data) {

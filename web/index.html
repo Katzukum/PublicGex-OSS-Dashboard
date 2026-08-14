@@ -421,9 +421,20 @@
 
                     <div class="trace-timeline">
                         <span id="traceStartTime">--:--</span>
-                        <div class="trace-track" aria-hidden="true">
-                            <div class="trace-track-fill"></div>
+                        <div class="trace-track">
+                            <div id="traceTrackFill" class="trace-track-fill"></div>
                             <div id="traceScrubber" class="trace-scrubber"><span id="traceTimelineValue">--:--</span></div>
+                            <input
+                                id="traceTimelineSlider"
+                                class="trace-timeline-slider"
+                                type="range"
+                                min="0"
+                                max="0"
+                                value="0"
+                                step="1"
+                                aria-label="Browse TRACE snapshots"
+                                oninput="scrubTraceTimeline(this.value)"
+                            >
                         </div>
                         <span id="traceEndTime">--:--</span>
                     </div>
@@ -606,6 +617,7 @@
     <div id="tooltip" class="custom-tooltip"></div>
     <div id="toast-container"></div>
     <script src="request_coordinator.js"></script>
+    <script src="trace_timeline.js"></script>
     <script src="main.js"></script>
 </body>
 
