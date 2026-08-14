@@ -22,6 +22,8 @@ let cockpitModel = null;
 let gammaSweepOverlayEnabled = false;
 let traceMode = 'net_gex';
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
+const symbolRequestCoordinator = createRequestCoordinator();
+let appliedSymbolGeneration = 0;
 
 const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono", monospace';
 const CHART_TEXT = '#96a3af';
@@ -715,9 +717,21 @@ function switchView(viewName) {
 async function loadSymbol() {
     const symbol = document.getElementById('symbolSelector').value;
     if (!symbol) return;
-    const symbolChanged = cachedSymbol && cachedSymbol !== symbol;
-    if (symbolChanged) resetChartsZoom(Object.keys(chartInstances));
-    const data = await eel.get_dashboard_data(symbol)();
+
+    const result = await symbolRequestCoordinator.request(
+        symbol,
+        () => eel.get_dashboard_data(symbol)()
+    );
+    const selectedSymbol = document.getElementById('symbolSelector').value;
+    if (!symbolRequestCoordinator.isCurrent(result, selectedSymbol)) return false;
+    if (result.generation === appliedSymbolGeneration) return true;
+    if (result.error) {
+        console.error(result.error);
+        showToast("No Data", "Could not load the selected symbol.", "info");
+        return false;
+    }
+
+    const data = result.value;
 
     if (data.error) {
         console.error(data.error);
@@ -725,25 +739,32 @@ async function loadSymbol() {
         return;
     }
 
+    const symbolChanged = cachedSymbol && cachedSymbol !== symbol;
+    if (symbolChanged) resetChartsZoom(Object.keys(chartInstances));
+    appliedSymbolGeneration = result.generation;
     cachedData = data;
     cachedSymbol = symbol;
     renderDashboard(data);
     renderAnalysisTable(data);
     if (document.getElementById('view-cockpit').style.display !== 'none') {
-        await loadCockpit();
+        await loadCockpit(result);
     }
     if (document.getElementById('view-setups').style.display !== 'none') {
-        await loadTradeSetups();
+        await loadTradeSetups(result);
     }
     if (
         document.getElementById('view-market-signal').style.display === 'block'
     ) {
-        loadOverview();
+        await loadOverview(result);
     }
     if (document.getElementById('view-trace').style.display !== 'none') {
-        loadTrace();
+        await loadTrace(result);
     }
-    timeLeft = currentSettings.refresh_interval;
+    if (symbolRequestCoordinator.isCurrent(result, document.getElementById('symbolSelector').value)) {
+        timeLeft = currentSettings.refresh_interval;
+        return true;
+    }
+    return false;
 }
 
 function toggleGammaSweepOverlay(enabled) {
@@ -1165,13 +1186,21 @@ function resetTraceCharts() {
     if (cachedTraceData) renderTraceView(cachedTraceData);
 }
 
-async function loadTrace() {
+function isSymbolContextCurrent(symbol, requestContext = null) {
+    const selectedSymbol = document.getElementById('symbolSelector')?.value;
+    return selectedSymbol === symbol && (
+        !requestContext || symbolRequestCoordinator.isCurrent(requestContext, selectedSymbol)
+    );
+}
+
+async function loadTrace(requestContext = null) {
     const symbol = document.getElementById('symbolSelector')?.value || cachedSymbol || 'SPX';
     const statusEl = document.getElementById('traceStatus');
     if (statusEl) statusEl.innerText = 'Loading';
 
     try {
         const data = await eel.get_trace_data(symbol, 390)();
+        if (!isSymbolContextCurrent(symbol, requestContext)) return;
         if (data.error) {
             if (statusEl) statusEl.innerText = data.error;
             showToast('TRACE unavailable', data.error, 'info');
@@ -1180,6 +1209,7 @@ async function loadTrace() {
         cachedTraceData = data;
         renderTraceView(data);
     } catch (error) {
+        if (!isSymbolContextCurrent(symbol, requestContext)) return;
         console.error('TRACE load failed', error);
         if (statusEl) statusEl.innerText = 'Load failed';
         showToast('TRACE unavailable', 'Could not load local heatmap data.', 'info');
@@ -1605,8 +1635,9 @@ function startTimers() {
 async function manualRefresh() {
     const lastUpdateEl = document.getElementById('lastUpdate');
     if (lastUpdateEl) lastUpdateEl.innerText = "Reloading...";
-    await loadSymbol();
-    showToast("Dashboard Reloaded", "Local market snapshot reloaded.", "info");
+    if (await loadSymbol()) {
+        showToast("Dashboard Reloaded", "Local market snapshot reloaded.", "info");
+    }
 }
 
 function oneOffSetText(id, value) {
@@ -1821,18 +1852,20 @@ async function saveSettings() {
 
 // --- Overview / Signal Dashboard ---
 
-async function loadOverview() {
-    const data = await eel.get_market_overview()();
-    if (data.error) { console.error(data.error); return; }
-    cachedOverview = data;
+async function loadOverview(requestContext = null) {
     const selectedSymbol = document.getElementById('symbolSelector').value;
+    const data = await eel.get_market_overview()();
+    if (!isSymbolContextCurrent(selectedSymbol, requestContext)) return;
+    if (data.error) { console.error(data.error); return; }
     let symbolData = cachedData;
     if (selectedSymbol && (!symbolData || cachedSymbol !== selectedSymbol)) {
         symbolData = await eel.get_dashboard_data(selectedSymbol)();
-        if (!symbolData.error) {
-            cachedData = symbolData;
-            cachedSymbol = selectedSymbol;
-        }
+        if (!isSymbolContextCurrent(selectedSymbol, requestContext)) return;
+    }
+    cachedOverview = data;
+    if (symbolData && !symbolData.error) {
+        cachedData = symbolData;
+        cachedSymbol = selectedSymbol;
     }
     renderSignalDashboard(data);
     renderActionOverview(data, symbolData);
@@ -2092,15 +2125,19 @@ function buildCockpitModel(symbolData, overviewData) {
     };
 }
 
-async function loadCockpit() {
-    if (!cachedData || cachedData.error) return;
-    cachedOverview = await eel.get_market_overview()();
-    if (cachedOverview.error) {
-        console.error(cachedOverview.error);
+async function loadCockpit(requestContext = null) {
+    const symbol = document.getElementById('symbolSelector')?.value;
+    const symbolData = cachedData;
+    if (!symbol || !symbolData || symbolData.error || symbolData.snapshot?.symbol !== symbol) return;
+    const overview = await eel.get_market_overview()();
+    if (!isSymbolContextCurrent(symbol, requestContext)) return;
+    if (overview.error) {
+        console.error(overview.error);
         return;
     }
-    cockpitModel = buildCockpitModel(cachedData, cachedOverview);
-    renderCockpit(cockpitModel, cachedData, cachedOverview);
+    cachedOverview = overview;
+    cockpitModel = buildCockpitModel(symbolData, overview);
+    renderCockpit(cockpitModel, symbolData, overview);
 }
 
 function setText(id, value) {
@@ -2218,23 +2255,33 @@ function renderCockpit(model, symbolData, overviewData) {
     renderCockpitPillars(overviewData.components || []);
 }
 
-async function loadTradeSetups() {
+async function loadTradeSetups(requestContext = null) {
     const symbol = document.getElementById('symbolSelector')?.value;
     if (!symbol) return;
 
-    if (!cachedData || cachedData.snapshot?.symbol !== symbol) {
-        cachedData = await eel.get_dashboard_data(symbol)();
+    let symbolData = cachedData;
+    if (!symbolData || symbolData.snapshot?.symbol !== symbol) {
+        symbolData = await eel.get_dashboard_data(symbol)();
+        if (!isSymbolContextCurrent(symbol, requestContext)) return;
     }
-    if (!cachedOverview || cachedOverview.error) {
-        cachedOverview = await eel.get_market_overview()();
+    let overview = cachedOverview;
+    if (!overview || overview.error) {
+        overview = await eel.get_market_overview()();
+        if (!isSymbolContextCurrent(symbol, requestContext)) return;
     }
-    if (cachedData && cachedOverview && !cachedOverview.error) {
-        cockpitModel = buildCockpitModel(cachedData, cachedOverview);
+    let model = cockpitModel;
+    if (symbolData && overview && !overview.error) {
+        model = buildCockpitModel(symbolData, overview);
     }
 
     const data = await eel.get_trade_setups(symbol)();
+    if (!isSymbolContextCurrent(symbol, requestContext)) return;
+    cachedData = symbolData;
+    cachedSymbol = symbol;
+    cachedOverview = overview;
+    cockpitModel = model;
     cachedTradeSetups = data;
-    renderTradeSetups(data, cockpitModel, cachedData);
+    renderTradeSetups(data, model, symbolData);
 }
 
 function formatTradePoints(value, decimals = 2) {
