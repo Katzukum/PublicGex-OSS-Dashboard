@@ -1050,12 +1050,6 @@ def run_collection_once() -> dict:
             except Exception as e:
                 logger.warning("Retention/database maintenance failed: %s", e)
 
-        try:
-            overview_data = build_overview_data(session, config["settings"])
-            send_event_to_backend({"type": "MARKET_UPDATE", "data": overview_data})
-        except Exception as e:
-            logger.warning("Event broadcast failed: %s", e)
-
         request_count = rate_limiter.request_count
         ok = bool(saved or skipped) and not (failed and not saved and not skipped)
         if saved:
@@ -1072,6 +1066,22 @@ def run_collection_once() -> dict:
         run.symbols_failed = json_list(failed)
         run.symbols_skipped = json_list(skipped)
         session.commit()
+
+        if saved:
+            try:
+                from signal_performance import label_due_outcomes
+
+                with SessionLocal() as analytics_session:
+                    label_due_outcomes(session=analytics_session)
+                    analytics_session.commit()
+            except Exception as e:
+                logger.warning("Signal outcome labeling failed: %s", e)
+
+        try:
+            overview_data = build_overview_data(session, config["settings"])
+            send_event_to_backend({"type": "MARKET_UPDATE", "data": overview_data})
+        except Exception as e:
+            logger.warning("Event broadcast failed: %s", e)
 
         return {
             "ok": ok,

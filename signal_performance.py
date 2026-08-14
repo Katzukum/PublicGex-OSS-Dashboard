@@ -1,11 +1,14 @@
 import json
 import logging
 import re
+from bisect import bisect_left, bisect_right
+from collections import defaultdict
 from datetime import datetime, timedelta
 from statistics import median
 from typing import Optional
 
 from sqlalchemy import func
+from sqlalchemy.orm import selectinload
 
 from models import GexSnapshot, SignalEvent, SignalOutcome, get_session_factory
 
@@ -16,6 +19,7 @@ OUTCOME_HORIZONS_MINUTES = (15, 30, 60)
 PRIMARY_HORIZON_MINUTES = 30
 MIN_EXACT_SAMPLE = 8
 SIGNAL_SYMBOLS = ("NDX", "SPX")
+_configured_session_factory = None
 
 DASHBOARD_FIELDS = (
     "dashboard_symbol",
@@ -134,10 +138,18 @@ def dashboard_from_payload(payload: dict, symbol: str) -> Optional[dict]:
     return dashboard
 
 
+def configure_engine(engine=None) -> None:
+    """Use the application's initialized engine for future short-lived sessions."""
+
+    global _configured_session_factory
+    _configured_session_factory = get_session_factory(engine) if engine is not None else None
+
+
 def _session_or_new(session=None):
     if session is not None:
         return session, False
-    return get_session_factory()(), True
+    session_factory = _configured_session_factory or get_session_factory()
+    return session_factory(), True
 
 
 def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -> int:
@@ -188,15 +200,6 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -
             db.close()
 
 
-def _latest_snapshot_time(session, symbol: str) -> Optional[datetime]:
-    value = (
-        session.query(func.max(GexSnapshot.timestamp))
-        .filter(GexSnapshot.symbol == symbol)
-        .scalar()
-    )
-    return parse_datetime(value)
-
-
 def _target_hit(direction: int, spot: float, target: Optional[float]) -> bool:
     if direction > 0:
         return target is not None and spot >= target
@@ -213,30 +216,24 @@ def _invalidation_hit(direction: int, spot: float, invalidation: Optional[float]
     return False
 
 
-def _build_outcome(session, event: SignalEvent, horizon_minutes: int) -> Optional[SignalOutcome]:
+def _build_outcome(
+    event: SignalEvent,
+    horizon_minutes: int,
+    snapshot_rows,
+    snapshot_times,
+) -> Optional[SignalOutcome]:
     emitted_at = parse_datetime(event.emitted_at)
     if not emitted_at or not event.spot_price:
         return None
 
     horizon_at = emitted_at + timedelta(minutes=horizon_minutes)
-    end_row = (
-        session.query(GexSnapshot)
-        .filter(GexSnapshot.symbol == event.symbol)
-        .filter(GexSnapshot.timestamp >= horizon_at)
-        .order_by(GexSnapshot.timestamp.asc())
-        .first()
-    )
-    if not end_row:
+    end_index = bisect_left(snapshot_times, horizon_at)
+    if end_index >= len(snapshot_rows):
         return None
 
-    path_rows = (
-        session.query(GexSnapshot)
-        .filter(GexSnapshot.symbol == event.symbol)
-        .filter(GexSnapshot.timestamp > emitted_at)
-        .filter(GexSnapshot.timestamp <= end_row.timestamp)
-        .order_by(GexSnapshot.timestamp.asc())
-        .all()
-    )
+    start_index = bisect_right(snapshot_times, emitted_at)
+    end_row = snapshot_rows[end_index]
+    path_rows = snapshot_rows[start_index:end_index + 1]
     if not path_rows:
         return None
 
@@ -318,7 +315,7 @@ def _build_outcome(session, event: SignalEvent, horizon_minutes: int) -> Optiona
 
 
 def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: int = 2000) -> int:
-    """Create outcome labels for signals whose future snapshots are available."""
+    """Create due labels with one snapshot-window query per event symbol."""
 
     horizons = tuple(horizons)
     db, owns_session = _session_or_new(session)
@@ -334,6 +331,7 @@ def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: i
         )
         events = (
             db.query(SignalEvent)
+            .options(selectinload(SignalEvent.outcomes))
             .outerjoin(outcome_counts, SignalEvent.id == outcome_counts.c.signal_event_id)
             .filter(func.coalesce(outcome_counts.c.outcome_count, 0) < len(horizons))
             .order_by(SignalEvent.emitted_at.asc())
@@ -341,25 +339,43 @@ def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: i
             .all()
         )
         labeled = 0
-
+        events_by_symbol = defaultdict(list)
         for event in events:
-            latest_time = _latest_snapshot_time(db, event.symbol)
-            if not latest_time:
+            events_by_symbol[event.symbol].append(event)
+
+        for symbol, symbol_events in events_by_symbol.items():
+            emitted_times = [parse_datetime(event.emitted_at) for event in symbol_events]
+            emitted_times = [value for value in emitted_times if value is not None]
+            if not emitted_times:
                 continue
 
-            emitted_at = parse_datetime(event.emitted_at)
-            if not emitted_at:
+            snapshot_rows = (
+                db.query(GexSnapshot)
+                .filter(GexSnapshot.symbol == symbol)
+                .filter(GexSnapshot.timestamp > min(emitted_times))
+                .order_by(GexSnapshot.timestamp.asc())
+                .all()
+            )
+            snapshot_rows = [row for row in snapshot_rows if parse_datetime(row.timestamp) is not None]
+            snapshot_times = [parse_datetime(row.timestamp) for row in snapshot_rows]
+            if not snapshot_rows:
                 continue
 
-            existing = {outcome.horizon_minutes for outcome in event.outcomes}
-            for horizon in horizons:
-                if horizon in existing or latest_time < emitted_at + timedelta(minutes=horizon):
+            latest_time = snapshot_times[-1]
+            for event in symbol_events:
+                emitted_at = parse_datetime(event.emitted_at)
+                if not emitted_at:
                     continue
 
-                outcome = _build_outcome(db, event, horizon)
-                if outcome:
-                    db.add(outcome)
-                    labeled += 1
+                existing = {outcome.horizon_minutes for outcome in event.outcomes}
+                for horizon in horizons:
+                    if horizon in existing or latest_time < emitted_at + timedelta(minutes=horizon):
+                        continue
+
+                    outcome = _build_outcome(event, horizon, snapshot_rows, snapshot_times)
+                    if outcome:
+                        db.add(outcome)
+                        labeled += 1
 
         if owns_session:
             db.commit()
@@ -483,34 +499,40 @@ def flatten_primary_edge_stats(stats: dict) -> dict:
     }
 
 
-def update_signal_performance_for_payload(payload: dict) -> dict:
-    """Label due outcomes, attach current edge stats, then log the emitted signal."""
+def update_signal_performance_for_payload(payload: dict, session=None) -> dict:
+    """Attach edge stats and record the broadcast within one session boundary."""
 
+    db, owns_session = _session_or_new(session)
     try:
-        label_due_outcomes()
+        edge_by_symbol = {}
+        for symbol in SIGNAL_SYMBOLS:
+            dashboard = dashboard_from_payload(payload, symbol)
+            if not dashboard:
+                continue
+            stats = edge_stats_for_dashboard(
+                dashboard,
+                payload.get("regime", ""),
+                session=db,
+            )
+            edge_by_symbol[symbol] = stats
+
+            flattened = flatten_primary_edge_stats(stats)
+            for key, value in flattened.items():
+                payload[f"{key}_{symbol.lower()}"] = value
+
+            if str(payload.get("dashboard_symbol") or "").upper() == symbol:
+                payload.update(flattened)
+
+        payload["dashboard_edge_stats"] = edge_by_symbol
+        record_signal_payload(payload, session=db)
+        if owns_session:
+            db.commit()
     except Exception as exc:
-        logger.warning("Signal outcome labeling failed: %s", exc)
-
-    edge_by_symbol = {}
-    for symbol in SIGNAL_SYMBOLS:
-        dashboard = dashboard_from_payload(payload, symbol)
-        if not dashboard:
-            continue
-        stats = edge_stats_for_dashboard(dashboard, payload.get("regime", ""))
-        edge_by_symbol[symbol] = stats
-
-        flattened = flatten_primary_edge_stats(stats)
-        for key, value in flattened.items():
-            payload[f"{key}_{symbol.lower()}"] = value
-
-        if str(payload.get("dashboard_symbol") or "").upper() == symbol:
-            payload.update(flattened)
-
-    payload["dashboard_edge_stats"] = edge_by_symbol
-
-    try:
-        record_signal_payload(payload)
-    except Exception as exc:
-        logger.warning("Signal event logging failed: %s", exc)
+        if owns_session:
+            db.rollback()
+        logger.warning("Signal performance update failed: %s", exc)
+    finally:
+        if owns_session:
+            db.close()
 
     return payload

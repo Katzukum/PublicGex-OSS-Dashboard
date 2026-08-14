@@ -387,6 +387,8 @@ def initialize_runtime():
             return engine
 
         engine = initialize_database(allow_legacy_on_lock=True)
+        from signal_performance import configure_engine
+        configure_engine(engine)
         DB_SCHEMA_CURRENT = schema_is_current()
         if not DB_SCHEMA_CURRENT:
             print("Legacy database schema is still active. Close other DB users and run: python publicData.py --reset-db")
@@ -430,6 +432,8 @@ def shutdown_runtime():
 
         if engine is not None:
             engine.dispose()
+        from signal_performance import configure_engine
+        configure_engine(None)
         engine = None
         DB_SCHEMA_CURRENT = False
         _runtime_initialized = False
@@ -1626,9 +1630,8 @@ def get_market_overview() -> dict:
 
         try:
             from ninjatrader_broadcaster import _dashboard_payload_for_symbol
-            from signal_performance import edge_stats_for_dashboard, label_due_outcomes
+            from signal_performance import edge_stats_for_dashboard
 
-            label_due_outcomes()
             for idx_symbol in ["NDX", "SPX"]:
                 dashboard_payload = _dashboard_payload_for_symbol(idx_symbol, overview_data)
                 overview_data["edge_stats"][idx_symbol] = edge_stats_for_dashboard(
