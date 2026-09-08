@@ -29,7 +29,7 @@
         maxIndex
     ));
     const defaultWindowSize = Math.min(60, Math.max(18, Math.ceil(values.length * 0.25)));
-    const numericWindowSize = Number(requestedWindowSize);
+    const numericWindowSize = requestedWindowSize == null ? NaN : Number(requestedWindowSize);
     const windowSize = Math.max(1, Math.min(
         Number.isFinite(numericWindowSize) ? Math.round(numericWindowSize) : defaultWindowSize,
         values.length

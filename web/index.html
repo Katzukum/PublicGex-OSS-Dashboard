@@ -5,15 +5,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenGamma</title>
-    <link
-        href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700;800;900&display=swap"
-        rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script src="vendor/echarts.min.js"></script>
     <script type="text/javascript" src="/eel.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 
-<body>
+<body data-active-view="cockpit">
     <div class="terminal-shell">
         <aside class="sidebar">
             <div class="brand">
@@ -25,37 +22,37 @@
             </div>
 
             <nav class="main-nav" aria-label="Main navigation">
-                <button class="nav-btn active" onclick="switchView('cockpit')" data-view="cockpit">
+                <button class="nav-btn active" onclick="switchView('cockpit')" data-view="cockpit" aria-label="Cockpit">
                     <span class="nav-icon">[]</span>
                     <span>Cockpit</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('edge-lab')" data-view="edge-lab">
+                <button class="nav-btn" onclick="switchView('edge-lab')" data-view="edge-lab" aria-label="Edge Lab">
                     <span class="nav-icon">+-</span>
                     <span>Edge Lab</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('regime')" data-view="regime">
+                <button class="nav-btn" onclick="switchView('regime')" data-view="regime" aria-label="Regime">
                     <span class="nav-icon">&lt;&gt;</span>
                     <span>Regime</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('trace')" data-view="trace">
+                <button class="nav-btn" onclick="switchView('trace')" data-view="trace" aria-label="TRACE">
                     <span class="nav-icon">::</span>
                     <span>TRACE</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('analysis')" data-view="analysis">
+                <button class="nav-btn" onclick="switchView('analysis')" data-view="analysis" aria-label="Strike Matrix">
                     <span class="nav-icon">#</span>
                     <span>Strike Matrix</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('one-off')" data-view="one-off">
+                <button class="nav-btn" onclick="switchView('one-off')" data-view="one-off" aria-label="One-Off">
                     <span class="nav-icon">@</span>
                     <span>One-Off</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('settings')" data-view="settings">
+                <button class="nav-btn" onclick="switchView('settings')" data-view="settings" aria-label="Settings">
                     <span class="nav-icon">*</span>
                     <span>Settings</span>
                 </button>
             </nav>
 
-            <button class="collapse-btn" type="button" aria-label="Collapse sidebar">
+            <button class="collapse-btn" type="button" onclick="toggleSidebar()" aria-expanded="true" aria-label="Collapse sidebar">
                 <span>&lt;&lt;</span>
                 <span>Collapse</span>
             </button>
@@ -64,7 +61,7 @@
         <main class="workspace">
             <header class="command-bar">
                 <div class="command-group asset-command">
-                    <span class="command-label">Asset</span>
+                    <label class="command-label" for="symbolSelector">Asset</label>
                     <select id="symbolSelector" onchange="loadSymbol()">
                         <option>Loading...</option>
                     </select>
@@ -74,8 +71,8 @@
                     <strong id="topSpot">--</strong>
                 </div>
                 <div class="command-stat">
-                    <span>Market</span>
-                    <strong class="live-pill">LIVE</strong>
+                    <span>Snapshot</span>
+                    <strong id="marketState" class="status-pill">CONNECTING</strong>
                 </div>
                 <div class="command-stat">
                     <span>Last update</span>
@@ -86,11 +83,14 @@
                     <strong id="backendStatus" class="status-unknown"><i></i> Checking</strong>
                 </div>
                 <div class="command-actions">
-                    <button class="icon-btn" type="button" onclick="manualRefresh()" data-tooltip="Reload local data">R</button>
-                    <button class="icon-btn" type="button" onclick="switchView('settings')" data-tooltip="Settings">*</button>
-                    <button class="icon-btn" type="button" onclick="toggleFullscreen()" data-tooltip="Fullscreen">[]</button>
+                    <button id="refreshButton" class="icon-btn" type="button" onclick="manualRefresh()" aria-label="Refresh data" data-tooltip="Refresh saved market data">↻</button>
+                    <button id="activityToggle" class="icon-btn" type="button" onclick="toggleActivityFeed()" aria-label="Toggle activity feed" aria-expanded="true" data-tooltip="Activity feed">☷</button>
+                    <button class="icon-btn" type="button" onclick="switchView('settings')" aria-label="Settings" data-tooltip="Settings">*</button>
+                    <button class="icon-btn" type="button" onclick="toggleFullscreen()" aria-label="Fullscreen" data-tooltip="Fullscreen">[]</button>
                 </div>
             </header>
+            <div class="workspace-heading"><div><span class="eyebrow">OPENGAMMA / WORKSPACE</span><h1 id="viewTitle">Market cockpit</h1></div><span class="refresh-caption">Auto refresh <b id="timerCountdown">10s</b></span></div>
+            <div id="workspaceState" class="workspace-state" role="status" hidden><span id="workspaceStateMessage"></span><button id="retryWorkspace" class="secondary-btn" onclick="manualRefresh()">Retry now</button></div>
 
             <section id="view-cockpit" class="view-section cockpit-view">
                 <div class="cockpit-hero panel">
@@ -164,6 +164,32 @@
                     </article>
                 </div>
 
+                <section class="chart-panel panel">
+                    <div class="panel-header">
+                        <h2>Gamma Liquidity Profile</h2>
+                        <div class="chart-controls">
+                            <span><b class="legend-call"></b> Call GEX</span>
+                            <span><b class="legend-put"></b> Put GEX</span>
+                            <span><b class="legend-net"></b> Net GEX by Strike</span>
+                        </div>
+                        <label class="sweep-switch">
+                            <input id="cockpitGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
+                            <span>Gamma sweep</span>
+                        </label>
+                    </div>
+                    <div id="cockpitProfileChart" class="plot-area cockpit-chart"></div>
+                    <div id="cockpitSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
+                    <div class="metric-strip">
+                        <div><span>Total Call GEX</span><strong id="stripCallGex">--</strong></div>
+                        <div><span>Total Put GEX</span><strong id="stripPutGex">--</strong></div>
+                        <div><span>Net GEX</span><strong id="stripNetGex">--</strong></div>
+                        <div><span>Gamma Exposure</span><strong id="stripGammaExposure">--</strong></div>
+                        <div><span>GEX Change (1h)</span><strong id="stripGexChange">--</strong></div>
+                        <div><span>Zero Gamma</span><strong id="stripZeroGamma">--</strong></div>
+                        <div><span>Gamma Slope</span><strong id="stripGammaSlope">--</strong></div>
+                    </div>
+                </section>
+
                 <section class="edge-panel panel">
                     <div class="panel-header">
                         <h2>Empirical Edge</h2>
@@ -188,39 +214,13 @@
                     </div>
                 </section>
 
-                <section class="chart-panel panel">
-                    <div class="panel-header">
-                        <h2>Gamma Liquidity Profile</h2>
-                        <div class="chart-controls">
-                            <span><b class="legend-call"></b> Call GEX</span>
-                            <span><b class="legend-put"></b> Put GEX</span>
-                            <span><b class="legend-net"></b> Net GEX by Strike</span>
-                        </div>
-                        <label class="sweep-switch">
-                            <input id="cockpitGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
-                            <span>V1 Sweep Panel</span>
-                        </label>
-                    </div>
-                    <div id="cockpitProfileChart" class="plot-area cockpit-chart"></div>
-                    <div id="cockpitSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
-                    <div class="metric-strip">
-                        <div><span>Total Call GEX</span><strong id="stripCallGex">--</strong></div>
-                        <div><span>Total Put GEX</span><strong id="stripPutGex">--</strong></div>
-                        <div><span>Net GEX</span><strong id="stripNetGex">--</strong></div>
-                        <div><span>Gamma Exposure</span><strong id="stripGammaExposure">--</strong></div>
-                        <div><span>GEX Change (1h)</span><strong id="stripGexChange">--</strong></div>
-                        <div><span>Zero Gamma</span><strong id="stripZeroGamma">--</strong></div>
-                        <div><span>Gamma Slope</span><strong id="stripGammaSlope">--</strong></div>
-                    </div>
-                </section>
-
                 <section class="panel" aria-labelledby="scenarioExecutionTitle">
                     <div class="panel-header">
                         <div>
                             <h2 id="scenarioExecutionTitle">Scenario &amp; Execution</h2>
                             <small id="executionQuoteStatus">Modeled candidates; waiting for executable quotes</small>
                         </div>
-                        <button type="button" class="icon-btn" onclick="prefillJournalFromCockpit()" data-tooltip="Journal this scenario">J</button>
+                        <button type="button" class="icon-btn" onclick="prefillJournalFromCockpit()" aria-label="Journal this scenario" data-tooltip="Journal this scenario">J</button>
                     </div>
                     <div class="setup-grid" id="executionCandidatesGrid">
                         <article id="butterflyCandidateCard" class="setup-card panel"></article>
@@ -239,7 +239,7 @@
                             <small id="edgeLabStatus">Independent opportunities only</small>
                         </div>
                         <div class="chart-controls">
-                            <select id="edgeLabHorizon" onchange="loadEdgeLab()"><option value="15">15m</option><option value="30" selected>30m</option><option value="60">60m</option></select>
+                            <select aria-label="Evidence horizon" id="edgeLabHorizon" onchange="loadEdgeLab()"><option value="15">15m</option><option value="30" selected>30m</option><option value="60">60m</option></select>
                             <label><input id="edgeLabLegacy" type="checkbox" onchange="loadEdgeLab()"> Legacy diagnostics</label>
                         </div>
                     </div>
@@ -267,7 +267,7 @@
                         <label><input id="journalAdhered" type="checkbox"> Followed plan</label>
                         <label>Notes <input id="journalNotes" type="text"></label>
                     </div>
-                    <button type="button" class="primary-btn" onclick="saveJournalEntry()">Save journal entry</button>
+                    <button type="button" id="saveJournalButton" class="primary-btn" onclick="saveJournalEntry()">Save journal entry</button>
                     <div id="journalExecutionResults" class="analysis-table-wrapper"></div>
                     <div id="journalWeeklyReview" class="edge-stats-grid"></div>
                 </div>
@@ -368,21 +368,22 @@
                                 <button type="button" data-trace-mode="modeled_delta_pressure" onclick="setTraceMode('modeled_delta_pressure')">Modeled Delta</button>
                                 <button type="button" data-trace-mode="modeled_charm_pressure" onclick="setTraceMode('modeled_charm_pressure')">Modeled Charm</button>
                             </div>
+                            <label class="sweep-switch"><input type="checkbox" onchange="toggleTraceOverlays(this.checked)"> Decision events</label>
                             <select id="traceSessionDate" aria-label="TRACE session" onchange="loadTrace()"><option value="">Latest session</option></select>
-                            <button class="icon-btn" type="button" onclick="resetTraceCharts()" data-tooltip="Fit TRACE charts">[]</button>
+                            <button class="icon-btn" type="button" onclick="resetTraceCharts()" aria-label="Fit TRACE charts" data-tooltip="Fit TRACE charts">[]</button>
                         </div>
                     </div>
 
                     <div class="trace-stage">
                         <div class="trace-profile-wrap">
                             <div id="traceProfileChart" class="trace-profile"></div>
-                            <span>GEX by Strike</span>
+                            <span>Latest snapshot &middot; GEX by strike</span>
                         </div>
                         <div class="trace-map-wrap">
                             <div id="traceHeatmapChart" class="trace-heatmap"></div>
                         </div>
                         <div class="trace-scale">
-                            <div class="trace-gradient"></div>
+                            <div class="trace-gradient"><b id="traceScaleMax"></b><b id="traceScaleMin"></b></div>
                             <span id="traceScaleLabel">Net GEX ($ Notional)</span>
                         </div>
                     </div>
@@ -412,7 +413,7 @@
                     <div class="panel-header">
                         <div>
                             <h2>Net Gamma Trend</h2>
-                            <small>Selected symbol, current session</small>
+                            <small id="traceTrendSession">Selected session</small>
                         </div>
                     </div>
                     <div id="traceTrendChart" class="plot-area small-chart"></div>
@@ -423,7 +424,7 @@
                 <div class="panel table-container">
                     <div class="panel-header">
                         <h2>Dealer Positioning Analysis</h2>
-                        <small>Based on 0DTE GEX</small>
+                        <small>Based on 0DTE GEX &middot; values in $M</small><button type="button" class="secondary-btn" onclick="jumpToSpot()">Jump to spot</button>
                     </div>
                     <div class="analysis-table-wrapper">
                         <table class="analysis-table" id="analysisTable">
@@ -451,12 +452,12 @@
                     </div>
                     <div class="one-off-form">
                         <div class="form-group">
-                            <label>Symbol</label>
+                            <label for="oneOffSymbol">Symbol</label>
                             <input type="text" id="oneOffSymbol" value="NVDA" placeholder="NVDA" maxlength="12">
                         </div>
                         <div class="form-group">
-                            <label>Expiration Date</label>
-                            <input type="text" id="oneOffDate" placeholder="07-07-26">
+                            <label for="oneOffDate">Expiration Date</label>
+                            <input type="text" id="oneOffDate" placeholder="MM-DD-YY">
                         </div>
                         <button class="save-btn" id="oneOffBuildBtn" onclick="buildOneOffProfile()">Build Profile</button>
                     </div>
@@ -491,10 +492,10 @@
                         <small id="oneOffStatus">Ready</small>
                         <label class="sweep-switch">
                             <input id="oneOffGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
-                            <span>V1 Sweep Panel</span>
+                            <span>Gamma sweep</span>
                         </label>
                     </div>
-                    <div id="oneOffProfileChart" class="plot-area"></div>
+                    <div id="oneOffProfileChart" class="plot-area"><p class="chart-empty">Build a profile above, or open a saved profile from Recent Pulls below.</p></div>
                     <div id="oneOffSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
                 </section>
 
@@ -533,45 +534,47 @@
             <section id="view-settings" class="view-section" style="display: none;">
                 <div class="panel settings-card">
                     <div class="panel-header">
-                        <h2>Configuration</h2>
+                        <h2>Workspace preferences</h2>
+                        <small>Saved locally on this computer</small>
                     </div>
+                    <p class="settings-intro">Choose your display and refresh cadence. Collection limits control how often new market data is requested.</p>
                     <div class="settings-form">
                         <div class="form-group">
-                            <label>Dashboard reload interval</label>
+                            <label for="settingInterval">Dashboard reload interval (seconds)</label>
                             <input type="number" id="settingInterval" min="5" value="10">
                         </div>
                         <div class="form-group">
-                            <label>Theme</label>
+                            <label for="settingTheme">Theme</label>
                             <select id="settingTheme">
                                 <option value="dark">Dark</option>
                                 <option value="light">Light</option>
                             </select>
                         </div>
                         <div class="form-group">
-                            <label>Symbols</label>
+                            <label for="settingSymbols">Symbols</label>
                             <input type="text" id="settingSymbols" placeholder="SPY,QQQ">
                         </div>
                         <div class="form-group">
-                            <label>Public limit req/sec</label>
+                            <label for="settingRateLimit">Public limit req/sec</label>
                             <input type="number" id="settingRateLimit" min="0.1" step="0.1" value="10">
                         </div>
                         <div class="form-group">
-                            <label>Limit utilization</label>
+                            <label for="settingRateUtilization">Limit utilization (0.6 = 60%)</label>
                             <input type="number" id="settingRateUtilization" min="0.1" max="1" step="0.05" value="0.6">
                         </div>
                         <div class="form-group">
-                            <label>Minimum poll seconds</label>
+                            <label for="settingMinPoll">Minimum poll seconds</label>
                             <input type="number" id="settingMinPoll" min="1" value="15">
                         </div>
                         <div class="form-group">
-                            <label>Maximum poll seconds</label>
+                            <label for="settingMaxPoll">Maximum poll seconds</label>
                             <input type="number" id="settingMaxPoll" min="1" value="120">
                         </div>
                         <div class="form-group">
-                            <label>Raw data retention</label>
+                            <label for="settingRetentionDays">Raw data retention (days)</label>
                             <input type="number" id="settingRetentionDays" min="1" value="30">
                         </div>
-                        <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+                        <button id="saveSettingsButton" class="save-btn" onclick="saveSettings()">Save Settings</button>
                     </div>
                 </div>
             </section>
@@ -580,7 +583,7 @@
         <aside class="right-panel">
             <div class="feed-header">
                 <h2>Activity Feed</h2>
-                <button class="icon-btn" type="button" onclick="toggleActivityFeed()" data-tooltip="Collapse feed">&lt;&lt;</button>
+                <button class="icon-btn" type="button" onclick="toggleActivityFeed()" aria-label="Collapse feed" data-tooltip="Collapse feed">&lt;&lt;</button>
             </div>
             <div class="activity-feed" id="activityFeed">
                 <div class="activity-item muted">
@@ -593,7 +596,8 @@
     </div>
 
     <div id="tooltip" class="custom-tooltip"></div>
-    <div id="toast-container"></div>
+    <div id="toast-container" role="status" aria-live="polite"></div>
+    <script src="bridge_client.js"></script>
     <script src="request_coordinator.js"></script>
     <script src="trace_timeline.js"></script>
     <script src="edge_lab.js"></script>

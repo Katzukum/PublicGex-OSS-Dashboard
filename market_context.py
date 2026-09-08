@@ -145,13 +145,15 @@ def realized_volatility_15m(prices: list[float]) -> float | None:
     return round(pstdev(returns) * math.sqrt(len(returns)), 6)
 
 
-def build_market_context(symbol: str, spot: float, option_rows: list[dict], spot_history: list[dict], events: list[dict], *, now=None, volatility_quotes=None, cross_asset_state=None) -> dict:
+def build_market_context(symbol: str, spot: float, option_rows: list[dict], spot_history: list[dict], events: list[dict] | None, *, now=None, volatility_quotes=None, cross_asset_state=None) -> dict:
     prices = [row.get("spot_price") for row in spot_history if row.get("spot_price") is not None]
     implied_move = atm_straddle_implied_move(option_rows, spot)
     session_range = (max(prices) - min(prices)) if prices else None
     range_consumed = session_range / implied_move if session_range is not None and implied_move else None
-    event_risk = classify_event_window(events, now)
+    event_risk = classify_event_window(events, now) if events is not None else {"state": "UNAVAILABLE", "next_event": None, "minutes_to_event": None}
     warnings = []
+    if events is None:
+        warnings.append("Event calendar unavailable")
     if implied_move is None:
         warnings.append("ATM straddle quote unavailable")
     volatility_quotes = volatility_quotes or {}

@@ -3,6 +3,12 @@ const assert = require('node:assert/strict');
 
 const traceTimelineRange = require('./web/trace_timeline.js');
 
+test('omitting window size shows a useful multi-minute range, not one candle', () => {
+    const values = Array.from({length: 287}, (_, index) => String(index));
+    const range = traceTimelineRange(values, 286);
+    assert.equal(range.endIndex - range.startIndex + 1, 60);
+});
+
 
 const buckets = Array.from(
     { length: 100 },

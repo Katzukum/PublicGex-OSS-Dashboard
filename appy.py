@@ -8,9 +8,11 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+import queue
 from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 
 from backtest_gamma_butterflies import (
     DEFAULT_PIT_WALL_COUNT,
@@ -36,14 +38,19 @@ collector_process = None
 engine = None
 DB_SCHEMA_CURRENT = False
 event_thread = None
+frontend_event_task = None
+_frontend_events = queue.Queue(maxsize=256)
 event_stop_event = threading.Event()
 _runtime_lock = threading.RLock()
 _runtime_initialized = False
 _overview_cache_lock = threading.RLock()
 _overview_cache_key = None
 _overview_cache_value = None
+_overview_cache_at = 0.0
 _decision_workspace_cache = {}
 _decision_workspace_cache_lock = threading.RLock()
+_trace_cache = {}
+_trace_cache_lock = threading.RLock()
 _event_health_lock = threading.RLock()
 _last_event_at = None
 _last_event_type = None
@@ -398,11 +405,12 @@ def run_event_server(port=5005, stop_event=None):
                         except Exception as e:
                             print(f"[Bridge] Failed to forward to NinjaTrader: {e}")
 
-                    # 2. Forward to Frontend
-                    # eel.handle_backend_event(msg) # Need to ensuring this function exists in JS
-                    # Eel functions are called as eel.Function()(callback)
-                    # When calling FROM Python TO JS, we just do eel.JSFunctionName(args)
-                    eel.handle_backend_event(msg)
+                    # Native collector thread queues events; only the Eel loop writes sockets.
+                    try:
+                        _frontend_events.put_nowait(msg)
+                    except queue.Full:
+                        _frontend_events.get_nowait()
+                        _frontend_events.put_nowait(msg)
 
             except Exception as e:
                 print(f"Error processing event: {e}")
@@ -417,9 +425,22 @@ def run_event_server(port=5005, stop_event=None):
     finally:
         server.close()
 
+def _dispatch_frontend_events():
+    while not event_stop_event.is_set():
+        for _ in range(32):
+            try:
+                message = _frontend_events.get_nowait()
+            except queue.Empty:
+                break
+            if getattr(eel, '_websockets', []):
+                # Register an acknowledgement callback so Eel does not retain return values.
+                eel.handle_backend_event(message)(lambda _result: None)
+        eel.sleep(0.1)
+
+
 def initialize_runtime():
     """Initialize dashboard-owned database and socket services exactly once."""
-    global engine, DB_SCHEMA_CURRENT, event_thread, _runtime_initialized
+    global engine, DB_SCHEMA_CURRENT, event_thread, frontend_event_task, _runtime_initialized
 
     with _runtime_lock:
         if _runtime_initialized:
@@ -433,7 +454,10 @@ def initialize_runtime():
         if not DB_SCHEMA_CURRENT:
             print("Legacy database schema is still active. Close other DB users and run: python publicData.py --reset-db")
 
+        from eel_transport import install_serialized_transport
+        install_serialized_transport(eel)
         event_stop_event.clear()
+        frontend_event_task = eel.spawn(_dispatch_frontend_events)
         event_thread = threading.Thread(
             target=run_event_server,
             kwargs={"stop_event": event_stop_event},
@@ -454,11 +478,14 @@ def initialize_runtime():
 
 def shutdown_runtime():
     """Stop dashboard-owned processes, socket services, and database resources."""
-    global engine, DB_SCHEMA_CURRENT, event_thread, _runtime_initialized
+    global engine, DB_SCHEMA_CURRENT, event_thread, frontend_event_task, _runtime_initialized
 
     with _runtime_lock:
         stop_collector_process()
         event_stop_event.set()
+        if frontend_event_task is not None:
+            frontend_event_task.kill(block=False)
+            frontend_event_task = None
         if event_thread and event_thread.is_alive():
             event_thread.join(timeout=2)
         event_thread = None
@@ -496,7 +523,7 @@ def _load_settings() -> dict:
 
 
 def _clear_overview_cache() -> None:
-    global _overview_cache_key, _overview_cache_value
+    global _overview_cache_key, _overview_cache_value, _overview_cache_at
     with _overview_cache_lock:
         _overview_cache_key = None
         _overview_cache_value = None
@@ -795,14 +822,15 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
             text("SELECT id FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC, id DESC LIMIT 1"),
             {"symbol": symbol},
         ).scalar()
-    cache_key = (str(engine.url), symbol, latest_id)
+        market_revision = conn.execute(text("SELECT MAX(id) FROM gex_snapshots")).scalar()
+    cache_key = (str(engine.url), symbol, latest_id, market_revision)
     with _decision_workspace_cache_lock:
         cached = _decision_workspace_cache.get(cache_key)
-    if cached is not None:
-        workspace = copy.deepcopy(cached)
+    if cached is not None and time.monotonic() - cached[0] < 15:
+        workspace = copy.deepcopy(cached[1])
         workspace["execution_candidates"] = build_execution_candidates(symbol, snapshot_id=latest_id)
         return workspace
-    dashboard = _dashboard_data_from_engine(engine, symbol, DB_SCHEMA_CURRENT)
+    dashboard = _dashboard_data_from_engine(engine, symbol, DB_SCHEMA_CURRENT, snapshot_id=latest_id)
     if dashboard.get("error"):
         return {"schema_version": 2, "symbol": symbol, "error": dashboard["error"]}
 
@@ -838,7 +866,7 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
         snapshot.get("spot_price"),
         dashboard.get("profile", []),
         dashboard.get("history", []),
-        [],
+        None,
         cross_asset_state=(index_basket.get("label") or None),
     )
     scenario = build_scenario_workspace(
@@ -864,6 +892,7 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
         "historical_edge": overview.get("edge_stats", {}).get(symbol),
         "market_context": market_context,
         "regime": {"traders": traders, "index_basket": index_basket},
+        "components": overview.get("components", []),
         **scenario,
         "execution_candidates": candidates,
         "dashboard": dashboard,
@@ -877,8 +906,9 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
         workspace["emitted_alerts"] = evaluate_workspace_alerts(session, workspace)
         workspace["alerts"] = recent_alerts(session)
     with _decision_workspace_cache_lock:
-        _decision_workspace_cache.clear()
-        _decision_workspace_cache[cache_key] = copy.deepcopy(workspace)
+        _decision_workspace_cache[cache_key] = (time.monotonic(), copy.deepcopy(workspace))
+        while len(_decision_workspace_cache) > 12:
+            del _decision_workspace_cache[next(iter(_decision_workspace_cache))]
     return workspace
 
 
@@ -974,8 +1004,28 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
             if not latest:
                 return {"error": f"No data found for {symbol}.", "symbol": symbol}
 
+            trace_key = (str(engine.url), symbol, latest.id, lookback_minutes)
+            with _trace_cache_lock:
+                cached_trace = _trace_cache.get(trace_key)
+            if cached_trace and time.monotonic() - cached_trace[0] < 30:
+                return copy.deepcopy(cached_trace[1])
             latest_time = parse_timestamp(latest.timestamp) or datetime.now()
             start_time = latest_time - timedelta(minutes=lookback_minutes)
+
+            # A minute is one market observation, not a sum of repeated polls.
+            selected_ids = list(conn.execute(text("""
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY strftime('%Y-%m-%d %H:%M', timestamp)
+                        ORDER BY timestamp DESC, id DESC
+                    ) AS position
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol AND timestamp >= :start_time
+                      AND timestamp >= :session_start AND timestamp <= :latest_time
+                ) WHERE position = 1
+            """), {"symbol": symbol, "start_time": start_time,
+                     "session_start": datetime.combine(latest_time.date(), dt_time.min),
+                     "latest_time": latest_time.strftime("%Y-%m-%d %H:%M:%S.%f")}).scalars())
 
             heatmap_rows = conn.execute(
                 text("""
@@ -987,16 +1037,15 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
                         SUM(CASE WHEN UPPER(r.option_type) LIKE '%PUT%' THEN r.gex_value ELSE 0 END) AS put_gex,
                         SUM(r.open_interest) AS open_interest
                     FROM raw_option_greeks r
-                    WHERE r.symbol = :symbol
-                      AND r.timestamp >= :start_time
-                      AND date(r.timestamp) = date(:latest_time)
+                    WHERE r.snapshot_id IN :snapshot_ids
                     GROUP BY bucket, r.strike_price
                     ORDER BY bucket ASC, r.strike_price ASC
-                """),
-                {
+                """).bindparams(bindparam("snapshot_ids", expanding=True)),
+                {"snapshot_ids": selected_ids,
                     "symbol": symbol,
                     "start_time": start_time,
-                    "latest_time": latest_time,
+                    "latest_time": latest_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "session_start": datetime.combine(latest_time.date(), dt_time.min),
                 },
             ).fetchall()
 
@@ -1008,30 +1057,34 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
                     FROM gex_snapshots
                     WHERE symbol = :symbol
                       AND timestamp >= :start_time
-                      AND date(timestamp) = date(:latest_time)
+                      AND timestamp <= :latest_time
+                      AND timestamp >= :session_start
                     GROUP BY bucket
                     ORDER BY bucket ASC
                 """),
                 {
                     "symbol": symbol,
                     "start_time": start_time,
-                    "latest_time": latest_time,
+                    "latest_time": latest_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "session_start": datetime.combine(latest_time.date(), dt_time.min),
                 },
             ).fetchall()
 
             spot_tick_rows = conn.execute(
                 text("""
-                    SELECT timestamp, spot_price
+                    SELECT timestamp, spot_price, total_net_gex
                     FROM gex_snapshots
                     WHERE symbol = :symbol
                       AND timestamp >= :start_time
-                      AND date(timestamp) = date(:latest_time)
+                      AND timestamp <= :latest_time
+                      AND timestamp >= :session_start
                     ORDER BY timestamp ASC
                 """),
                 {
                     "symbol": symbol,
                     "start_time": start_time,
-                    "latest_time": latest_time,
+                    "latest_time": latest_time.strftime("%Y-%m-%d %H:%M:%S.%f"),
+                    "session_start": datetime.combine(latest_time.date(), dt_time.min),
                 },
             ).fetchall()
 
@@ -1056,12 +1109,10 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
                     SELECT timestamp, strike_price, option_type, delta, gamma,
                            open_interest, underlying_price, expiration_date
                     FROM raw_option_greeks
-                    WHERE symbol = :symbol
-                      AND timestamp >= :start_time
-                      AND date(timestamp) = date(:latest_time)
+                    WHERE snapshot_id IN :snapshot_ids
                     ORDER BY timestamp, strike_price
-                """),
-                {"symbol": symbol, "start_time": start_time, "latest_time": latest_time},
+                """).bindparams(bindparam("snapshot_ids", expanding=True)),
+                {"snapshot_ids": selected_ids, "symbol": symbol, "start_time": start_time, "latest_time": latest_time.strftime("%Y-%m-%d %H:%M:%S.%f"), "session_start": datetime.combine(latest_time.date(), dt_time.min)},
             ).fetchall() if DB_SCHEMA_CURRENT else []
 
             overlay_rows = conn.execute(
@@ -1077,7 +1128,7 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
                     WHERE symbol = :symbol AND date(created_at) = date(:latest_time)
                     ORDER BY timestamp
                 """),
-                {"symbol": symbol, "latest_time": latest_time},
+                {"symbol": symbol, "latest_time": latest_time.strftime("%Y-%m-%d %H:%M:%S.%f")},
             ).fetchall()
 
         heatmap = [
@@ -1147,7 +1198,7 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
         buckets = sorted({row["timestamp"] for row in heatmap})
         values = [row["net_gex"] for row in heatmap]
 
-        return {
+        payload = {
             "symbol": symbol,
             "timestamp": str(latest.timestamp),
             "session_date": str(latest_time.date()),
@@ -1169,6 +1220,7 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
             "heatmap": heatmap,
             "spot_path": spot_path,
             "spot_ticks": spot_ticks,
+            "history": [{"timestamp": str(row.timestamp), "total_net_gex": float(row.total_net_gex or 0)} for row in spot_tick_rows],
             "latest_profile": latest_profile,
             "overlays": [dict(row._mapping) | {"timestamp": str(row.timestamp)} for row in overlay_rows],
             "modeled_pressure_coverage": {
@@ -1178,6 +1230,12 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
                 "warning": "Modeled Charm coverage below 80%" if not total_contracts or matched_charm / total_contracts < 0.8 else None,
             },
         }
+
+        with _trace_cache_lock:
+            _trace_cache[trace_key] = (time.monotonic(), copy.deepcopy(payload))
+            while len(_trace_cache) > 4:
+                del _trace_cache[next(iter(_trace_cache))]
+        return payload
 
     except Exception as e:
         print(f"TRACE data error: {e}")
@@ -1716,7 +1774,7 @@ def _attach_overview_edge_stats(core_overview):
 
 @eel.expose
 def get_market_overview() -> dict:
-    global _overview_cache_key, _overview_cache_value
+    global _overview_cache_key, _overview_cache_value, _overview_cache_at
     try:
         import math
 
@@ -1749,7 +1807,7 @@ def get_market_overview() -> dict:
         with _overview_cache_lock:
             cached_core = (
                 _overview_cache_value
-                if cache_key == _overview_cache_key and _overview_cache_value is not None
+                if cache_key == _overview_cache_key and _overview_cache_value is not None and time.monotonic() - _overview_cache_at < 15
                 else None
             )
         if cached_core is not None:
@@ -2040,6 +2098,7 @@ def get_market_overview() -> dict:
         with _overview_cache_lock:
             _overview_cache_key = cache_key
             _overview_cache_value = copy.deepcopy(overview_data)
+            _overview_cache_at = time.monotonic()
 
         return _attach_overview_edge_stats(overview_data)
 

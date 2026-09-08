@@ -3,6 +3,18 @@ const assert = require('node:assert/strict');
 
 const createRequestCoordinator = require('./web/request_coordinator.js');
 
+test('a hung request times out and a successful retry supersedes the late response', async () => {
+    const coordinator = createRequestCoordinator({ timeoutMs: 15 });
+    const stuck = deferred();
+    const failed = await coordinator.request('SPX', () => stuck.promise);
+    assert.match(failed.error.message, /timed out/);
+    const retried = await coordinator.request('SPX', async () => 'fresh');
+    stuck.resolve('obsolete');
+    assert.equal(retried.value, 'fresh');
+    assert.equal(coordinator.isCurrent(failed, 'SPX'), false);
+    assert.equal(coordinator.isCurrent(retried, 'SPX'), true);
+});
+
 
 function deferred() {
     let resolve;

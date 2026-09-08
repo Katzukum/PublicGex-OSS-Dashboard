@@ -22,6 +22,7 @@ let cachedWorkspace = null;
 let cockpitModel = null;
 let gammaSweepOverlayEnabled = false;
 let traceMode = 'net_gex';
+let traceOverlaysEnabled = false;
 let traceTimelineBuckets = [];
 let traceTimelineWindowSize = 1;
 let traceDatesSymbol = null;
@@ -30,12 +31,70 @@ const symbolRequestCoordinator = createRequestCoordinator();
 let appliedSymbolGeneration = 0;
 
 const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono", monospace';
-const CHART_TEXT = '#96a3af';
-const CHART_GRID = 'rgba(122,148,170,0.14)';
+let CHART_TEXT = '#96a3af';
+let CHART_GRID = 'rgba(122,148,170,0.14)';
 const chartInstances = {};
 const chartZoomState = {};
 const chartInteractionHandlers = {};
 const profileAutoscaleState = {};
+let activeView = 'cockpit';
+let initialized = false;
+let initInFlight = null;
+let statusInFlight = false;
+let refreshInFlight = false;
+let traceGeneration = 0;
+let edgeGeneration = 0;
+let lastRenderedSnapshot = null;
+let lastAnalysisSnapshot = null;
+
+// Bound bridge calls and release completed Eel callbacks.
+const apiCall = createBridgeClient(() => window.eel);
+
+function hasNumber(value) {
+    return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+}
+
+function setWorkspaceState(kind, message = '') {
+    const state = document.getElementById('workspaceState');
+    if (!state) return;
+    state.hidden = !message;
+    state.dataset.kind = kind;
+    setText('workspaceStateMessage', message);
+    document.body.classList.toggle('symbol-unavailable', Boolean(message) && (!cachedData || cachedSymbol !== document.getElementById('symbolSelector').value));
+    const button = document.getElementById('retryWorkspace');
+    button.hidden = kind === 'loading';
+}
+
+function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme === 'light' ? 'light' : 'dark';
+    const style = getComputedStyle(document.documentElement);
+    CHART_TEXT = style.getPropertyValue('--muted').trim();
+    CHART_GRID = style.getPropertyValue('--border-soft').trim();
+    for (const id of Object.keys(chartInstances)) {
+        chartInstances[id]?.dispose();
+        delete chartInstances[id];
+    }
+    if (cachedData) renderActiveView();
+}
+
+function toggleSidebar() {
+    const collapsed = document.querySelector('.terminal-shell').classList.toggle('sidebar-collapsed');
+    const button = document.querySelector('.collapse-btn');
+    button.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+    button.setAttribute('aria-expanded', String(!collapsed));
+    resizeCharts();
+}
+
+function renderActiveView() {
+    if (activeView === 'cockpit') return loadCockpit();
+    if (activeView === 'analysis' && cachedData && cachedSymbol === document.getElementById('symbolSelector').value) {
+        const key = `${cachedSymbol}:${cachedData.snapshot.id}`;
+        if (key !== lastAnalysisSnapshot) { renderAnalysisTable(cachedData); lastAnalysisSnapshot = key; }
+    }
+    if (activeView === 'regime') return loadOverview();
+    if (activeView === 'trace') return loadTrace();
+    if (activeView === 'edge-lab') return loadEdgeLab();
+}
 
 function formatStatusAge(seconds) {
     if (seconds === null || seconds === undefined) return 'n/a';
@@ -46,14 +105,16 @@ function formatStatusAge(seconds) {
 
 async function updateBackendStatus() {
     const statusEl = document.getElementById('backendStatus');
-    if (!statusEl) return;
+    if (!statusEl || statusInFlight || document.hidden) return;
+    statusInFlight = true;
 
     try {
-        const status = await eel.get_backend_status()();
+        const status = await apiCall('get_backend_status');
         recordActivity(ActivityFeed.statusActivity(status));
         if (!status.ok) {
             statusEl.className = 'status-offline';
             statusEl.innerHTML = '<i></i> No Backend';
+            setClassText('marketState', 'OFFLINE', 'status-pill status-stale');
             return;
         }
 
@@ -75,11 +136,18 @@ async function updateBackendStatus() {
 
         statusEl.className = statusClass;
         statusEl.innerHTML = `<i></i> ${label}`;
+        const selectedTime = new Date(cachedData?.snapshot?.timestamp || '').getTime();
+        const selectedAge = Number.isFinite(selectedTime) ? (Date.now() - selectedTime) / 1000 : null;
+        const fresh = hasNumber(selectedAge) && selectedAge <= 180;
+        setClassText('marketState', fresh ? 'FRESH' : 'STALE', `status-pill ${fresh ? 'status-healthy' : 'status-stale'}`);
     } catch (e) {
         statusEl.className = 'status-error';
         statusEl.innerHTML = '<i></i> Status Error';
+        setClassText('marketState', 'OFFLINE', 'status-pill status-stale');
         recordActivity(ActivityFeed.statusActivity({ ok: false, error: e?.message || 'Status request failed.' }));
         console.error('Backend status failed', e);
+    } finally {
+        statusInFlight = false;
     }
 }
 
@@ -95,7 +163,7 @@ function chartText(size = 12, color = CHART_TEXT) {
 
 function getChart(id) {
     const el = document.getElementById(id);
-    if (!el || !window.echarts) return null;
+    if (!el || !window.echarts || !el.clientWidth || !el.clientHeight) return null;
     if (!chartInstances[id] || chartInstances[id].isDisposed()) {
         chartInstances[id] = echarts.init(el, null, { renderer: 'canvas' });
     }
@@ -104,21 +172,28 @@ function getChart(id) {
 
 function resizeCharts(ids = Object.keys(chartInstances)) {
     requestAnimationFrame(() => {
-        ids.forEach(id => chartInstances[id]?.resize());
+        ids.forEach(id => {
+            const el = document.getElementById(id);
+            if (el?.clientWidth && el?.clientHeight) chartInstances[id]?.resize();
+        });
+        const edgeEl = document.getElementById('edgeLabExpectancyChart');
+        if (edgeEl?.clientWidth) window.echarts?.getInstanceByDom(edgeEl)?.resize();
     });
 }
 
-function setChartOption(id, option) {
+function setChartOption(id, option, preserveZoom = true) {
     const chart = getChart(id);
     if (!chart) return;
-    persistChartZoom(id);
-    const storedZoom = option?.dataZoom ? chartZoomState[id] : null;
+    if (preserveZoom) persistChartZoom(id);
+    const storedZoom = preserveZoom && option?.dataZoom ? chartZoomState[id] : null;
+    if (storedZoom) {
+        const zoom = storedZoom.startValue != null && storedZoom.endValue != null
+            ? {startValue: storedZoom.startValue, endValue: storedZoom.endValue, rangeMode:['value','value']}
+            : {start: storedZoom.start, end: storedZoom.end};
+        option = {...option, dataZoom: option.dataZoom.map((item,index) => index ? item : {...item, ...zoom})};
+    }
     chart.dispatchAction({ type: 'hideTip' });
     chart.setOption(option, true);
-    if (storedZoom) {
-        requestAnimationFrame(() => applyChartZoomState(chart, storedZoom));
-    }
-    resizeCharts([id]);
 }
 
 function zoomDataOptions(startValue = null, endValue = null) {
@@ -194,6 +269,7 @@ function resetChartZoom(id) {
         start: 0,
         end: 100
     });
+    delete chartZoomState[id];
 }
 
 function resetChartsZoom(ids = Object.keys(chartZoomState)) {
@@ -380,8 +456,8 @@ function nearestSweepPoint(rows, spot) {
 }
 
 function sweepZeroLabel(gammaSweep, fallback) {
-    const below = Number(gammaSweep?.zero_crossings?.below);
-    const above = Number(gammaSweep?.zero_crossings?.above);
+    const below = hasNumber(gammaSweep?.zero_crossings?.below) ? Number(gammaSweep.zero_crossings.below) : NaN;
+    const above = hasNumber(gammaSweep?.zero_crossings?.above) ? Number(gammaSweep.zero_crossings.above) : NaN;
     const hasBelow = Number.isFinite(below);
     const hasAbove = Number.isFinite(above);
     if (hasBelow && hasAbove) return `B ${formatTargetPrice(below)} / A ${formatTargetPrice(above)}`;
@@ -392,8 +468,8 @@ function sweepZeroLabel(gammaSweep, fallback) {
 
 function sweepZeroMarkerLevels(gammaSweep, fallback, spot) {
     const levels = [];
-    const below = Number(gammaSweep?.zero_crossings?.below);
-    const above = Number(gammaSweep?.zero_crossings?.above);
+    const below = hasNumber(gammaSweep?.zero_crossings?.below) ? Number(gammaSweep.zero_crossings.below) : NaN;
+    const above = hasNumber(gammaSweep?.zero_crossings?.above) ? Number(gammaSweep.zero_crossings.above) : NaN;
     if (Number.isFinite(below)) {
         levels.push({ label: 'Zero Gamma below', value: below, color: '#ff454f', dash: 'dash' });
     }
@@ -401,7 +477,7 @@ function sweepZeroMarkerLevels(gammaSweep, fallback, spot) {
         levels.push({ label: 'Zero Gamma above', value: above, color: '#ff454f', dash: 'dash' });
     }
     if (levels.length) return levels;
-    return Number.isFinite(Number(fallback))
+    return hasNumber(fallback)
         ? [{ label: 'Flip', value: fallback, color: '#ff454f', dash: 'dash' }]
         : [];
 }
@@ -640,124 +716,130 @@ function baseChartOptions({ valueFormatter = formatCompactNumber } = {}) {
 
 // --- Init ---
 async function init() {
-    currentSettings = await eel.get_settings()();
-    startStatusTimer();
-    document.getElementById('settingInterval').value = currentSettings.refresh_interval;
-    document.getElementById('settingTheme').value = currentSettings.theme || 'dark';
-    document.getElementById('settingSymbols').value = (currentSettings.symbols || []).join(',');
-    document.getElementById('settingRateLimit').value = currentSettings.api_rate_limit_per_second || 10;
-    document.getElementById('settingRateUtilization').value = currentSettings.api_rate_limit_utilization || 0.6;
-    document.getElementById('settingMinPoll').value = currentSettings.min_poll_interval_seconds || 15;
-    document.getElementById('settingMaxPoll').value = currentSettings.max_poll_interval_seconds || 120;
-    const retentionInput = document.getElementById('settingRetentionDays');
-    if (retentionInput) retentionInput.value = currentSettings.raw_retention_days || 30;
+    if (initInFlight) return initInFlight;
+    initInFlight = (async () => {
+        setWorkspaceState('loading', 'Connecting to your local market data…');
+        try {
+            currentSettings = { ...currentSettings, ...await apiCall('get_settings') };
+            applyTheme(currentSettings.theme);
+            for (const [id, value] of Object.entries({
+                settingInterval: currentSettings.refresh_interval,
+                settingTheme: currentSettings.theme || 'dark',
+                settingSymbols: (currentSettings.symbols || []).join(','),
+                settingRateLimit: currentSettings.api_rate_limit_per_second || 10,
+                settingRateUtilization: currentSettings.api_rate_limit_utilization || 0.6,
+                settingMinPoll: currentSettings.min_poll_interval_seconds || 15,
+                settingMaxPoll: currentSettings.max_poll_interval_seconds || 120,
+                settingRetentionDays: currentSettings.raw_retention_days || 30,
+            })) document.getElementById(id).value = value;
+            await discoverSymbols();
+            initialized = true;
+            await loadSymbol();
+        } catch (error) {
+            setWorkspaceState('error', error.message || String(error));
+        } finally {
+            startTimers();
+            startStatusTimer();
+            initInFlight = null;
+        }
+    })();
+    return initInFlight;
+}
 
-    const symbols = await eel.get_symbols()();
-
+async function discoverSymbols() {
+    const symbols = await apiCall('get_symbols');
     const selector = document.getElementById('symbolSelector');
-    selector.innerHTML = '';
-    symbols.forEach(sym => {
-        const opt = document.createElement('option');
-        opt.value = sym;
-        opt.innerText = sym;
-        selector.appendChild(opt);
-    });
-
-    if (symbols.length > 0) {
-        await loadSymbol();
-        startTimers();
-        switchView('cockpit');
-    } else {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.innerText = 'No 0DTE data';
-        selector.appendChild(opt);
-        const lastUpdateEl = document.getElementById('lastUpdate');
-        if (lastUpdateEl) lastUpdateEl.innerText = "No data";
-    }
+    let preferred;
+    try { preferred = window.localStorage?.getItem('opengamma-symbol'); } catch (_) {}
+    const previous = selector.value;
+    const available = [...new Set([...(symbols || []), ...(currentSettings.symbols || [])])];
+    selector.replaceChildren(...available.map(symbol => new Option(symbol, symbol)));
+    selector.value = available.includes(previous) ? previous : available.includes(preferred) ? preferred : available.includes(currentSettings.symbols?.[0]) ? currentSettings.symbols[0] : available[0] || '';
+    if (!available.length) selector.add(new Option('No symbols configured', ''));
+    return available;
 }
 
 function switchView(viewName) {
-    document.querySelectorAll('.view-section').forEach(el => el.style.display = 'none');
-    document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
-
     const target = document.getElementById(`view-${viewName}`);
-    if (target) {
-        target.style.display = viewName === 'one-off'
-            ? 'flex'
-            : ['cockpit', 'edge-lab', 'trace'].includes(viewName) ? 'grid' : 'block';
-        if (viewName === 'one-off') target.scrollTop = 0;
-    }
-
-    document.querySelectorAll(`[data-view="${viewName}"]`).forEach(btn => btn.classList.add('active'));
-    if (viewName === 'cockpit') {
-        document.querySelector('[data-view="cockpit"]')?.classList.add('active');
-        loadCockpit();
-    }
-    if (viewName === 'edge-lab') {
-        document.querySelector('[data-view="edge-lab"]')?.classList.add('active');
-        loadEdgeLab();
-    }
-    if (viewName === 'regime') {
-        document.querySelector('[data-view="regime"]')?.classList.add('active');
-        loadOverview();
-    }
-    if (viewName === 'trace') {
-        document.querySelector('[data-view="trace"]')?.classList.add('active');
-        loadTrace();
-    }
-    if (viewName === 'analysis') document.querySelector('[data-view="analysis"]')?.classList.add('active');
-    if (viewName === 'one-off') {
-        document.querySelector('[data-view="one-off"]')?.classList.add('active');
-        loadOneOffProfiles();
-    }
-    if (viewName === 'settings') document.querySelector('[data-view="settings"]')?.classList.add('active');
-
-    if (viewName === 'regime') resizeCharts(['tiltChart']);
-    if (viewName === 'trace') resizeCharts(['traceHeatmapChart', 'traceProfileChart', 'traceTrendChart']);
-    if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart', 'cockpitSweepChart']);
-    if (viewName === 'edge-lab') resizeCharts(['edgeLabExpectancyChart']);
-    if (viewName === 'one-off') resizeCharts(['oneOffProfileChart', 'oneOffSweepChart']);
+    if (!target) return;
+    activeView = viewName;
+    document.body.dataset.activeView = viewName;
+    document.querySelectorAll('.view-section').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.nav-btn').forEach(el => {
+        const active = el.dataset.view === viewName;
+        el.classList.toggle('active', active);
+        if (active) el.setAttribute('aria-current', 'page');
+        else el.removeAttribute('aria-current');
+    });
+    target.style.display = ['cockpit', 'edge-lab', 'trace'].includes(viewName) ? 'grid' : viewName === 'one-off' ? 'flex' : 'block';
+    const labels = {cockpit:'Market cockpit', 'edge-lab':'Historical edge', regime:'Market regime', trace:'Session replay', analysis:'Strike matrix', 'one-off':'One-off analysis', settings:'Settings'};
+    setText('viewTitle', labels[viewName]);
+    Promise.resolve(viewName === 'one-off' ? loadOneOffProfiles() : renderActiveView()).catch(error => {
+        showToast('View unavailable', error.message || String(error), 'error');
+    });
+    if (viewName === 'one-off' && cachedOneOffData) renderOneOffProfile(cachedOneOffData);
+    resizeCharts();
 }
 
 async function loadSymbol() {
     const symbol = document.getElementById('symbolSelector').value;
-    if (!symbol) return;
+    if (!symbol) {
+        setWorkspaceState('empty', 'No symbols configured. Add symbols in Settings to begin.');
+        return false;
+    }
+    try { window.localStorage?.setItem('opengamma-symbol', symbol); } catch (_) {}
+    if (cachedSymbol !== symbol) {
+        traceGeneration++;
+        edgeGeneration++;
+        setText('topSpot', '--');
+        setText('lastUpdate', '--');
+        setWorkspaceState('loading', `Loading ${symbol} market data…`);
+    }
 
     const result = await symbolRequestCoordinator.request(
         symbol,
-        () => eel.get_decision_workspace(symbol)()
+        () => apiCall('get_decision_workspace', symbol)
     );
     const selectedSymbol = document.getElementById('symbolSelector').value;
     if (!symbolRequestCoordinator.isCurrent(result, selectedSymbol)) return false;
     if (result.generation === appliedSymbolGeneration) return true;
     if (result.error) {
         console.error(result.error);
-        showToast("No Data", "Could not load the selected symbol.", "info");
+        setWorkspaceState('error', `Could not load ${symbol}. ${result.error.message || result.error}`);
         return false;
     }
 
     const workspace = result.value;
 
-    if (workspace.error) {
-        console.error(workspace.error);
-        showToast("No Data", workspace.error, "info");
-        return;
+    if (!workspace || workspace.error || !workspace.dashboard?.snapshot) {
+        setWorkspaceState('empty', workspace?.error || `No snapshot for ${symbol}. The app will retry automatically as data arrives.`);
+        return false;
     }
     const data = workspace.dashboard;
 
     const symbolChanged = cachedSymbol && cachedSymbol !== symbol;
-    if (symbolChanged) resetChartsZoom(Object.keys(chartInstances));
+    if (symbolChanged) {
+        for (const id of Object.keys(chartInstances).filter(id => !id.startsWith('oneOff'))) {
+            chartInstances[id]?.dispose();
+            delete chartInstances[id];
+            delete chartZoomState[id];
+        }
+        cachedTraceData = null;
+        lastAnalysisSnapshot = null;
+    }
     appliedSymbolGeneration = result.generation;
     cachedData = data;
     cachedSymbol = symbol;
     cachedWorkspace = workspace;
+    setWorkspaceState('ready');
     recordActivity(ActivityFeed.workspaceActivity(symbol, workspace));
     renderSharedSnapshot(data);
     renderMarketContext(workspace.market_context);
-    renderAnalysisTable(data);
+    const snapshotKey = `${symbol}:${workspace.snapshot_id}`;
+    const snapshotChanged = snapshotKey !== lastRenderedSnapshot;
+    lastRenderedSnapshot = snapshotKey;
     if (document.getElementById('view-cockpit').style.display !== 'none') {
-        await loadCockpit(result);
+        await loadCockpit(result, snapshotChanged);
     }
     if (document.getElementById('view-edge-lab').style.display !== 'none') {
         await loadEdgeLab(result);
@@ -768,8 +850,9 @@ async function loadSymbol() {
         await loadOverview(result);
     }
     if (document.getElementById('view-trace').style.display !== 'none') {
-        await loadTrace(result);
+        if (snapshotChanged || !cachedTraceData) await loadTrace(result);
     }
+    if (activeView === 'analysis') renderActiveView();
     if (symbolRequestCoordinator.isCurrent(result, document.getElementById('symbolSelector').value)) {
         timeLeft = currentSettings.refresh_interval;
         return true;
@@ -796,14 +879,16 @@ function renderSharedSnapshot(data) {
     const snap = data?.snapshot || {};
     const topSpot = document.getElementById('topSpot');
     const cockpitSymbol = document.getElementById('cockpitSymbol');
-    if (topSpot) topSpot.innerText = Number.isFinite(Number(snap.spot_price))
+    if (topSpot) topSpot.innerText = hasNumber(snap.spot_price)
         ? Number(snap.spot_price).toFixed(2)
         : '--';
     if (cockpitSymbol) cockpitSymbol.innerText = snap.symbol || cachedSymbol || '--';
     const dateObj = new Date(snap.timestamp);
     const lastUpdate = document.getElementById('lastUpdate');
-    if (lastUpdate) lastUpdate.innerText = Number.isNaN(dateObj.getTime()) ? '--:--' : dateObj.toLocaleTimeString();
-    renderHistoryChart(data?.history || []);
+    if (lastUpdate) lastUpdate.innerText = Number.isNaN(dateObj.getTime()) ? '--:--' : dateObj.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+    const fresh = !Number.isNaN(dateObj.getTime()) && Date.now() - dateObj.getTime() <= 180000;
+    setClassText('marketState', fresh ? 'FRESH' : 'STALE', `status-pill ${fresh ? 'status-healthy' : 'status-stale'}`);
+
 }
 
 function renderProfileChartTo(chartId, profileData, spotPrice) {
@@ -898,7 +983,7 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
                         xAxis: spotPrice,
                         lineStyle: { color: '#ffffff', width: 1 },
                         label: {
-                            formatter: 'Spot',
+                            formatter: 'Latest spot',
                             color: '#ffffff',
                             fontFamily: NUMERIC_FONT,
                             fontSize: 12
@@ -956,7 +1041,7 @@ function renderSweepChart(chartId, gammaSweep, snapshot = {}) {
         xAxis: spot,
         lineStyle: { color: '#ffffff', width: 1 },
         label: {
-            formatter: 'Spot',
+            formatter: 'Latest spot',
             color: '#ffffff',
             fontFamily: NUMERIC_FONT,
             fontSize: 11
@@ -1075,7 +1160,7 @@ function renderHistoryChart(history) {
         xAxis: {
             type: 'category',
             data: history.map(d => d.timestamp),
-            axisLabel: { ...chartText(12), hideOverlap: true },
+            axisLabel: { ...chartText(12), hideOverlap: true, formatter: value => String(value).slice(11, 16) },
             axisLine: { lineStyle: { color: '#223140' } },
             splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } }
         },
@@ -1198,36 +1283,40 @@ function isSymbolContextCurrent(symbol, requestContext = null) {
 }
 
 async function loadTrace(requestContext = null) {
+    const generation = ++traceGeneration;
     const symbol = document.getElementById('symbolSelector')?.value || cachedSymbol || 'SPX';
     const statusEl = document.getElementById('traceStatus');
-    if (statusEl) statusEl.innerText = 'Loading';
+    const traceView = document.getElementById('view-trace');
+    traceView.setAttribute('aria-busy', 'true');
+    if (statusEl) statusEl.innerText = 'Loading session…';
 
     try {
         const dateSelect = document.getElementById('traceSessionDate');
         if (traceDatesSymbol !== symbol) {
-            const dates = await eel.get_trace_dates(symbol, 30)();
-            if (!isSymbolContextCurrent(symbol, requestContext)) return;
+            const dates = await apiCall('get_trace_dates', symbol, 30);
+            if (generation !== traceGeneration || !isSymbolContextCurrent(symbol, requestContext)) return;
             if (dateSelect) {
                 dateSelect.innerHTML = dates.map((value, index) => `<option value="${value}"${index === 0 ? ' selected' : ''}>${value}</option>`).join('') || '<option value="">No sessions</option>';
             }
             traceDatesSymbol = symbol;
         }
         const sessionDate = dateSelect?.value || null;
-        const data = await eel.get_trace_data(symbol, 390, sessionDate)();
-        if (!isSymbolContextCurrent(symbol, requestContext)) return;
+        const data = await apiCall('get_trace_data', symbol, 390, sessionDate);
+        if (generation !== traceGeneration || !isSymbolContextCurrent(symbol, requestContext)) return;
         if (data.error) {
             if (statusEl) statusEl.innerText = data.error;
             showToast('TRACE unavailable', data.error, 'info');
             return;
         }
+        if (cachedTraceData?.symbol !== data.symbol || cachedTraceData?.session_date !== data.session_date) resetChartsZoom(['traceHeatmapChart', 'traceProfileChart', 'traceTrendChart']);
         cachedTraceData = data;
         renderTraceView(data);
     } catch (error) {
-        if (!isSymbolContextCurrent(symbol, requestContext)) return;
+        if (generation !== traceGeneration || !isSymbolContextCurrent(symbol, requestContext)) return;
         console.error('TRACE load failed', error);
         if (statusEl) statusEl.innerText = 'Load failed';
         showToast('TRACE unavailable', 'Could not load local heatmap data.', 'info');
-    }
+    } finally { if (generation === traceGeneration) traceView.setAttribute('aria-busy', 'false'); }
 }
 
 function renderTraceView(data) {
@@ -1250,6 +1339,7 @@ function renderTraceView(data) {
     setText('traceCells', formatCompactNumber(data.range?.cells || heatmapRows.length || 0));
     setText('traceUpdated', latestTime);
     setText('traceStatus', `${traceMetricLabel()} | ${buckets.length || 0} time buckets`);
+    setText('traceTrendSession', `Selected session: ${String(data.timestamp || '').slice(0, 10)}`);
     setText('traceStartTime', startTime);
     setText('traceEndTime', endTime);
     configureTraceTimeline(buckets);
@@ -1258,6 +1348,7 @@ function renderTraceView(data) {
 
     renderTraceHeatmap(data);
     renderTraceProfile(data);
+    renderHistoryChart(data.history || []);
 }
 
 function buildTraceCandles(spotTicks, buckets) {
@@ -1287,6 +1378,20 @@ function buildTraceCandles(spotTicks, buckets) {
     });
 }
 
+function traceStrikeBounds(data) {
+    const strikes = [...new Set((data.heatmap || data.latest_profile || []).map(row => Number(row.strike)))].filter(Number.isFinite).sort((a,b) => a-b);
+    if (!strikes.length) return {};
+    const steps = strikes.slice(1).map((strike,index) => strike-strikes[index]).filter(step => step > 0).sort((a,b)=>a-b);
+    const step = steps[Math.floor(steps.length / 2)] || 1;
+    const spot = Number(data.spot_price);
+    return spot > 0 ? {min: Math.max(strikes[0] - step / 2, Math.floor(spot * .985 / step) * step), max: Math.min(strikes.at(-1) + step / 2, Math.ceil(spot * 1.015 / step) * step), step} : {min:strikes[0]-step/2,max:strikes.at(-1)+step/2,step};
+}
+
+function toggleTraceOverlays(enabled) {
+    traceOverlaysEnabled = enabled;
+    if (cachedTraceData) renderTraceHeatmap(cachedTraceData);
+}
+
 function renderTraceHeatmap(data) {
     const heatmap = Array.isArray(data.heatmap) ? data.heatmap : [];
     const spotPath = Array.isArray(data.spot_path) ? data.spot_path : [];
@@ -1306,6 +1411,8 @@ function renderTraceHeatmap(data) {
     const maxAbs = Math.max(...valuesM.map(value => Math.abs(value)), 1);
     const minValue = traceMode === 'call_gex' ? 0 : traceMode === 'put_gex' ? -maxAbs : -maxAbs;
     const maxValue = traceMode === 'put_gex' ? 0 : maxAbs;
+    setText('traceScaleMax', formatCompactNumber(maxValue * 1000000));
+    setText('traceScaleMin', formatCompactNumber(minValue * 1000000));
     const heatmapData = heatmap
         .map(row => [bucketIndex.get(row.timestamp), Number(row.strike), Number(row[traceMode] || 0) / 1000000])
         .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]) && Number.isFinite(row[2]));
@@ -1314,40 +1421,40 @@ function renderTraceHeatmap(data) {
         .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]));
     const candleData = buildTraceCandles(spotTicks, buckets);
     const strikes = heatmap.map(row => Number(row.strike)).filter(Number.isFinite);
-    const yBounds = strikes.length
-        ? { min: Math.min(...strikes), max: Math.max(...strikes) }
-        : {};
+    const yBounds = traceStrikeBounds(data);
     const labelStep = Math.max(1, Math.ceil(buckets.length / 8));
     const currentSpot = Number(data.spot_price);
     const flip = Number(data.flip_strike);
 
+    const neutralColor = document.documentElement.dataset.theme === 'light' ? '#edf1f6' : '#111820';
     const colorRange = traceMode === 'call_gex'
-        ? ['#111820', '#8f5a17', '#ff8b1a']
+        ? [neutralColor, '#8f5a17', '#ff8b1a']
         : traceMode === 'put_gex'
-            ? ['#2388e8', '#262d6e', '#111820']
-            : ['#2388e8', '#111820', '#ff8b1a'];
+            ? ['#2388e8', '#262d6e', neutralColor]
+            : ['#2388e8', neutralColor, '#ff8b1a'];
 
+    document.querySelector('.trace-gradient').style.background = `linear-gradient(180deg, ${[...colorRange].reverse().join(', ')})`;
     const markerLines = [];
     if (Number.isFinite(currentSpot) && currentSpot > 0) {
         markerLines.push({
             yAxis: currentSpot,
-            lineStyle: { color: '#ffffff', width: 1 },
+            lineStyle: { color: CHART_TEXT, width: 1 },
             label: {
-                formatter: 'Spot',
+                formatter: 'Latest spot',
                 position: 'insideEndTop',
-                color: '#ffffff',
+                color: CHART_TEXT,
                 fontFamily: NUMERIC_FONT,
                 fontSize: 11
             }
         });
     }
-    (data.overlays || []).forEach(overlay => {
+    (traceOverlaysEnabled ? (data.overlays || []).slice(-20) : []).forEach(overlay => {
         const bucket = String(overlay.timestamp || '').slice(0, 16) + ':00';
         const index = bucketIndex.get(bucket);
         if (Number.isFinite(index)) markerLines.push({
             xAxis: index,
             lineStyle: { color: overlay.overlay_type === 'alert' ? '#ff454f' : '#f5a524', width: 1, type: 'dashed' },
-            label: { formatter: overlay.label || overlay.overlay_type, color: '#f2f5f8', fontSize: 10 }
+            label: { show: overlay.overlay_type === 'alert', formatter: overlay.label || overlay.overlay_type, color: CHART_TEXT, fontSize: 10 }
         });
     });
     if (Number.isFinite(flip) && flip > 0) {
@@ -1361,8 +1468,8 @@ function renderTraceHeatmap(data) {
     const option = {
         ...baseChartOptions({ valueFormatter: formatMillionsValue }),
         backgroundColor: 'transparent',
-        grid: { top: 28, left: 60, right: 18, bottom: 40, containLabel: true },
-        dataZoom: zoomDataOptions(),
+        grid: { top: 28, left: 72, right: 18, bottom: 60, containLabel: false },
+        dataZoom: zoomDataOptions(Math.max(0, buckets.length - traceTimelineWindowSize), buckets.length - 1),
         tooltip: {
             trigger: 'item',
             backgroundColor: '#071018',
@@ -1391,6 +1498,8 @@ function renderTraceHeatmap(data) {
         },
         visualMap: {
             show: false,
+            seriesIndex: 0,
+            dimension: 2,
             min: minValue,
             max: maxValue,
             calculable: true,
@@ -1406,7 +1515,7 @@ function renderTraceHeatmap(data) {
             data: buckets,
             axisLabel: {
                 ...chartText(11),
-                formatter: (value, index) => index % labelStep === 0 ? String(value).slice(11, 16) : ''
+                hideOverlap: true, formatter: value => String(value).slice(11, 16)
             },
             axisLine: { lineStyle: { color: '#223140' } },
             splitLine: { show: false }
@@ -1423,10 +1532,16 @@ function renderTraceHeatmap(data) {
         series: [
             {
                 name: traceMetricLabel(),
-                type: 'heatmap',
+                type: 'custom',
                 data: heatmapData,
-                progressive: 2500,
-                itemStyle: { opacity: 0.78 },
+                encode: {x:0, y:1, tooltip:2},
+                progressive: 0,
+                renderItem: (params, api) => {
+                    const point = api.coord([api.value(0), api.value(1)]);
+                    const size = api.size([1, yBounds.step || 5]);
+                    const shape = echarts.graphic.clipRectByRect({x:point[0]-size[0]/2, y:point[1]-Math.abs(size[1])/2, width:Math.max(1,size[0]), height:Math.max(1,Math.abs(size[1]))}, params.coordSys);
+                    return shape && {type:'rect',shape,style:{fill:api.visual('color'),opacity:.9}};
+                },
                 emphasis: { itemStyle: { borderColor: '#ffffff', borderWidth: 1 } }
             },
             {
@@ -1454,15 +1569,9 @@ function renderTraceHeatmap(data) {
         ]
     };
 
-    setChartOption('traceHeatmapChart', option);
+    setChartOption('traceHeatmapChart', option, hadStoredZoom);
     attachClickZoom('traceHeatmapChart', buckets, 18);
-    requestAnimationFrame(() => {
-        if (hadStoredZoom) {
-            syncTraceTimelineFromChart(chart, buckets);
-        } else {
-            scrubTraceTimeline(buckets.length - 1);
-        }
-    });
+    syncTraceTimelineFromChart(chart, buckets);
 }
 
 function renderTraceProfile(data) {
@@ -1484,14 +1593,12 @@ function renderTraceProfile(data) {
     const values = rows.map(row => Number(row[metric] || 0) / 1000000);
     const bounds = chartBounds(values, 0.18);
     const strikes = rows.map(row => Number(row.strike)).filter(Number.isFinite);
-    const yBounds = strikes.length
-        ? { min: Math.min(...strikes), max: Math.max(...strikes) }
-        : {};
+    const yBounds = traceStrikeBounds(data);
     const maxAbs = Math.max(...values.map(value => Math.abs(value)), 1);
     const option = {
         ...baseChartOptions({ valueFormatter: formatMillionsValue }),
         backgroundColor: 'transparent',
-        grid: { top: 12, left: 42, right: 10, bottom: 34, containLabel: true },
+        grid: { top: 28, left: 18, right: 18, bottom: 60, containLabel: false },
         tooltip: {
             trigger: 'item',
             backgroundColor: '#071018',
@@ -1505,7 +1612,7 @@ function renderTraceProfile(data) {
             type: 'value',
             min: Math.min(bounds.min, -maxAbs),
             max: Math.max(bounds.max, maxAbs),
-            axisLabel: { ...chartText(11), formatter: value => `${value.toFixed(0)}M` },
+            splitNumber: 2, axisLabel: { ...chartText(10), hideOverlap:true, formatter: value => formatCompactNumber(value * 1000000) },
             axisLine: { lineStyle: { color: '#223140' } },
             splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } }
         },
@@ -1528,16 +1635,11 @@ function renderTraceProfile(data) {
                 const end = api.coord([value, strike]);
                 const height = Math.max(3, Math.min(12, api.size([0, 5])[1] * 0.72));
                 const x = Math.min(zero[0], end[0]);
-                return {
-                    type: 'rect',
-                    shape: {
-                        x,
-                        y: end[1] - height / 2,
-                        width: Math.max(1, Math.abs(end[0] - zero[0])),
-                        height
-                    },
-                    style: api.style()
-                };
+                const shape = echarts.graphic.clipRectByRect({
+                    x, y: end[1] - height / 2,
+                    width: Math.max(1, Math.abs(end[0] - zero[0])), height
+                }, params.coordSys);
+                return shape && { type: 'rect', shape, style: api.style() };
             },
             itemStyle: {
                 color: params => {
@@ -1563,6 +1665,14 @@ function renderTraceProfile(data) {
 }
 
 // --- Analysis Table (Matches previous redesign) ---
+function jumpToSpot() {
+    const cells = [...document.querySelectorAll('#analysisTableBody .strike-cell')];
+    const spot = Number(cachedData?.snapshot?.spot_price);
+    if (!cells.length || !Number.isFinite(spot)) return;
+    const nearest = cells.reduce((best, cell) => Math.abs(Number(cell.textContent) - spot) < Math.abs(Number(best.textContent) - spot) ? cell : best);
+    nearest.scrollIntoView({block: 'center', behavior: 'auto'});
+}
+
 function renderAnalysisTable(data) {
     const tbody = document.getElementById('analysisTableBody');
     tbody.innerHTML = '';
@@ -1621,7 +1731,7 @@ function renderAnalysisTable(data) {
             <td class="strike-cell ${strikeClass}">${row.strike.toFixed(0)}</td>
             <td>
                 ${badgeHtml}
-                <div style="font-size:10px; color:#666; margin-top:3px;">
+                <div style="font-size:11px; color:var(--muted); margin-top:3px;">
                     ${row.netGex > 0 ? 'Dealer Long Gamma' : 'Dealer Short Gamma'}
                 </div>
             </td>
@@ -1635,7 +1745,7 @@ function renderAnalysisTable(data) {
                 </div>
             </td>
             <td>
-                <div class="bar-container" style="justify-content: flex-start;">
+                <div class="bar-container">
                     <div class="bg-bar bar-put" style="width: ${putWidth}px; max-width:80px;"></div>
                     <span style="font-size:12px; color:#9aa6b2; font-variant-numeric: tabular-nums slashed-zero;">${(Math.abs(row.putGex) / 1000000).toFixed(2)}</span>
                 </div>
@@ -1645,10 +1755,7 @@ function renderAnalysisTable(data) {
         tbody.appendChild(tr);
     });
 
-    setTimeout(() => {
-        const atmRow = document.querySelector('.strike-cell.atm');
-        if (atmRow) atmRow.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 500);
+    // Keep the reader’s position stable during background refreshes.
 }
 
 function startTimers() {
@@ -1657,24 +1764,42 @@ function startTimers() {
     timeLeft = currentSettings.refresh_interval;
 
     countdownTimer = setInterval(() => {
-        timeLeft--;
+        if (document.hidden) return;
+        timeLeft = Math.max(0, timeLeft - 1);
         const timerEl = document.getElementById('timerCountdown');
         if (timerEl) timerEl.innerText = `${timeLeft}s`;
         if (timeLeft <= 0) timeLeft = currentSettings.refresh_interval;
     }, 1000);
 
     refreshTimer = setInterval(async () => {
-        console.log("Reloading local dashboard data...");
-        await loadSymbol();
-    }, currentSettings.refresh_interval * 1000);
+        if (document.hidden || refreshInFlight) return;
+        if (!initialized) { init(); return; }
+        if (['settings', 'one-off'].includes(activeView)) return;
+        refreshInFlight = true;
+        try {
+            if (!cachedData) await discoverSymbols();
+            await loadSymbol();
+        } catch (error) {
+            setWorkspaceState('error', error.message || String(error));
+        } finally { refreshInFlight = false; }
+    }, Math.max(5, Number(currentSettings.refresh_interval) || 10) * 1000);
 }
 
 async function manualRefresh() {
-    const lastUpdateEl = document.getElementById('lastUpdate');
-    if (lastUpdateEl) lastUpdateEl.innerText = "Reloading...";
-    if (await loadSymbol()) {
-        showToast("Dashboard Reloaded", "Local market snapshot reloaded.", "info");
-    }
+    const button = document.getElementById('refreshButton');
+    if (button?.disabled) return;
+    if (window.eel?._websocket?.readyState === 3) { window.location.reload(); return; }
+    if (button) button.disabled = true;
+    try {
+        if (!initialized) return await init();
+        await discoverSymbols();
+        if (await loadSymbol()) {
+            await renderActiveView();
+            showToast('Data refreshed', 'Latest saved snapshot loaded.', 'info');
+        }
+        await updateBackendStatus();
+    } catch (error) { setWorkspaceState('error', error.message || String(error)); }
+    finally { if (button) button.disabled = false; }
 }
 
 function oneOffSetText(id, value) {
@@ -1731,7 +1856,7 @@ async function loadOneOffProfiles() {
     if (!list) return;
 
     try {
-        const profiles = await eel.get_one_off_profiles()();
+        const profiles = await apiCall('get_one_off_profiles');
         oneOffSetText('oneOffRecentCount', String(profiles.length || 0));
         list.innerHTML = '';
         if (!profiles.length) {
@@ -1753,6 +1878,7 @@ async function loadOneOffProfiles() {
         });
     } catch (e) {
         console.error('Failed to load one-off profiles', e);
+        list.textContent = 'Could not load saved profiles. Use Refresh to retry.';
     }
 }
 
@@ -1762,11 +1888,13 @@ async function openOneOffProfile(profile) {
     if (typeof profile === 'object') {
         setOneOffInputs(profile.symbol, profile.expiration_date);
     }
-    const data = await eel.get_one_off_profile(snapshotId)();
+    try {
+    const data = await apiCall('get_one_off_profile', snapshotId);
     if (data?.snapshot) {
         setOneOffInputs(data.snapshot.symbol, data.snapshot.expiration_date);
     }
     renderOneOffProfile(data);
+    } catch (error) { showToast('Profile unavailable', error.message || String(error), 'error'); }
 }
 
 async function buildOneOffProfile() {
@@ -1788,7 +1916,7 @@ async function buildOneOffProfile() {
     oneOffSetText('oneOffStatus', 'Pulling data');
 
     try {
-        const result = await eel.build_one_off_profile(symbol, expirationDate)();
+        const result = await apiCall('build_one_off_profile', symbol, expirationDate);
         if (!result || !result.ok) {
             oneOffSetText('oneOffStatus', 'Failed');
             showToast('One-Off Failed', result?.message || 'Profile build failed.', 'error');
@@ -1823,9 +1951,16 @@ function toggleActivityFeed() {
     const panel = document.querySelector('.right-panel');
     if (panel) panel.classList.toggle('collapsed');
     document.querySelector('.terminal-shell')?.classList.toggle('feed-collapsed');
+    const open = !panel?.classList.contains('collapsed');
+    document.getElementById('activityToggle')?.setAttribute('aria-expanded', String(open));
+    resizeCharts();
 }
 
 async function saveSettings() {
+    const saveButton = document.getElementById('saveSettingsButton');
+    if (saveButton?.disabled) return;
+    if (saveButton) saveButton.disabled = true;
+    try {
     const newInterval = parseInt(document.getElementById('settingInterval').value, 10);
     const newTheme = document.getElementById('settingTheme').value;
     const newSymbols = document.getElementById('settingSymbols').value.split(',').map(s => s.trim()).filter(Boolean);
@@ -1849,7 +1984,7 @@ async function saveSettings() {
         return;
     }
 
-    const result = await eel.save_settings({
+    const result = await apiCall('save_settings', {
         refresh_interval: newInterval,
         theme: newTheme,
         symbols: newSymbols,
@@ -1858,7 +1993,7 @@ async function saveSettings() {
         min_poll_interval_seconds: newMinPoll,
         max_poll_interval_seconds: newMaxPoll,
         raw_retention_days: newRetentionDays
-    })();
+    });
 
     if (!result || !result.ok) {
         showToast("Settings Not Saved", result?.message || "Configuration was rejected.", "error");
@@ -1884,19 +2019,24 @@ async function saveSettings() {
     if (retentionEl) retentionEl.value = currentSettings.raw_retention_days;
     document.getElementById('settingSymbols').value = (currentSettings.symbols || []).join(',');
     showToast("Settings Saved", result.message || "Configuration updated.", "info");
+    applyTheme(currentSettings.theme);
+    await discoverSymbols();
     startTimers();
+    } catch (error) {
+        showToast('Settings not saved', error.message || String(error), 'error');
+    } finally { if (saveButton) saveButton.disabled = false; }
 }
 
 // --- Overview / Signal Dashboard ---
 
 async function loadOverview(requestContext = null) {
     const selectedSymbol = document.getElementById('symbolSelector').value;
-    const data = await eel.get_market_overview()();
+    const data = await apiCall('get_market_overview');
     if (!isSymbolContextCurrent(selectedSymbol, requestContext)) return;
     if (data.error) { console.error(data.error); return; }
     let symbolData = cachedData;
     if (selectedSymbol && (!symbolData || cachedSymbol !== selectedSymbol)) {
-        symbolData = await eel.get_dashboard_data(selectedSymbol)();
+        symbolData = await apiCall('get_dashboard_data', selectedSymbol);
         if (!isSymbolContextCurrent(selectedSymbol, requestContext)) return;
     }
     cachedOverview = data;
@@ -2121,19 +2261,19 @@ function selectedComponent(overviewData, symbolData) {
     return findComponent(overviewData, selectedSymbol) || null;
 }
 
-async function loadCockpit(requestContext = null) {
+async function loadCockpit(requestContext = null, renderCharts = true) {
     const symbol = document.getElementById('symbolSelector')?.value;
     const symbolData = cachedData;
     if (!symbol || !symbolData || symbolData.error || symbolData.snapshot?.symbol !== symbol) return;
     const workspace = cachedWorkspace;
     if (!workspace || workspace.symbol !== symbol || !isSymbolContextCurrent(symbol, requestContext)) return;
     const overview = {
-        components: [],
+        components: workspace.components || [],
         edge_stats: { [symbol]: workspace.historical_edge },
         index_basket: workspace.regime?.index_basket,
     };
     cockpitModel = cockpitModelFromWorkspace(workspace);
-    renderCockpit(cockpitModel, symbolData, overview);
+    renderCockpit(cockpitModel, symbolData, overview, renderCharts);
     renderMarketContext(workspace.market_context);
     renderExecutionCandidates(workspace.execution_candidates, cockpitModel, symbolData);
 }
@@ -2155,8 +2295,8 @@ function cockpitModelFromWorkspace(workspace) {
         title: bias === 'CALL' ? 'CALL BIAS' : bias === 'PUT' ? 'PUT BIAS' : 'WAIT',
         context: decision.context || (scenario.reasons || []).join('; '),
         plan: {
-            target: Number.isFinite(Number(target)) ? formatTargetPrice(target) : '--',
-            invalidation: Number.isFinite(Number(invalidation)) ? formatTargetPrice(invalidation) : '--',
+            target: hasNumber(target) ? formatTargetPrice(target) : '--',
+            invalidation: hasNumber(invalidation) ? formatTargetPrice(invalidation) : '--',
             description: scenario.scenario_type || 'NO_TRADE',
         },
         flip: decision.flip,
@@ -2181,10 +2321,10 @@ function setClassText(id, value, className) {
 
 function renderMarketContext(context) {
     const eventState = context?.event_risk?.state || 'UNAVAILABLE';
-    setClassText('contextEventRisk', eventState, eventState === 'BLOCKED' ? 'red-text' : eventState === 'CAUTION' ? 'amber-text' : 'green-text');
-    setText('contextImpliedMove', Number.isFinite(Number(context?.implied_move)) ? formatTargetPrice(context.implied_move) : 'Unavailable');
-    setText('contextRangeConsumed', Number.isFinite(Number(context?.range_consumed)) ? `${Math.round(Number(context.range_consumed) * 100)}%` : 'Unavailable');
-    setText('contextRealizedVol', Number.isFinite(Number(context?.realized_volatility_15m)) ? formatPct(context.realized_volatility_15m) : 'Unavailable');
+    setClassText('contextEventRisk', eventState, eventState === 'BLOCKED' ? 'red-text' : eventState === 'CAUTION' ? 'amber-text' : eventState === 'NORMAL' ? 'green-text' : 'muted');
+    setText('contextImpliedMove', hasNumber(context?.implied_move) ? formatTargetPrice(context.implied_move) : 'Unavailable');
+    setText('contextRangeConsumed', hasNumber(context?.range_consumed) ? `${Math.round(Number(context.range_consumed) * 100)}%` : 'Unavailable');
+    setText('contextRealizedVol', hasNumber(context?.realized_volatility_15m) ? formatPct(context.realized_volatility_15m, 2) : 'Unavailable');
     setText('contextCrossAsset', context?.cross_asset_state || 'Unavailable');
     setText('contextWarnings', (context?.warnings || []).join(' | ') || 'All configured context sources available');
 }
@@ -2251,7 +2391,7 @@ function renderEdgeStats(edgeStats) {
     }).join('');
 }
 
-function renderCockpit(model, symbolData, overviewData) {
+function renderCockpit(model, symbolData, overviewData, renderCharts = true) {
     if (!model) return;
 
     const scoreClass = model.score > 0.22 ? 'green' : model.score < -0.22 ? 'red' : 'amber';
@@ -2285,8 +2425,10 @@ function renderCockpit(model, symbolData, overviewData) {
     setText('tileWhaleBadge', model.whale.confidence_label || whaleVote.badge);
     setText('tileWhaleDetail', model.whale.strategy || 'No index-basket composite.');
 
-    renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model, symbolData.gamma_sweep);
-    renderSweepChart('cockpitSweepChart', symbolData.gamma_sweep, symbolData.snapshot);
+    if (renderCharts) {
+        renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model, symbolData.gamma_sweep);
+        if (gammaSweepOverlayEnabled) renderSweepChart('cockpitSweepChart', symbolData.gamma_sweep, symbolData.snapshot);
+    }
     renderMetricStrip(symbolData, model);
     renderEdgeStats(overviewData.edge_stats?.[model.symbol]);
     renderCockpitPillars(overviewData.components || []);
@@ -2303,6 +2445,7 @@ async function loadExecutionCandidates(requestContext = null) {
 }
 
 async function loadEdgeLab(requestContext = null) {
+    const generation = ++edgeGeneration;
     const symbol = document.getElementById('symbolSelector')?.value;
     if (!symbol || !isSymbolContextCurrent(symbol, requestContext)) return;
     const filters = {
@@ -2310,15 +2453,22 @@ async function loadEdgeLab(requestContext = null) {
         horizon: Number(document.getElementById('edgeLabHorizon')?.value || 30),
         include_legacy: Boolean(document.getElementById('edgeLabLegacy')?.checked),
     };
-    const payload = await eel.get_edge_lab(filters)();
-    if (!isSymbolContextCurrent(symbol, requestContext)) return;
+    setText('edgeLabStatus', 'Loading historical evidence…');
+    try {
+    const payload = await apiCall('get_edge_lab', filters);
+    if (generation !== edgeGeneration || !isSymbolContextCurrent(symbol, requestContext)) return;
+    if (payload?.error) throw new Error(payload.error);
     EdgeLab.render(payload, {
         status: document.getElementById('edgeLabStatus'),
         summary: document.getElementById('edgeLabSummary'),
         table: document.getElementById('edgeLabTable'),
         chart: document.getElementById('edgeLabExpectancyChart'),
-    }, echarts);
-    await loadJournal(symbol);
+    }, window.echarts);
+    await loadJournal(symbol, generation);
+    } catch (error) {
+        if (generation !== edgeGeneration) return;
+        setText('edgeLabStatus', `Unable to load evidence. ${error.message || error}`);
+    }
 }
 
 function prefillJournalFromCockpit() {
@@ -2335,6 +2485,9 @@ function prefillJournalFromCockpit() {
 }
 
 async function saveJournalEntry() {
+    const button = document.getElementById('saveJournalButton');
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
     const workspace = cachedWorkspace || {};
     const payload = {
         symbol: document.getElementById('symbolSelector')?.value,
@@ -2352,19 +2505,24 @@ async function saveJournalEntry() {
         notes: document.getElementById('journalNotes')?.value || '',
     };
     try {
-        await eel.create_journal_entry(payload)();
+        if (!payload.session_date || !payload.entry_time || !hasNumber(document.getElementById('journalEntryPrice')?.value)) throw new Error('Enter a session date, entry time, and entry price.');
+        await apiCall('create_journal_entry', payload);
         await loadJournal(payload.symbol);
         showToast('Journal saved', 'Execution result saved locally.', 'info');
+        document.getElementById('journalEntryPrice').value = '';
+        document.getElementById('journalExitPrice').value = '';
+        document.getElementById('journalNotes').value = '';
     } catch (error) {
         showToast('Journal validation', String(error), 'info');
-    }
+    } finally { if (button) button.disabled = false; }
 }
 
-async function loadJournal(symbol) {
+async function loadJournal(symbol, generation = edgeGeneration) {
     const [entries, review] = await Promise.all([
-        eel.get_journal_entries(symbol)(),
-        eel.get_weekly_journal_review(null)(),
+        apiCall('get_journal_entries', symbol),
+        apiCall('get_weekly_journal_review', null),
     ]);
+    if (generation !== edgeGeneration || !isSymbolContextCurrent(symbol)) return;
     const results = document.getElementById('journalExecutionResults');
     const weekly = document.getElementById('journalWeeklyReview');
     if (results) results.innerHTML = entries.length ? `<table class="analysis-table"><thead><tr><th>Entry</th><th>Scenario</th><th>Contracts</th><th>P&amp;L</th><th>Adherence</th></tr></thead><tbody>${entries.map(row => `<tr><td>${String(row.entry_time).replace('T', ' ')}</td><td>${row.scenario_type || '--'}</td><td>${row.contracts}</td><td>${row.pnl == null ? 'Open' : formatTradeDollars(row.pnl)}</td><td>${row.adhered_to_plan ? 'Followed' : 'Deviated'}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No user execution entries for this symbol.</p>';
@@ -2413,7 +2571,7 @@ function unavailableSetupCard(title, idea) {
 function renderExecutionQuote(idea) {
     const quote = idea?.quote;
     if (!quote) return '';
-    const age = Number.isFinite(Number(quote.age_seconds)) ? `${Math.round(Number(quote.age_seconds))}s old` : 'age unavailable';
+    const age = hasNumber(quote.age_seconds) ? `${Math.round(Number(quote.age_seconds))}s old` : 'age unavailable';
     const sizing = idea.status === 'EXECUTABLE' ? renderSetupStat('Contracts', String(idea.contracts ?? 0), 'green-text') : '';
     return `
         <div class="setup-stat-grid">
@@ -2506,7 +2664,7 @@ function setupMarkerLevels(setups, model) {
         );
     }
 
-    return levels.filter(level => Number.isFinite(Number(level.value))).map(level => ({
+    return levels.filter(level => hasNumber(level.value)).map(level => ({
         ...level,
         value: Number(level.value)
     }));
@@ -2877,7 +3035,7 @@ function renderCompass(compassData, type) {
     if (compassData.label.includes('GRIND')) titleEl.style.color = 'var(--green)';
     else if (compassData.label.includes('CRASH')) titleEl.style.color = 'var(--red)';
     else if (compassData.label.includes('MELT')) titleEl.style.color = '#ffc800';
-    else titleEl.style.color = 'white';
+    else titleEl.style.color = 'var(--text)';
 }
 
 function renderPillars(components) {
@@ -2955,7 +3113,7 @@ function renderTiltChart(tiltData) {
 
     const option = {
         ...baseChartOptions(),
-        grid: { top: 20, left: 42, right: 20, bottom: 34, containLabel: true },
+        grid: { top: 36, left: 42, right: 20, bottom: 34, containLabel: true },
         dataZoom: zoomDataOptions(),
         xAxis: {
             type: 'category',
@@ -2966,8 +3124,8 @@ function renderTiltChart(tiltData) {
         },
         yAxis: {
             type: 'value',
-            name: 'Effective GEX ($ per 1% move)',
-            nameTextStyle: chartText(12),
+            name: '$ per 1% move',
+            nameTextStyle: { ...chartText(12), align: 'left' },
             axisLabel: { ...chartText(12), formatter: formatCompactNumber },
             axisLine: { lineStyle: { color: '#223140' } },
             splitLine: { lineStyle: { color: 'rgba(122,148,170,0.12)' } }
@@ -2982,7 +3140,7 @@ function renderTiltChart(tiltData) {
                     show: true,
                     position: v >= 0 ? 'top' : 'bottom',
                     formatter: `$${(v / 1000000).toFixed(1)}M`,
-                    color: '#f2f5f8',
+                    color: CHART_TEXT,
                     fontFamily: NUMERIC_FONT,
                     fontSize: 12,
                     fontWeight: 700
@@ -2998,6 +3156,7 @@ function renderTiltChart(tiltData) {
 
 
 
+if (window.innerWidth <= 1180) toggleActivityFeed();
 init();
 window.addEventListener('resize', () => resizeCharts());
 
@@ -3130,15 +3289,23 @@ function showToast(title, message, type = "info") {
     const toast = document.createElement('div');
     toast.className = `toast-notification toast-${type}`;
 
-    toast.innerHTML = `
-        <div class="toast-body">
-            <div class="toast-header">${title}</div>
-            <div>${message}</div>
-        </div>
-        <div class="toast-close" onclick="this.parentElement.remove()">x</div>
-    `;
+    const body = document.createElement('div');
+    body.className = 'toast-body';
+    const heading = document.createElement('div');
+    heading.className = 'toast-header';
+    heading.textContent = title;
+    const detail = document.createElement('div');
+    detail.textContent = message;
+    body.append(heading, detail);
+    const close = document.createElement('button');
+    close.className = 'toast-close';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Dismiss notification');
+    close.onclick = () => toast.remove();
+    toast.append(body, close);
 
     document.getElementById('toast-container').appendChild(toast);
+    while (document.getElementById('toast-container').children.length > 3) document.getElementById('toast-container').firstChild.remove();
 
     // Auto remove
     setTimeout(() => {

@@ -4,7 +4,7 @@
     } else {
         root.createRequestCoordinator = factory;
     }
-}(typeof globalThis !== 'undefined' ? globalThis : this, function createRequestCoordinator() {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function createRequestCoordinator({ timeoutMs = 20000 } = {}) {
     let generation = 0;
     let activeKey = null;
     let inFlight = null;
@@ -27,13 +27,17 @@
         generation += 1;
         activeKey = normalizedKey;
         const requestGeneration = generation;
-        const promise = Promise.resolve()
-            .then(loader)
+        let timer;
+        const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Request timed out. Please retry.')), timeoutMs);
+        });
+        const promise = Promise.race([Promise.resolve().then(loader), timeout])
             .then(
                 value => ({ key: normalizedKey, generation: requestGeneration, value, error: null }),
                 error => ({ key: normalizedKey, generation: requestGeneration, value: null, error })
             )
             .finally(() => {
+                clearTimeout(timer);
                 if (inFlight && inFlight.generation === requestGeneration) {
                     inFlight = null;
                 }
