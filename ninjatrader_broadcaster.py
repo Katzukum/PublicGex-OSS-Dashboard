@@ -210,6 +210,7 @@ def _clean_regime_label(label: str) -> str:
         .replace("âšª ", "")
         .replace("WEAK ", "")
         .replace("LOW CONFIDENCE ", "")
+        .replace("LOW DATA QUALITY ", "")
         .strip()
     )
 
@@ -509,7 +510,7 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
     components = overview_data.get("components", [])
     component = _symbol_component(components, symbol)
     compass = overview_data.get("compass_traders") or overview_data.get("compass") or {}
-    whale = overview_data.get("compass_whale", compass)
+    whale = overview_data.get("index_basket") or overview_data.get("compass_whale", compass)
     key_levels_by_symbol = overview_data.get("gamma_levels", {}) or {}
     if symbol in key_levels_by_symbol:
         levels = key_levels_by_symbol.get(symbol, []) or []
@@ -530,9 +531,9 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         score for score in [market_vote["score"], dealer_vote["score"], liquidity_vote["score"]]
         if (score > 0) == (raw_score > 0) and abs(score) > 0.20 and raw_score != 0
     ])
-    confidence_penalty = float(component.get("confidence") or 0.5)
-    final_score = raw_score * _clamp(0.65 + (agreement * 0.12), 0.65, 1) * confidence_penalty
-    confidence = confidence_penalty
+    quality = component.get("data_quality") or {}
+    data_quality_score = float(quality.get("score", component.get("confidence") or 0.5))
+    final_score = raw_score * _clamp(0.65 + (agreement * 0.12), 0.65, 1) * data_quality_score
 
     abs_score = abs(final_score)
     bias = "WAIT"
@@ -548,7 +549,8 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         "dashboard_symbol": symbol,
         "dashboard_bias": bias,
         "dashboard_bias_score": round(final_score, 4),
-        "dashboard_confidence": round(confidence, 4),
+        "dashboard_data_quality": round(data_quality_score, 4),
+        "dashboard_confidence": round(data_quality_score, 4),
         "dashboard_target": plan["target"],
         "dashboard_invalidation": plan["invalidation"],
         "dashboard_flip": round(flip, 4) if flip > 0 else None,
@@ -557,6 +559,7 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         "dashboard_market": f"Market: {_vote_label(market_vote['score'])}",
         "dashboard_dealer": f"Dealer: {dealer_vote['label']}",
         "dashboard_liquidity": f"Liquidity: {liquidity_vote['label']}",
+        "dashboard_index_basket": f"Index Basket: {whale_label}",
         "dashboard_whale": f"Whale: {whale_label}",
         "dashboard_market_detail": market_vote["detail"],
         "dashboard_dealer_detail": dealer_vote["detail"],
@@ -589,9 +592,11 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
         ndx_data = next((c for c in components if c.get("symbol") == "NDX"), {})
         
         label = compass.get("label", "NEUTRAL")
-        confidence = compass.get("confidence_label")
-        if not confidence:
-            confidence = "LOW" if compass.get("confidence", 1) < 0.60 else "HIGH"
+        quality = compass.get("data_quality") or {}
+        data_quality_label = quality.get("label") or compass.get("confidence_label")
+        data_quality_score = quality.get("score", compass.get("confidence", 0))
+        if not data_quality_label:
+            data_quality_label = "LOW" if data_quality_score < 0.60 else "HIGH"
 
         ndx_dashboard = _dashboard_payload_for_symbol("NDX", overview_data)
         spx_dashboard = _dashboard_payload_for_symbol("SPX", overview_data)
@@ -601,12 +606,15 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
         
         # Build payload with all index prices
         payload = {
+            "schema_version": 2,
             "type": "REGIME_UPDATE",
             "timestamp": datetime.now().isoformat(),
             "regime": label.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "").replace("⚪ ", "").replace("WEAK ", "").strip(),
             "regime_code": extract_regime_code(label),
-            "confidence": confidence,
-            "confidence_score": round(compass.get("confidence", 0), 4),
+            "data_quality_label": data_quality_label,
+            "data_quality_score": round(data_quality_score, 4),
+            "confidence": data_quality_label,
+            "confidence_score": round(data_quality_score, 4),
             "x_score": round(compass.get("x_score", 0), 4),
             "y_score": round(compass.get("y_score", 0), 4),
             "strategy": compass.get("strategy", ""),
@@ -627,7 +635,11 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
             # NinjaTrader gets every level, with the existing filter marked as key.
             "gamma_levels_ndx": _ninjatrader_levels_for_symbol(overview_data, "NDX"),
             "gamma_levels_spx": _ninjatrader_levels_for_symbol(overview_data, "SPX"),
+            "decision_alerts": overview_data.get("alerts", []),
         }
+        if payload["decision_alerts"]:
+            payload["alert_id"] = payload["decision_alerts"][0].get("alert_id")
+            payload["scenario_id"] = payload["decision_alerts"][0].get("scenario_id")
         payload["regime"] = payload["regime"].replace("LOW CONFIDENCE ", "").strip()
         payload["regime"] = _clean_regime_label(label)
         payload.update(generic_dashboard)

@@ -1,5 +1,6 @@
 from math import exp, isfinite, log, pi
 from statistics import NormalDist
+from option_math import infer_total_vol
 
 
 NORMAL = NormalDist()
@@ -28,34 +29,7 @@ def _option_side(row):
     return None
 
 
-def _infer_total_vol(row, current_spot):
-    side = _option_side(row)
-    if not side:
-        return None, "missing_side"
-
-    try:
-        delta = float(_row_value(row, "delta"))
-        gamma = float(_row_value(row, "gamma"))
-        underlying = float(_row_value(row, "underlying_price", current_spot) or current_spot)
-    except (TypeError, ValueError):
-        return None, "invalid_greeks"
-
-    if not all(isfinite(value) for value in (delta, gamma, underlying)):
-        return None, "invalid_greeks"
-
-    if gamma <= 0 or underlying <= 0:
-        return None, "invalid_greeks"
-
-    nd1 = delta if side == "CALL" else delta + 1
-    if not isfinite(nd1) or not 0 < nd1 < 1:
-        return None, "invalid_delta"
-
-    d1 = NORMAL.inv_cdf(nd1)
-    total_vol = _normal_pdf(d1) / (underlying * gamma)
-    if not isfinite(total_vol) or total_vol <= 0:
-        return None, "invalid_volatility"
-
-    return {"d1": d1, "total_vol": total_vol, "underlying": underlying}, None
+_infer_total_vol = infer_total_vol
 
 
 def _prepare_contract(row, current_spot):

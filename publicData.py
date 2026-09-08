@@ -38,6 +38,16 @@ DEFAULT_SETTINGS = {
     "raw_retention_days": 30,
     "weights": {"SPY": 1.0},
     "weights_whale": {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20},
+    "maximum_risk_dollars": 500,
+    "fees_per_contract": 1.25,
+    "feature_flags": {
+        "decision_workspace": True,
+        "execution_quotes": True,
+        "edge_lab": True,
+        "decision_alerts": True,
+        "trace_replay": True,
+        "trade_journal": True,
+    },
 }
 
 STRIKE_RANGE_PCT = 0.03
@@ -527,6 +537,31 @@ def get_option_greeks_batch(client, osi_symbols: list[str], account_id: str, rat
     return results
 
 
+def get_option_quotes_batch(client, osi_symbols: list[str], account_id: str, rate_limiter: RateLimiter) -> dict:
+    """Fetch read-only option quotes in bounded batches keyed by OSI symbol."""
+    load_public_sdk()
+    results = {}
+    for index in range(0, len(osi_symbols), 100):
+        chunk = osi_symbols[index : index + 100]
+        if not chunk:
+            continue
+        rate_limiter.wait()
+        instruments = [OrderInstrument(symbol=osi, type=InstrumentType.OPTION) for osi in chunk]
+        try:
+            quotes = client.get_quotes(instruments, account_id=account_id)
+        except TypeError:
+            quotes = client.get_quotes(instruments)
+        except Exception as exc:
+            logger.warning("Option quote batch failed: %s", exc)
+            continue
+        for quote in quotes or []:
+            instrument = get_val(quote, ["instrument"])
+            osi = get_val(instrument, ["symbol"]) or get_val(quote, ["symbol"])
+            if osi:
+                results[str(osi)] = quote
+    return results
+
+
 def process_symbol(
     client,
     session: Session,
@@ -614,6 +649,7 @@ def process_symbol(
         all_osi = [osi for (_, _, osi) in relevant_options if osi]
         logger.info("Fetching Greeks for %s contracts using batch API...", len(all_osi))
         greeks_map = get_option_greeks_batch(client, all_osi, config["account_id"], rate_limiter)
+        quotes_map = get_option_quotes_batch(client, all_osi, config["account_id"], rate_limiter)
 
         total_net_gex = 0.0
         total_call_gex = 0.0
@@ -646,6 +682,14 @@ def process_symbol(
                 gamma = float(greek_data.get("gamma") or 0)
                 delta = float(greek_data.get("delta") or 0)
                 theta = float(greek_data.get("theta") or 0)
+                quote = quotes_map.get(osi)
+                option_details = get_val(quote, ["option_details", "optionDetails"], {})
+                quote_greeks = get_val(option_details, ["greeks"], {})
+                bid = get_val(quote, ["bid"])
+                ask = get_val(quote, ["ask"])
+                mid = get_val(option_details, ["mid_price", "midPrice"])
+                if mid is None and bid is not None and ask is not None:
+                    mid = (float(bid) + float(ask)) / 2
 
                 total_gamma_sum += gamma * oi * 100
                 total_theta_sum += theta * oi * 100
@@ -676,6 +720,17 @@ def process_symbol(
                         "open_interest": oi,
                         "underlying_price": spot_price,
                         "gex_value": raw_gex,
+                        "bid": float(bid) if bid is not None else None,
+                        "ask": float(ask) if ask is not None else None,
+                        "mid_price": float(mid) if mid is not None else None,
+                        "last_price": float(get_val(quote, ["last"])) if get_val(quote, ["last"]) is not None else None,
+                        "bid_size": int(get_val(quote, ["bid_size", "bidSize"])) if get_val(quote, ["bid_size", "bidSize"]) is not None else None,
+                        "ask_size": int(get_val(quote, ["ask_size", "askSize"])) if get_val(quote, ["ask_size", "askSize"]) is not None else None,
+                        "volume": int(get_val(quote, ["volume"])) if get_val(quote, ["volume"]) is not None else None,
+                        "implied_volatility": float(get_val(quote_greeks, ["implied_volatility", "impliedVolatility"])) if get_val(quote_greeks, ["implied_volatility", "impliedVolatility"]) is not None else None,
+                        "bid_timestamp": get_val(quote, ["bid_timestamp", "bidTimestamp"]),
+                        "ask_timestamp": get_val(quote, ["ask_timestamp", "askTimestamp"]),
+                        "last_timestamp": get_val(quote, ["last_timestamp", "lastTimestamp"]),
                     }
                 )
             except Exception as e:

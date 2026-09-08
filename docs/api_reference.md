@@ -8,6 +8,10 @@ This section provides a technical overview of the codebase modules. The source c
 The main entry point for the Dashboard.
 *   **Location**: `[appy.py](../appy.py)`
 *   **Key Functions**:
+    *   `get_decision_workspace(symbol)`: Primary schema-version-2 Cockpit contract. Returns a single selected snapshot, Data Quality, market context, regime, scenarios, eligibility, Historical Edge, candidates, and alert IDs.
+    *   `get_edge_lab(filters)`: Filtered independent-opportunity evidence.
+    *   `get_trace_dates(symbol)` / `get_trace_data(symbol, minutes, session_date)`: Bounded replay with overlays and modeled pressure fields.
+    *   `create/update/delete/get_journal_*`: Validated local user-execution journal APIs.
     *   `get_dashboard_data(symbol)`: Returns charts/profiles, including `gamma_sweep` when enough stored contract Greeks are available.
     *   `get_market_overview()`: Calculates the global market compass.
     *   `run_event_server(port)`: Listens for updates from `publicData.py`.
@@ -66,4 +70,8 @@ The SQLite database (`gex_data.db`) contains three primary tables:
 2.  **gex_snapshots**: High-level history linked to a collection run.
 3.  **raw_option_greeks**: Contract rows linked to a snapshot by `snapshot_id`.
 
-Old-schema databases are backed up to `gex_data_legacy_*.db` and replaced with a fresh schema.
+Current databases are upgraded additively by `schema_migrations.py` using `PRAGMA user_version`; a pre-migration copy is made before the first production-path migration. New tables persist market context, decision alerts, and journal entries. Old snapshots remain readable with null quote fields.
+
+## Decision contract rules
+
+`data_quality` describes freshness/completeness only and never populates `edge_probability`. `historical_edge` is gated by independent opportunities, unique days, and positive holdout expectancy. Candidate status is `EXECUTABLE`, `MODELED_ONLY`, or `REJECTED`; only executable candidates may contain a contract count. Compatibility aliases (`confidence`, `compass_whale`, and legacy NinjaTrader dashboard names) remain for one verified release.

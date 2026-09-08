@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, event as sqlalchemy_event
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, CollectionRun, GexSnapshot, SignalEvent, SignalOutcome
-from signal_performance import edge_stats_for_dashboard, label_due_outcomes, setup_keys
+from signal_performance import edge_stats_for_dashboard, independent_outcomes, label_due_outcomes, record_signal_payload, setup_keys
 
 
 def _session():
@@ -60,6 +60,9 @@ def _event(session, symbol="NDX", emitted_at=datetime(2026, 6, 22, 9, 30), spot=
         setup_key=setup_key,
         direction_key=direction_key,
         payload_json="{}",
+        state_key=setup_key,
+        session_date=emitted_at.date(),
+        is_opportunity=True,
     )
     session.add(event)
     session.flush()
@@ -108,9 +111,12 @@ class SignalPerformanceTests(unittest.TestCase):
         primary = stats["primary"]
 
         self.assertEqual(primary["sample_label"], "symbol+bias")
-        self.assertEqual(primary["sample_size"], 3)
+        self.assertEqual(primary["sample_size"], 1)
+        self.assertEqual(primary["independent_opportunities"], 1)
+        self.assertEqual(primary["unique_days"], 1)
+        self.assertEqual(primary["evidence_status"], "INSUFFICIENT")
         self.assertEqual(primary["win_rate"], 1.0)
-        self.assertEqual(primary["median_move_points"], 2)
+        self.assertEqual(primary["median_move_points"], 1)
 
     def test_batched_labeling_preserves_outcome_semantics(self):
         session = _session()
@@ -173,6 +179,50 @@ class SignalPerformanceTests(unittest.TestCase):
 
         self.assertLessEqual(one_event_queries, 3)
         self.assertEqual(many_event_queries, one_event_queries)
+
+    def test_identical_broadcast_state_is_recorded_once(self):
+        session = _session()
+        payload = {
+            "timestamp": "2026-06-22T09:30:00",
+            "regime": "GRIND UP",
+            "dashboard_symbol": "NDX",
+            "dashboard_bias": "CALL BIAS",
+            "dashboard_bias_score": 0.5,
+            "dashboard_data_quality": 0.9,
+            "dashboard_target": 103,
+            "dashboard_invalidation": 98,
+            "dashboard_dealer": "Dealer: Long Gamma",
+            "dashboard_liquidity": "Liquidity: Upside Open",
+            "spot_ndx": 100,
+        }
+        self.assertEqual(record_signal_payload(payload, session=session, symbols=("NDX",)), 1)
+        session.flush()
+        payload["timestamp"] = "2026-06-22T09:31:00"
+        self.assertEqual(record_signal_payload(payload, session=session, symbols=("NDX",)), 0)
+        self.assertEqual(session.query(SignalEvent).count(), 1)
+        event = session.query(SignalEvent).one()
+        self.assertTrue(event.is_opportunity)
+        self.assertIsNone(event.edge_probability)
+
+    def test_independent_selection_is_horizon_specific(self):
+        session = _session()
+        base = datetime(2026, 6, 22, 9, 30)
+        rows = []
+        for minute in (0, 10, 20, 40):
+            event, _ = _event(session, emitted_at=base + timedelta(minutes=minute))
+            outcome = SignalOutcome(
+                signal_event_id=event.id,
+                horizon_minutes=30,
+                observed_at=event.emitted_at + timedelta(minutes=30),
+                move_points=1,
+                is_win=True,
+                outcome_label="directional",
+            )
+            session.add(outcome)
+            rows.append(outcome)
+        session.flush()
+        self.assertEqual(len(independent_outcomes(rows, 15)), 3)
+        self.assertEqual(len(independent_outcomes(rows, 30)), 2)
 
 
 if __name__ == "__main__":

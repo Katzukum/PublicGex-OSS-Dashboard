@@ -306,7 +306,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     dashValue = ExtractDashboardValue(json, "dashboard_liquidity");
                     if (dashValue != null)
                         dashboardLiquidity = dashValue;
-                    dashValue = ExtractDashboardValue(json, "dashboard_whale");
+                    dashValue = ExtractDashboardValue(json, "dashboard_index_basket");
+                    if (dashValue == null)
+                        dashValue = ExtractDashboardValue(json, "dashboard_whale");
                     if (dashValue != null)
                         dashboardWhale = dashValue;
                     dashValue = ExtractDashboardValue(json, "dashboard_edge_summary");
@@ -318,7 +320,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (TryExtractDashboardDouble(json, "dashboard_bias_score", out double biasScore))
                         dashboardBiasScore = biasScore;
-                    if (TryExtractDashboardDouble(json, "dashboard_confidence", out double confidenceScore))
+                    if (TryExtractDashboardDouble(json, "dashboard_data_quality", out double confidenceScore)
+                        || TryExtractDashboardDouble(json, "dashboard_confidence", out confidenceScore))
                         dashboardConfidence = confidenceScore;
                     if (TryExtractDashboardDouble(json, "dashboard_target", out double target))
                         dashboardTarget = target;
@@ -1223,7 +1226,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     RenderTarget.DrawText(scoreText, dashboardMetricFormat,
                         new SharpDX.RectangleF(metricX, metricY, metricWidth, 18), biasBrush);
 
-                    RenderTarget.DrawText("Conf", dashboardLabelFormat,
+                    RenderTarget.DrawText("Data Q", dashboardLabelFormat,
                         new SharpDX.RectangleF(metricX + metricWidth, topY, metricWidth, 10), cyanBrush);
                     RenderTarget.DrawText($"{Math.Round(dashConfidence * 100):F0}%", dashboardMetricFormat,
                         new SharpDX.RectangleF(metricX + metricWidth, metricY, metricWidth, 18), whiteBrush);
@@ -1248,7 +1251,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     string marketValue = (string.IsNullOrEmpty(dashMarket) ? $"Market: {regime}" : dashMarket).Replace("Market: ", "");
                     string dealerValue = (string.IsNullOrEmpty(dashDealer) ? $"Dealer: {prevRegime}" : dashDealer).Replace("Dealer: ", "");
                     string liquidityValue = (string.IsNullOrEmpty(dashLiquidity) ? $"{idxSym}: {idx:F0} | Spread: {sprd:+0;-0;0}" : dashLiquidity).Replace("Liquidity: ", "");
-                    string whaleValue = (string.IsNullOrEmpty(dashWhale) ? $"Updated: {update}" : dashWhale).Replace("Whale: ", "");
+                    string whaleValue = (string.IsNullOrEmpty(dashWhale) ? $"Updated: {update}" : dashWhale).Replace("Index Basket: ", "").Replace("Whale: ", "");
                     string edgeValue = dashEdgeSummary;
                     if (string.IsNullOrEmpty(edgeValue))
                     {
@@ -1274,7 +1277,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     RenderTarget.DrawText(liquidityValue, dashboardTextFormat,
                         new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 2), tileY + 11, tileWidth, 16), biasBrush);
 
-                    RenderTarget.DrawText("Whale Flow", dashboardLabelFormat,
+                    RenderTarget.DrawText("Index Gamma Basket", dashboardLabelFormat,
                         new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 3), tileY, tileWidth, 10), cyanBrush);
                     RenderTarget.DrawText(whaleValue, dashboardTextFormat,
                         new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 3), tileY + 11, tileWidth, 16), biasBrush);

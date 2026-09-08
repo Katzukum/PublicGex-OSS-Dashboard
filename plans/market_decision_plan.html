@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PublicGex Market-Decision Plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1218;
+      --panel: #151d26;
+      --panel-2: #1b2632;
+      --line: #2a3948;
+      --text: #eef4f8;
+      --muted: #9aabba;
+      --blue: #4aa8ff;
+      --green: #26d07c;
+      --amber: #f5a524;
+      --red: #ff5a68;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top right, #12283b 0, var(--bg) 32rem);
+      color: var(--text);
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header, main { width: min(1180px, calc(100% - 32px)); margin-inline: auto; }
+    header { padding: 36px 0 20px; }
+    h1 { margin: 0 0 6px; font-size: clamp(26px, 4vw, 42px); letter-spacing: -0.03em; }
+    h2, h3, p { margin-top: 0; }
+    .subtitle { color: var(--muted); max-width: 850px; }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 22px 0; }
+    .metric, .toolbar, .task {
+      border: 1px solid var(--line);
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, .18);
+    }
+    .metric { border-radius: 12px; padding: 14px 16px; }
+    .metric span { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+    .metric strong { font-size: 25px; }
+    .toolbar {
+      position: sticky;
+      top: 0;
+      z-index: 4;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 12px;
+      border-radius: 12px;
+      backdrop-filter: blur(14px);
+    }
+    input, select, textarea, button {
+      font: inherit;
+      color: var(--text);
+      background: #0f171f;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    input, select, button { min-height: 38px; padding: 7px 10px; }
+    input[type="search"] { min-width: min(320px, 100%); flex: 1; }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--blue); }
+    #tasks { display: grid; gap: 14px; padding: 18px 0 50px; }
+    .task { border-radius: 14px; overflow: hidden; }
+    .task-head { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start; padding: 16px; background: var(--panel-2); }
+    .task-id { color: var(--blue); font-weight: 800; letter-spacing: .08em; }
+    .task-title { margin: 0; font-size: 18px; }
+    .goal { color: var(--muted); margin: 4px 0 0; }
+    .task-body { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+    .task-body section { min-width: 0; }
+    .task-body h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 8px; }
+    ul { margin: 0; padding-left: 20px; }
+    li + li { margin-top: 5px; }
+    .meta { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 16px; }
+    .pill { border: 1px solid var(--line); color: var(--muted); border-radius: 999px; padding: 4px 9px; font-size: 12px; }
+    .notes { padding: 0 16px 16px; }
+    textarea { display: block; width: 100%; min-height: 86px; resize: vertical; padding: 10px; }
+    .status-todo { border-left: 4px solid var(--amber); }
+    .status-doing { border-left: 4px solid var(--blue); }
+    .status-done { border-left: 4px solid var(--green); }
+    .empty { padding: 40px; text-align: center; color: var(--muted); }
+    footer { color: var(--muted); padding: 0 0 40px; }
+    @media (max-width: 760px) {
+      .summary { grid-template-columns: repeat(2, 1fr); }
+      .task-head { grid-template-columns: auto 1fr; }
+      .task-head select { grid-column: 1 / -1; width: 100%; }
+      .task-body { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>PublicGex Market-Decision Upgrade</h1>
+    <p class="subtitle">Execution tracker for the decision-support redesign. Status and notes are stored only in this browser. Export JSON to save or share those edits; browser changes do not rewrite the repository JSON file.</p>
+    <div class="summary" aria-label="Task summary">
+      <div class="metric"><span>Total</span><strong id="totalCount">0</strong></div>
+      <div class="metric"><span>Todo</span><strong id="todoCount">0</strong></div>
+      <div class="metric"><span>Doing</span><strong id="doingCount">0</strong></div>
+      <div class="metric"><span>Done</span><strong id="doneCount">0</strong></div>
+    </div>
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Search tasks, goals, or dependencies" aria-label="Search tasks">
+      <select id="statusFilter" aria-label="Filter by status">
+        <option value="all">All statuses</option>
+        <option value="todo">Todo</option>
+        <option value="doing">Doing</option>
+        <option value="done">Done</option>
+      </select>
+      <button id="exportBtn" type="button">Export JSON</button>
+      <button id="resetBtn" type="button">Reset local edits</button>
+    </div>
+  </header>
+  <main>
+    <div id="tasks"></div>
+  </main>
+  <footer>
+    <main>Source plan: <code>plans/MARKET_DECISION_IMPLEMENTATION_PLAN.md</code></main>
+  </footer>
+
+  <script type="application/json" id="task-data">
+{
+  "project": {
+    "name": "PublicGex Market-Decision Upgrade",
+    "source_root": ".",
+    "target_path": "PublicGex OSS Dashboard",
+    "plan_file": "plans/MARKET_DECISION_IMPLEMENTATION_PLAN.md",
+    "created_for": "Planning and execution handoff"
+  },
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "Lock the decision-workspace contracts and terminology",
+      "status": "done",
+      "goal": "Establish one documented vocabulary, navigation map, payload schema, and compatibility policy before implementation branches diverge.",
+      "subgoals": [
+        "Document the final navigation and schema-version-2 field names.",
+        "Define compatibility aliases and a one-release removal window.",
+        "Record evidence gates and prohibit Public order/preflight calls."
+      ],
+      "notes": "Completed 2026-08-14. The implementation plan fixes schema_version 2, the seven-view navigation, Data Quality versus Historical Edge semantics, index_basket naming, evidence gates, a one-release legacy alias window, and a strict market-data/strategy-quote-only Public API boundary. Verified the concrete get_decision_workspace example and dependency-consistent terminology in plans/MARKET_DECISION_IMPLEMENTATION_PLAN.md.",
+      "verify_complete": [
+        "All implementation tasks use the same schema-version-2 names.",
+        "No task uses Whale Flow, predictive Confidence, or observed-flow language."
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "T02",
+      "title": "Add an additive SQLite migration framework",
+      "status": "done",
+      "goal": "Make every schema change safe for the existing production-sized database without requiring a reset.",
+      "subgoals": [
+        "Create schema_migrations.py using PRAGMA user_version.",
+        "Back up before the first production migration.",
+        "Add quote, signal, context, alert, and journal migrations.",
+        "Test legacy, retry, current, and already-migrated databases."
+      ],
+      "notes": "Completed 2026-08-14. Added schema_migrations.py with three ordered additive migrations, PRAGMA user_version, pre-migration copy backup for the production path, quote/evidence/context/alert/journal schema, and SQLAlchemy models. Verified only against temporary databases: 4 migration tests plus 2 lifecycle tests pass; retry is idempotent and a simulated failure leaves user_version at the last committed step.",
+      "verify_complete": [
+        "Legacy migration preserves data and is idempotent.",
+        "Failed migrations do not advance user_version.",
+        "Tests never touch live gex_data.db."
+      ],
+      "depends_on": ["T01"]
+    },
+    {
+      "id": "T03",
+      "title": "Simplify navigation and relocate obsolete tab content",
+      "status": "done",
+      "goal": "Remove Gamma and turn Setups into Edge Lab without losing useful charts or execution candidates.",
+      "subgoals": [
+        "Delete Gamma navigation and view-dashboard paths.",
+        "Move Net Gamma Trend into TRACE.",
+        "Replace view-setups with view-edge-lab and move candidate placeholders to Cockpit.",
+        "Rename Flow to Regime and update load/resize/toggle logic."
+      ],
+      "notes": "Completed 2026-08-14. Navigation is now Cockpit, Edge Lab, Regime, TRACE, Strike Matrix, One-Off, Settings. Removed the Gamma view and legacy Setups view IDs, moved Net Gamma Trend into TRACE, placed candidate-card containers in Cockpit Scenario & Execution, extracted shared header rendering, and updated reload/resize/toggle paths. Nine JavaScript tests pass, including the new DOM contract.",
+      "verify_complete": [
+        "No removed view IDs or navigation labels remain.",
+        "Net Gamma Trend renders in TRACE.",
+        "A DOM contract test covers final navigation."
+      ],
+      "depends_on": ["T01"]
+    },
+    {
+      "id": "T04",
+      "title": "Separate Data Quality from Historical Edge",
+      "status": "done",
+      "goal": "Prevent freshness/profile quality from being presented as a predictive probability.",
+      "subgoals": [
+        "Rename confidence calculation and payloads to Data Quality.",
+        "Add optional edge probability without populating it from Data Quality.",
+        "Rename Whale surfaces to Index Gamma Basket.",
+        "Update C# schema fallback and documentation."
+      ],
+      "notes": "Completed 2026-08-14. Added calculate_component_data_quality with score/label/warnings/age, schema-v2 data_quality and index_basket fields, and one-release confidence/compass_whale aliases. Updated Cockpit/Regime terminology and NinjaTrader to prefer v2 fields with v1 fallbacks. Data Quality is never copied into edge_probability. Three contract tests, six broadcaster/server tests, and JavaScript syntax checks pass.",
+      "verify_complete": [
+        "Data Quality and Historical Edge are separate everywhere.",
+        "No Whale Flow or bare Confidence label remains.",
+        "Version-1 and version-2 payload fixtures parse."
+      ],
+      "depends_on": ["T01", "T02"]
+    },
+    {
+      "id": "T05",
+      "title": "Capture option quotes and build the strategy-quote adapter",
+      "status": "done",
+      "goal": "Persist executable-market inputs and expose a read-only adapter for butterfly and debit-spread quotes.",
+      "subgoals": [
+        "Require publicdotcom-py 0.1.22 and persist quote/IV/volume fields.",
+        "Create execution_quotes.py around get_strategy_quote.",
+        "Validate stale, crossed, zero-bid, missing, and wide quotes.",
+        "Grade liquidity and use ask-entry/bid-exit economics."
+      ],
+      "notes": "Completed 2026-08-14. Raised publicdotcom-py to 0.1.22, added bounded read-only option quote collection, and persisted bid/ask/mid/last/sizes/volume/IV/source timestamps. Added execution_quotes.py around get_strategy_quote with dependency injection, freshness/crossed/zero-bid/missing/spread gates, A/B/C/REJECTED grades, and conservative ask-entry/bid-exit economics. Thirteen focused tests pass and source search finds no order, cancel, replace, or preflight call.",
+      "verify_complete": [
+        "Old null-quote snapshots remain readable.",
+        "All quote acceptance/rejection fixtures pass.",
+        "No order or preflight API call exists."
+      ],
+      "depends_on": ["T02"]
+    },
+    {
+      "id": "T06",
+      "title": "Build the Market Conditions service and ribbon",
+      "status": "done",
+      "goal": "Add event, implied-move, realized-volatility, and cross-asset context without mixing it into Data Quality.",
+      "subgoals": [
+        "Create cached BLS and FOMC providers.",
+        "Compute ATM-straddle implied move, range consumed, realized volatility, and agreement.",
+        "Persist context snapshots and render the ribbon.",
+        "Implement NORMAL, CAUTION, and BLOCKED event windows."
+      ],
+      "notes": "Completed 2026-08-14. Added cached BLS/FOMC ICS support, Eastern-time/DST normalization, duplicate suppression, NORMAL/CAUTION/BLOCKED windows, ATM-straddle implied move, range consumed, 15m realized volatility, cross-asset/volatility unavailable states, persistence, and the Cockpit ribbon. Ten Python checks plus the DOM contract pass; missing/network data remains visibly partial and never alters Data Quality.",
+      "verify_complete": [
+        "DST/cache/network fixtures pass.",
+        "No-network mode degrades explicitly.",
+        "Event risk affects eligibility, not Data Quality."
+      ],
+      "depends_on": ["T02", "T05"]
+    },
+    {
+      "id": "T07",
+      "title": "Implement the server-side scenario engine and decision workspace",
+      "status": "done",
+      "goal": "Create one snapshot-consistent backend contract for conditions, scenarios, evidence, eligibility, and candidates.",
+      "subgoals": [
+        "Move target/invalidation heuristics from JavaScript to scenario_engine.py.",
+        "Generate Pin, Upside, Downside, and No Trade scenario contracts.",
+        "Use volatility/strike-spacing zones and explicit unavailable states.",
+        "Expose get_decision_workspace with schema version 2."
+      ],
+      "notes": "Completed 2026-08-14. Added scenario_engine.py with Pin/Mean Reversion, Upside Expansion, Downside Expansion, and No Trade scenarios, stable scenario IDs, volatility/spacing zones, and explicit gates. get_decision_workspace(schema_version=2) now returns one selected snapshot with timestamps, data quality, context, regime, evidence, scenarios, eligibility, and matching candidates. Cockpit uses the existing stale-response coordinator and client buildTradePlan/target/invalidation helpers were removed. Eleven Python and nine JavaScript checks pass.",
+      "verify_complete": [
+        "Table-driven scenario and gate tests pass.",
+        "All consumers share scenario identifiers.",
+        "Client-side trade-plan heuristics are removed."
+      ],
+      "depends_on": ["T04", "T05", "T06"]
+    },
+    {
+      "id": "T08",
+      "title": "Integrate executable candidates into Cockpit",
+      "status": "done",
+      "goal": "Show quote-backed defined-risk structures beside the scenario that makes them relevant.",
+      "subgoals": [
+        "Render Scenario & Execution cards from the workspace contract.",
+        "Show quote age, bid/mid/ask, liquidity, economics, close time, and settlement.",
+        "Add local maximum-risk sizing.",
+        "Retire get_trade_setups after migration."
+      ],
+      "notes": "Completed 2026-08-14. Cockpit Scenario & Execution now consumes snapshot-matched candidates from the decision workspace. Persisted leg markets produce conservative strategy bid/mid/ask, age, spread, liquidity grade, max loss/reward, settlement, close time, and local maximum-risk sizing. MODELED_ONLY and REJECTED remain visible but never receive contract counts; the web no longer calls get_trade_setups. Twenty-two focused tests pass and no broker mutation UI/path was added.",
+      "verify_complete": [
+        "Only EXECUTABLE candidates show sizing.",
+        "No unlabeled theoretical debit appears.",
+        "Rapid symbol changes cannot leak old quotes."
+      ],
+      "depends_on": ["T03", "T05", "T07"]
+    },
+    {
+      "id": "T09",
+      "title": "Correct signal opportunity sampling and outcome statistics",
+      "status": "done",
+      "goal": "Base empirical claims on transitions, non-overlapping horizons, unique days, and after-cost outcomes.",
+      "subgoals": [
+        "Stop recording identical payloads on every broadcast.",
+        "Derive independent 15/30/60-minute samples.",
+        "Add day-bootstrap intervals, holdout, expectancy, MFE/MAE, and target order.",
+        "Implement evidence gates and legacy exclusions."
+      ],
+      "notes": "Completed 2026-08-14. Broadcast persistence now records state/scenario transitions only and marks eligible opportunities; edge_probability remains null. Statistics exclude legacy correlated rows by default, greedily select non-overlapping samples per horizon, and report independent opportunities, unique days, after-cost and holdout expectancy, MFE/MAE, target/invalidation-first rates, and day-clustered intervals. Evidence gates are INSUFFICIENT (<20 opportunities or <10 days), EMERGING, and CALIBRATED (>=50/20 plus positive holdout). Six signal tests pass.",
+      "verify_complete": [
+        "Overlap fixtures collapse to expected counts.",
+        "Every rate includes independent count and unique days.",
+        "Live bias ignores edge before calibrated status."
+      ],
+      "depends_on": ["T02", "T04", "T07"]
+    },
+    {
+      "id": "T10",
+      "title": "Build the repurposed Edge Lab view",
+      "status": "done",
+      "goal": "Replace Setups with transparent independent evidence, calibration, expectancy, filters, and opportunity review.",
+      "subgoals": [
+        "Add get_edge_lab filters and web/edge_lab.js.",
+        "Render evidence cards, calibration, expectancy, outcomes, and opportunities.",
+        "Handle empty/insufficient states honestly.",
+        "Keep legacy observations behind a warned diagnostic toggle."
+      ],
+      "notes": "Completed 2026-08-14. Added get_edge_lab filters for symbol, horizon, scenario, regime, event tag, time bucket, and liquidity grade; default queries exclude legacy rows. web/edge_lab.js renders evidence cards, after-cost distribution, and opportunity table with ECharts plus honest empty/INSUFFICIENT/EMERGING/CALIBRATED states. The opt-in legacy toggle carries a persistent correlation warning. Seven Python and five JavaScript checks pass.",
+      "verify_complete": [
+        "Edge Lab contains no strategy cards.",
+        "Rates include days and independent counts.",
+        "All evidence states have frontend tests."
+      ],
+      "depends_on": ["T03", "T09"]
+    },
+    {
+      "id": "T11",
+      "title": "Add deduplicated state-transition alerts",
+      "status": "done",
+      "goal": "Notify only when the decision changes, with one persisted identity across app and NinjaTrader.",
+      "subgoals": [
+        "Create decision_alerts.py and persisted dedupe keys.",
+        "Implement flip, GEX, wall, scenario, failure, move-budget, and event alerts.",
+        "Apply cooldown with immediate opposite/critical transitions.",
+        "Share alert/scenario IDs with Eel and NinjaTrader."
+      ],
+      "notes": "Completed 2026-08-14; follow-up verified 2026-08-14. Added decision_alerts.py and persisted unique dedupe keys, 10-minute cooldown, immediate opposite/critical overrides, stable alert IDs, scenario/event alerts, workspace history, and schema-v2 NinjaTrader fields. Actionable toasts remain limited to decision alerts and magnet changes. The Activity Feed now shows coalesced, non-actionable collector health, event-bridge heartbeats, data_refresh/MARKET_UPDATE telemetry, and cockpit renders so users can verify updates without alert noise. Focused Python and JavaScript regression tests pass, including shared alert/scenario identity and feed telemetry classification.",
+      "verify_complete": [
+        "Identical replay emits no duplicate.",
+        "Opposite/critical transitions emit immediately.",
+        "Routine refreshes create no actionable alert."
+      ],
+      "depends_on": ["T07", "T09"]
+    },
+    {
+      "id": "T12",
+      "title": "Upgrade TRACE with replay, overlays, trend, Delta, and Charm",
+      "status": "done",
+      "goal": "Turn TRACE into the review surface and add clearly modeled pressure lenses on shared option math.",
+      "subgoals": [
+        "Extract option_math.py and update runtime/backtests.",
+        "Add session-date selection and overlays.",
+        "Relocate Net Gamma Trend and synchronize it.",
+        "Add Modeled Delta/Charm with coverage warnings."
+      ],
+      "notes": "Completed 2026-08-14. Extracted shared inferred-volatility/charm/delta helpers into option_math.py and updated runtime/backtest use. Added bounded get_trace_dates/get_trace_data session contracts, scenario/alert/target/invalidation overlays, retained Net Gamma Trend in TRACE, and added Modeled Delta/Charm modes with matched-contract coverage warnings. Replay queries are symbol/session bounded. Sixteen Python and three timeline tests pass.",
+      "verify_complete": [
+        "Runtime/backtest math fixtures match.",
+        "Replay never mixes sessions or symbols.",
+        "Delta/Charm always says Modeled and warns below 80% coverage."
+      ],
+      "depends_on": ["T03", "T04", "T07", "T11"]
+    },
+    {
+      "id": "T13",
+      "title": "Add the manual trade journal and weekly review",
+      "status": "done",
+      "goal": "Separate model performance from actual fills, exits, slippage, and rule adherence.",
+      "subgoals": [
+        "Add validated local journal CRUD.",
+        "Prefill from scenarios/replay but require actual trade data.",
+        "Calculate P&L, slippage, MFE/MAE, reason, and adherence.",
+        "Group weekly review by context and execution quality."
+      ],
+      "notes": "Completed 2026-08-14. Added validated local journal create/update/delete/list endpoints, scenario symbol/session linking, actual fills/contracts/exits, fees, P&L, slippage, MFE/MAE, exit/adherence fields, Cockpit prefill, and weekly grouping by scenario/regime/liquidity/adherence. Edge Lab presents user execution separately from model outcomes. Five temporary-database validation/CRUD tests pass, including malformed timestamps and negative contracts.",
+      "verify_complete": [
+        "CRUD and validation tests pass.",
+        "Linked entries match signal symbol/session.",
+        "Model and user results stay separate."
+      ],
+      "depends_on": ["T02", "T07", "T10", "T12"]
+    },
+    {
+      "id": "T14",
+      "title": "Complete documentation, performance validation, and rollout",
+      "status": "done",
+      "goal": "Ship with safe flags, truthful docs, reproducible verification, and no legacy-tab residue.",
+      "subgoals": [
+        "Update docs, CI, terminology, and limitations.",
+        "Run migration, no-network, stale-response, and C# compatibility suites.",
+        "Benchmark workspace and TRACE on a production-sized copy.",
+        "Enable flags phase by phase and remove aliases after one release."
+      ],
+      "notes": "Completed 2026-08-14. Updated README/setup/API/thesis/development docs, feature flags, settings, and Windows CI. Full verification passes: 83 Python tests and 11 JavaScript tests plus syntax and diff checks. On an online backup of the 5.688 GB production database, cached SPX workspace p50/p95 measured 5.23/7.25 ms (target <500 ms) and full 2026-08-14 TRACE measured 897.31 ms for 8,232 cells (target <2 s); cold workspace was 777.25 ms. Removed-ID/label and prohibited broker-call scans are clean outside explicit compatibility tests/aliases and archived web/Old files. The temporary 6.1 GB benchmark copy was deleted; the live database was never migrated or written.",
+      "verify_complete": [
+        "All Python/JavaScript checks pass.",
+        "Workspace p95 is under 500ms and TRACE under 2s on the database copy.",
+        "Removed tabs and misleading labels are absent.",
+        "No runtime or credential artifact is tracked."
+      ],
+      "depends_on": ["T08", "T10", "T11", "T12", "T13"]
+    }
+  ]
+}
+  </script>
+  <script>
+    (() => {
+      'use strict';
+      const STORAGE_KEY = 'publicGexMarketDecisionPlanV1';
+      const initial = JSON.parse(document.getElementById('task-data').textContent);
+      const allowedStatuses = new Set(['todo', 'doing', 'done']);
+      const statusRank = { todo: 0, doing: 1, done: 2 };
+
+      function loadState() {
+        try {
+          const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+          if (!saved || !Array.isArray(saved.tasks)) return structuredClone(initial);
+          const edits = new Map(saved.tasks.map(task => [task.id, task]));
+          const merged = structuredClone(initial);
+          merged.tasks.forEach(task => {
+            const edit = edits.get(task.id);
+            if (!edit) return;
+            if (allowedStatuses.has(edit.status) && statusRank[edit.status] > statusRank[task.status]) {
+              task.status = edit.status;
+            }
+            if (typeof edit.notes === 'string' && edit.notes.trim() && edit.notes !== task.notes) {
+              task.notes = task.status === 'done' && edit.status !== 'done'
+                ? `${task.notes}\n\nPrior browser note:\n${edit.notes}`
+                : edit.notes;
+            }
+          });
+          return merged;
+        } catch (error) {
+          return structuredClone(initial);
+        }
+      }
+
+      let state = loadState();
+      const tasksEl = document.getElementById('tasks');
+      const searchEl = document.getElementById('search');
+      const statusEl = document.getElementById('statusFilter');
+
+      function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>'"]/g, char => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+        })[char]);
+      }
+
+      function persist() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+
+      function list(items) {
+        return `<ul>${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+      }
+
+      function updateMetrics() {
+        const counts = { todo: 0, doing: 0, done: 0 };
+        state.tasks.forEach(task => counts[task.status]++);
+        document.getElementById('totalCount').textContent = state.tasks.length;
+        document.getElementById('todoCount').textContent = counts.todo;
+        document.getElementById('doingCount').textContent = counts.doing;
+        document.getElementById('doneCount').textContent = counts.done;
+      }
+
+      function render() {
+        const query = searchEl.value.trim().toLowerCase();
+        const status = statusEl.value;
+        const filtered = state.tasks.filter(task => {
+          if (status !== 'all' && task.status !== status) return false;
+          if (!query) return true;
+          return JSON.stringify(task).toLowerCase().includes(query);
+        });
+
+        tasksEl.innerHTML = filtered.length ? filtered.map(task => `
+          <article class="task status-${escapeHtml(task.status)}" data-task-id="${escapeHtml(task.id)}">
+            <div class="task-head">
+              <span class="task-id">${escapeHtml(task.id)}</span>
+              <div>
+                <h2 class="task-title">${escapeHtml(task.title)}</h2>
+                <p class="goal">${escapeHtml(task.goal)}</p>
+              </div>
+              <select class="task-status" aria-label="Status for ${escapeHtml(task.id)}">
+                <option value="todo" ${task.status === 'todo' ? 'selected' : ''}>Todo</option>
+                <option value="doing" ${task.status === 'doing' ? 'selected' : ''}>Doing</option>
+                <option value="done" ${task.status === 'done' ? 'selected' : ''}>Done</option>
+              </select>
+            </div>
+            <div class="task-body">
+              <section><h3>Subgoals</h3>${list(task.subgoals)}</section>
+              <section><h3>Verify complete</h3>${list(task.verify_complete)}</section>
+            </div>
+            <div class="meta">
+              <span class="pill">Depends on: ${task.depends_on.length ? task.depends_on.map(escapeHtml).join(', ') : 'None'}</span>
+            </div>
+            <div class="notes">
+              <label><h3>Notes</h3><textarea class="task-notes" placeholder="Add execution notes, blockers, or handoff context">${escapeHtml(task.notes)}</textarea></label>
+            </div>
+          </article>
+        `).join('') : '<div class="empty">No tasks match the current filters.</div>';
+
+        tasksEl.querySelectorAll('.task').forEach(card => {
+          const task = state.tasks.find(item => item.id === card.dataset.taskId);
+          card.querySelector('.task-status').addEventListener('change', event => {
+            task.status = event.target.value;
+            persist();
+            updateMetrics();
+            render();
+          });
+          card.querySelector('.task-notes').addEventListener('input', event => {
+            task.notes = event.target.value;
+            persist();
+          });
+        });
+        updateMetrics();
+      }
+
+      searchEl.addEventListener('input', render);
+      statusEl.addEventListener('change', render);
+      document.getElementById('resetBtn').addEventListener('click', () => {
+        if (!confirm('Reset all locally edited statuses and notes?')) return;
+        localStorage.removeItem(STORAGE_KEY);
+        state = structuredClone(initial);
+        render();
+      });
+      document.getElementById('exportBtn').addEventListener('click', () => {
+        const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'market_decision_tasks.updated.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      });
+
+      render();
+    })();
+  </script>
+</body>
+</html>

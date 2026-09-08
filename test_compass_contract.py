@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from pathlib import Path
 
 import appy
 import ninjatrader_broadcaster
@@ -69,18 +70,35 @@ def test_live_overview_compass_flows_to_ninjatrader_payload(tmp_path, monkeypatc
     assert overview["compass"] == overview["compass_traders"]
     assert overview["compass_traders"]["label"] == "MELT UP"
 
+    workspace = appy.get_decision_workspace("SPY")
+    assert workspace["schema_version"] == 2
+    assert workspace["snapshot_id"] == workspace["dashboard"]["snapshot"]["id"]
+    assert workspace["decision"]["scenario_id"] == workspace["active_scenario"]["scenario_id"]
+    assert workspace["market_context"]["implied_move"] is None
+    assert "timestamp" in workspace["execution_candidates"]
+
     sent = []
     monkeypatch.setattr(ninjatrader_broadcaster.broadcaster, "broadcast", sent.append)
+    overview["alerts"] = workspace["alerts"]
     assert ninjatrader_broadcaster.send_regime_update(overview)
 
     payload = sent[0]
     compass = overview["compass_traders"]
+    assert overview["schema_version"] == 2
+    assert overview["index_basket"] == overview["compass_whale"]
+    assert compass["data_quality"]["score"] == compass["confidence"]
+    assert "edge_probability" not in compass["data_quality"]
+    assert payload["schema_version"] == 2
+    assert payload["data_quality_label"] == compass["data_quality"]["label"]
+    assert payload["data_quality_score"] == round(compass["data_quality"]["score"], 4)
     assert payload["regime"] == "MELT UP"
     assert payload["regime_code"] == 2
     assert payload["confidence"] == compass["confidence_label"]
     assert payload["confidence_score"] == round(compass["confidence"], 4)
     assert payload["x_score"] == round(compass["x_score"], 4)
     assert payload["y_score"] == round(compass["y_score"], 4)
+    assert payload["decision_alerts"][0]["alert_id"] == workspace["alerts"][0]["alert_id"]
+    assert payload["scenario_id"] == workspace["active_scenario"]["scenario_id"]
 
     db_engine.dispose()
 
@@ -107,3 +125,13 @@ def test_broadcaster_falls_back_to_legacy_compass(monkeypatch):
     assert ninjatrader_broadcaster.send_regime_update(overview)
     assert sent[0]["regime"] == "CRASH / FLUSH"
     assert sent[0]["regime_code"] == 4
+    assert sent[0]["schema_version"] == 2
+    assert sent[0]["data_quality_score"] == 0.8
+
+
+def test_ninjatrader_source_prefers_v2_names_with_v1_fallback():
+    source = Path(__file__).with_name("OpenGamma.cs").read_text(encoding="utf-8")
+    assert '"dashboard_index_basket"' in source
+    assert '"dashboard_whale"' in source
+    assert '"dashboard_data_quality"' in source
+    assert '"dashboard_confidence"' in source

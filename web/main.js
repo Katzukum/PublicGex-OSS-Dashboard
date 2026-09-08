@@ -18,11 +18,13 @@ let cachedOverview = null;
 let cachedTradeSetups = null;
 let cachedOneOffData = null;
 let cachedTraceData = null;
+let cachedWorkspace = null;
 let cockpitModel = null;
 let gammaSweepOverlayEnabled = false;
 let traceMode = 'net_gex';
 let traceTimelineBuckets = [];
 let traceTimelineWindowSize = 1;
+let traceDatesSymbol = null;
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
 const symbolRequestCoordinator = createRequestCoordinator();
 let appliedSymbolGeneration = 0;
@@ -48,6 +50,7 @@ async function updateBackendStatus() {
 
     try {
         const status = await eel.get_backend_status()();
+        recordActivity(ActivityFeed.statusActivity(status));
         if (!status.ok) {
             statusEl.className = 'status-offline';
             statusEl.innerHTML = '<i></i> No Backend';
@@ -75,6 +78,7 @@ async function updateBackendStatus() {
     } catch (e) {
         statusEl.className = 'status-error';
         statusEl.innerHTML = '<i></i> Status Error';
+        recordActivity(ActivityFeed.statusActivity({ ok: false, error: e?.message || 'Status request failed.' }));
         console.error('Backend status failed', e);
     }
 }
@@ -681,23 +685,21 @@ function switchView(viewName) {
     if (target) {
         target.style.display = viewName === 'one-off'
             ? 'flex'
-            : ['cockpit', 'setups', 'trace'].includes(viewName) ? 'grid' : 'block';
+            : ['cockpit', 'edge-lab', 'trace'].includes(viewName) ? 'grid' : 'block';
         if (viewName === 'one-off') target.scrollTop = 0;
     }
 
     document.querySelectorAll(`[data-view="${viewName}"]`).forEach(btn => btn.classList.add('active'));
-    if (viewName === 'dashboard') document.querySelector('[data-view="dashboard"]')?.classList.add('active');
-
     if (viewName === 'cockpit') {
         document.querySelector('[data-view="cockpit"]')?.classList.add('active');
         loadCockpit();
     }
-    if (viewName === 'setups') {
-        document.querySelector('[data-view="setups"]')?.classList.add('active');
-        loadTradeSetups();
+    if (viewName === 'edge-lab') {
+        document.querySelector('[data-view="edge-lab"]')?.classList.add('active');
+        loadEdgeLab();
     }
-    if (viewName === 'market-signal') {
-        document.querySelector('[data-view="market-signal"]')?.classList.add('active');
+    if (viewName === 'regime') {
+        document.querySelector('[data-view="regime"]')?.classList.add('active');
         loadOverview();
     }
     if (viewName === 'trace') {
@@ -711,11 +713,10 @@ function switchView(viewName) {
     }
     if (viewName === 'settings') document.querySelector('[data-view="settings"]')?.classList.add('active');
 
-    if (viewName === 'dashboard' && cachedData) resizeCharts(['profileChart', 'gammaSweepChart', 'historyChart']);
-    if (viewName === 'market-signal') resizeCharts(['tiltChart']);
-    if (viewName === 'trace') resizeCharts(['traceHeatmapChart', 'traceProfileChart']);
+    if (viewName === 'regime') resizeCharts(['tiltChart']);
+    if (viewName === 'trace') resizeCharts(['traceHeatmapChart', 'traceProfileChart', 'traceTrendChart']);
     if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart', 'cockpitSweepChart']);
-    if (viewName === 'setups' && cachedData) resizeCharts(['setupProfileChart']);
+    if (viewName === 'edge-lab') resizeCharts(['edgeLabExpectancyChart']);
     if (viewName === 'one-off') resizeCharts(['oneOffProfileChart', 'oneOffSweepChart']);
 }
 
@@ -725,7 +726,7 @@ async function loadSymbol() {
 
     const result = await symbolRequestCoordinator.request(
         symbol,
-        () => eel.get_dashboard_data(symbol)()
+        () => eel.get_decision_workspace(symbol)()
     );
     const selectedSymbol = document.getElementById('symbolSelector').value;
     if (!symbolRequestCoordinator.isCurrent(result, selectedSymbol)) return false;
@@ -736,29 +737,33 @@ async function loadSymbol() {
         return false;
     }
 
-    const data = result.value;
+    const workspace = result.value;
 
-    if (data.error) {
-        console.error(data.error);
-        showToast("No Data", data.error, "info");
+    if (workspace.error) {
+        console.error(workspace.error);
+        showToast("No Data", workspace.error, "info");
         return;
     }
+    const data = workspace.dashboard;
 
     const symbolChanged = cachedSymbol && cachedSymbol !== symbol;
     if (symbolChanged) resetChartsZoom(Object.keys(chartInstances));
     appliedSymbolGeneration = result.generation;
     cachedData = data;
     cachedSymbol = symbol;
-    renderDashboard(data);
+    cachedWorkspace = workspace;
+    recordActivity(ActivityFeed.workspaceActivity(symbol, workspace));
+    renderSharedSnapshot(data);
+    renderMarketContext(workspace.market_context);
     renderAnalysisTable(data);
     if (document.getElementById('view-cockpit').style.display !== 'none') {
         await loadCockpit(result);
     }
-    if (document.getElementById('view-setups').style.display !== 'none') {
-        await loadTradeSetups(result);
+    if (document.getElementById('view-edge-lab').style.display !== 'none') {
+        await loadEdgeLab(result);
     }
     if (
-        document.getElementById('view-market-signal').style.display === 'block'
+        document.getElementById('view-regime').style.display === 'block'
     ) {
         await loadOverview(result);
     }
@@ -774,16 +779,10 @@ async function loadSymbol() {
 
 function toggleGammaSweepOverlay(enabled) {
     gammaSweepOverlayEnabled = Boolean(enabled);
-    const dashboardToggle = document.getElementById('gammaSweepToggle');
     const cockpitToggle = document.getElementById('cockpitGammaSweepToggle');
     const oneOffToggle = document.getElementById('oneOffGammaSweepToggle');
-    if (dashboardToggle) dashboardToggle.checked = gammaSweepOverlayEnabled;
     if (cockpitToggle) cockpitToggle.checked = gammaSweepOverlayEnabled;
     if (oneOffToggle) oneOffToggle.checked = gammaSweepOverlayEnabled;
-    if (cachedData) {
-        renderProfileChart(cachedData.profile, cachedData.snapshot.spot_price);
-        renderSweepChart('gammaSweepChart', cachedData.gamma_sweep, cachedData.snapshot);
-    }
     if (cachedData && cockpitModel) {
         renderCockpitProfileChart(cachedData.profile, cachedData.snapshot.spot_price, cockpitModel, cachedData.gamma_sweep);
         renderSweepChart('cockpitSweepChart', cachedData.gamma_sweep, cachedData.snapshot);
@@ -793,71 +792,18 @@ function toggleGammaSweepOverlay(enabled) {
     }
 }
 
-function renderDashboard(data) {
-    // Pre-process data for KPIs to find High/Low Vol Points
-    let strikes = {};
-    let maxNetPos = { val: 0, strike: 0 };
-    let maxNetNeg = { val: 0, strike: 0 };
-
-    data.profile.forEach(row => {
-        const s = row.strike_price;
-        if (!strikes[s]) strikes[s] = 0;
-        strikes[s] += row.gex_value; // Combine Call (+) and Put (-)
-    });
-
-    for (const [s, netGex] of Object.entries(strikes)) {
-        const strike = parseFloat(s);
-        if (netGex > maxNetPos.val) maxNetPos = { val: netGex, strike: strike };
-        if (netGex < maxNetNeg.val) maxNetNeg = { val: netGex, strike: strike };
-    }
-
-    updateKPIs(data.snapshot, maxNetPos.strike, maxNetNeg.strike);
-    renderProfileChart(data.profile, data.snapshot.spot_price);
-    renderSweepChart('gammaSweepChart', data.gamma_sweep, data.snapshot);
-    renderHistoryChart(data.history);
-}
-
-function updateKPIs(snap, lowVolStrike, highVolStrike) {
-    document.getElementById('kpiSpot').innerText = `$${snap.spot_price.toFixed(2)}`;
+function renderSharedSnapshot(data) {
+    const snap = data?.snapshot || {};
     const topSpot = document.getElementById('topSpot');
     const cockpitSymbol = document.getElementById('cockpitSymbol');
-    if (topSpot) topSpot.innerText = snap.spot_price.toFixed(2);
+    if (topSpot) topSpot.innerText = Number.isFinite(Number(snap.spot_price))
+        ? Number(snap.spot_price).toFixed(2)
+        : '--';
     if (cockpitSymbol) cockpitSymbol.innerText = snap.symbol || cachedSymbol || '--';
-
-    // Update Regime Gauge
-    const netGexM = snap.total_net_gex / 1000000;
-    const regimeMarker = document.getElementById('regimeIndicator');
-    const regimeText = document.getElementById('regimeText');
-
-    // Normalize for gauge (assume +/- $1B range for visual sake, clamp it)
-    let pct = 50 + (netGexM / 1000) * 50;
-    if (pct > 95) pct = 95;
-    if (pct < 5) pct = 5;
-
-    regimeMarker.style.left = `${pct}%`;
-
-    if (netGexM > 0) {
-        regimeText.innerText = `COMPRESSION ($${netGexM.toFixed(0)}M)`;
-        regimeText.style.color = "var(--green)";
-    } else {
-        regimeText.innerText = `EXPANSION ($${netGexM.toFixed(0)}M)`;
-        regimeText.style.color = "var(--red)";
-    }
-
-    // High/Low Vol Points
-    document.getElementById('kpiLowVol').innerText = lowVolStrike > 0 ? lowVolStrike.toFixed(0) : 'N/A';
-    document.getElementById('kpiHighVol').innerText = highVolStrike > 0 ? highVolStrike.toFixed(0) : 'N/A';
-
-    // Acceleration (GEX Slope)
-    const accelEl = document.getElementById('kpiAcceleration');
-    if (accelEl && snap.gex_slope !== undefined) {
-        const slopeM = snap.gex_slope / 1000000;
-        accelEl.innerText = `$${slopeM.toFixed(1)}M`;
-        accelEl.style.color = snap.gex_slope >= 0 ? 'var(--green)' : 'var(--red)';
-    }
-
     const dateObj = new Date(snap.timestamp);
-    document.getElementById('lastUpdate').innerText = dateObj.toLocaleTimeString();
+    const lastUpdate = document.getElementById('lastUpdate');
+    if (lastUpdate) lastUpdate.innerText = Number.isNaN(dateObj.getTime()) ? '--:--' : dateObj.toLocaleTimeString();
+    renderHistoryChart(data?.history || []);
 }
 
 function renderProfileChartTo(chartId, profileData, spotPrice) {
@@ -1159,24 +1105,28 @@ function renderHistoryChart(history) {
         }]
     };
 
-    setChartOption('historyChart', option);
-    attachClickZoom('historyChart', history.map(d => d.timestamp), 16);
+    setChartOption('traceTrendChart', option);
+    attachClickZoom('traceTrendChart', history.map(d => d.timestamp), 16);
 }
 
 function traceMetricLabel(metric = traceMode) {
     if (metric === 'call_gex') return 'Call GEX';
     if (metric === 'put_gex') return 'Put GEX';
+    if (metric === 'modeled_delta_pressure') return 'Modeled Delta Pressure';
+    if (metric === 'modeled_charm_pressure') return 'Modeled Charm Pressure';
     return 'Net GEX';
 }
 
 function traceMetricColor(metric = traceMode) {
     if (metric === 'call_gex') return '#ff8b1a';
     if (metric === 'put_gex') return '#2388e8';
+    if (metric === 'modeled_delta_pressure') return '#00d37f';
+    if (metric === 'modeled_charm_pressure') return '#f5a524';
     return '#18c7b7';
 }
 
 function setTraceMode(mode) {
-    const nextMode = ['net_gex', 'call_gex', 'put_gex'].includes(mode) ? mode : 'net_gex';
+    const nextMode = ['net_gex', 'call_gex', 'put_gex', 'modeled_delta_pressure', 'modeled_charm_pressure'].includes(mode) ? mode : 'net_gex';
     const changed = nextMode !== traceMode;
     traceMode = nextMode;
     if (changed) resetChartsZoom(['traceHeatmapChart', 'traceProfileChart']);
@@ -1253,7 +1203,17 @@ async function loadTrace(requestContext = null) {
     if (statusEl) statusEl.innerText = 'Loading';
 
     try {
-        const data = await eel.get_trace_data(symbol, 390)();
+        const dateSelect = document.getElementById('traceSessionDate');
+        if (traceDatesSymbol !== symbol) {
+            const dates = await eel.get_trace_dates(symbol, 30)();
+            if (!isSymbolContextCurrent(symbol, requestContext)) return;
+            if (dateSelect) {
+                dateSelect.innerHTML = dates.map((value, index) => `<option value="${value}"${index === 0 ? ' selected' : ''}>${value}</option>`).join('') || '<option value="">No sessions</option>';
+            }
+            traceDatesSymbol = symbol;
+        }
+        const sessionDate = dateSelect?.value || null;
+        const data = await eel.get_trace_data(symbol, 390, sessionDate)();
         if (!isSymbolContextCurrent(symbol, requestContext)) return;
         if (data.error) {
             if (statusEl) statusEl.innerText = data.error;
@@ -1293,7 +1253,8 @@ function renderTraceView(data) {
     setText('traceStartTime', startTime);
     setText('traceEndTime', endTime);
     configureTraceTimeline(buckets);
-    setText('traceScaleLabel', `${traceMetricLabel()} ($ Notional)`);
+    setText('traceScaleLabel', traceMode.startsWith('modeled_') ? `${traceMetricLabel()} (modeled contract exposure)` : `${traceMetricLabel()} ($ Notional)`);
+    setText('traceCoverageWarning', traceMode.startsWith('modeled_') ? (data.modeled_pressure_coverage?.warning || `Modeled pressure coverage ${Math.round(Number(data.modeled_pressure_coverage?.ratio || 0) * 100)}%`) : '');
 
     renderTraceHeatmap(data);
     renderTraceProfile(data);
@@ -1380,6 +1341,15 @@ function renderTraceHeatmap(data) {
             }
         });
     }
+    (data.overlays || []).forEach(overlay => {
+        const bucket = String(overlay.timestamp || '').slice(0, 16) + ':00';
+        const index = bucketIndex.get(bucket);
+        if (Number.isFinite(index)) markerLines.push({
+            xAxis: index,
+            lineStyle: { color: overlay.overlay_type === 'alert' ? '#ff454f' : '#f5a524', width: 1, type: 'dashed' },
+            label: { formatter: overlay.label || overlay.overlay_type, color: '#f2f5f8', fontSize: 10 }
+        });
+    });
     if (Number.isFinite(flip) && flip > 0) {
         markerLines.push({
             yAxis: flip,
@@ -1496,7 +1466,12 @@ function renderTraceHeatmap(data) {
 }
 
 function renderTraceProfile(data) {
-    const rows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    let rows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    if (traceMode.startsWith('modeled_')) {
+        const heatmap = Array.isArray(data.heatmap) ? data.heatmap : [];
+        const latestBucket = heatmap.map(row => row.timestamp).sort().at(-1);
+        rows = heatmap.filter(row => row.timestamp === latestBucket);
+    }
     const chart = getChart('traceProfileChart');
     if (!chart) return;
 
@@ -1937,7 +1912,7 @@ async function loadOverview(requestContext = null) {
 
 function renderSignalDashboard(data) {
     renderCompass(data.compass_traders, 'Traders');
-    renderCompass(data.compass_whale, 'Whale');
+    renderCompass(data.index_basket || data.compass_whale, 'Whale');
 
     renderPillars(data.components);
     renderTiltChart(data.tilt);
@@ -2039,16 +2014,16 @@ function findComponent(overviewData, symbol) {
 
 function buildMarketVote(overviewData) {
     const traders = overviewData.compass_traders || {};
-    const whale = overviewData.compass_whale || {};
-    const traderConfidence = traders.confidence || 0;
-    const whaleConfidence = whale.confidence || 0;
-    const totalConfidence = traderConfidence + whaleConfidence || 1;
+    const whale = overviewData.index_basket || overviewData.compass_whale || {};
+    const traderQuality = traders.data_quality?.score ?? traders.confidence ?? 0;
+    const basketQuality = whale.data_quality?.score ?? whale.confidence ?? 0;
+    const totalQuality = traderQuality + basketQuality || 1;
     const score = clamp(
-        ((traders.y_score || 0) * traderConfidence + (whale.y_score || 0) * whaleConfidence) / totalConfidence,
+        ((traders.y_score || 0) * traderQuality + (whale.y_score || 0) * basketQuality) / totalQuality,
         -1,
         1
     );
-    const detail = `Traders ${voteLabel(traders.y_score || 0)} / Whale ${voteLabel(whale.y_score || 0)} | confidence ${formatPct((traderConfidence + whaleConfidence) / 2)}`;
+    const detail = `Traders ${voteLabel(traders.y_score || 0)} / Index Basket ${voteLabel(whale.y_score || 0)} | data quality ${formatPct((traderQuality + basketQuality) / 2)}`;
     return { score, detail };
 }
 
@@ -2146,60 +2121,50 @@ function selectedComponent(overviewData, symbolData) {
     return findComponent(overviewData, selectedSymbol) || null;
 }
 
-function buildCockpitModel(symbolData, overviewData) {
-    if (!symbolData || symbolData.error || !overviewData || overviewData.error) return null;
-
-    const component = selectedComponent(overviewData, symbolData);
-    const marketVote = buildMarketVote(overviewData);
-    const dealerVote = buildDealerVote(symbolData, component);
-    const liquidityVote = buildLiquidityVote(symbolData);
-    const rawScore = clamp((marketVote.score * 0.45) + (dealerVote.score * 0.35) + (liquidityVote.score * 0.20), -1, 1);
-    const agreement = [marketVote.score, dealerVote.score, liquidityVote.score]
-        .filter(score => Math.sign(score) === Math.sign(rawScore) && Math.abs(score) > 0.20).length;
-    const confidencePenalty = component ? component.confidence || 0.5 : 0.45;
-    const finalScore = rawScore * clamp(0.65 + (agreement * 0.12), 0.65, 1) * confidencePenalty;
-    const plan = buildTradePlan(symbolData, overviewData, component, finalScore, marketVote);
-    const rows = buildStrikeProfile(symbolData.profile);
-    const fallbackFlip = estimateFlipFromProfileRows(rows);
-    const flip = component?.flip_strike || fallbackFlip.strike;
-    const direction = finalScore > 0.22 ? 1 : finalScore < -0.22 ? -1 : 0;
-    const title = direction > 0 ? 'CALL BIAS' : direction < 0 ? 'PUT BIAS' : 'WAIT';
-    const selectedSymbol = symbolData.snapshot.symbol || document.getElementById('symbolSelector').value;
-    const conflictText = agreement < 2 ? 'Inputs are mixed; require price confirmation.' : 'Inputs are aligned enough for directional context.';
-    const context = `${conflictText} ${plan.description}`;
-    const whale = overviewData.compass_whale || {};
-
-    return {
-        symbol: selectedSymbol,
-        component,
-        marketVote,
-        dealerVote,
-        liquidityVote,
-        whale,
-        score: finalScore,
-        confidence: component?.confidence ?? Math.abs(finalScore),
-        title,
-        context,
-        plan,
-        flip,
-        target: parseLevel(plan.target),
-        invalidation: parseLevel(plan.invalidation)
-    };
-}
-
 async function loadCockpit(requestContext = null) {
     const symbol = document.getElementById('symbolSelector')?.value;
     const symbolData = cachedData;
     if (!symbol || !symbolData || symbolData.error || symbolData.snapshot?.symbol !== symbol) return;
-    const overview = await eel.get_market_overview()();
-    if (!isSymbolContextCurrent(symbol, requestContext)) return;
-    if (overview.error) {
-        console.error(overview.error);
-        return;
-    }
-    cachedOverview = overview;
-    cockpitModel = buildCockpitModel(symbolData, overview);
+    const workspace = cachedWorkspace;
+    if (!workspace || workspace.symbol !== symbol || !isSymbolContextCurrent(symbol, requestContext)) return;
+    const overview = {
+        components: [],
+        edge_stats: { [symbol]: workspace.historical_edge },
+        index_basket: workspace.regime?.index_basket,
+    };
+    cockpitModel = cockpitModelFromWorkspace(workspace);
     renderCockpit(cockpitModel, symbolData, overview);
+    renderMarketContext(workspace.market_context);
+    renderExecutionCandidates(workspace.execution_candidates, cockpitModel, symbolData);
+}
+
+function cockpitModelFromWorkspace(workspace) {
+    const decision = workspace?.decision || {};
+    const scenario = workspace?.active_scenario || {};
+    const target = decision.target;
+    const invalidation = decision.invalidation;
+    const bias = decision.bias || 'WAIT';
+    return {
+        symbol: workspace.symbol,
+        marketVote: decision.market_vote || { score: 0, detail: 'Unavailable' },
+        dealerVote: decision.dealer_vote || { score: 0, detail: 'Unavailable' },
+        liquidityVote: decision.liquidity_vote || { score: 0, detail: 'Candidate-specific' },
+        whale: decision.index_basket || {},
+        score: Number(decision.score || 0),
+        dataQuality: decision.data_quality || workspace.data_quality || { score: 0, warnings: [] },
+        title: bias === 'CALL' ? 'CALL BIAS' : bias === 'PUT' ? 'PUT BIAS' : 'WAIT',
+        context: decision.context || (scenario.reasons || []).join('; '),
+        plan: {
+            target: Number.isFinite(Number(target)) ? formatTargetPrice(target) : '--',
+            invalidation: Number.isFinite(Number(invalidation)) ? formatTargetPrice(invalidation) : '--',
+            description: scenario.scenario_type || 'NO_TRADE',
+        },
+        flip: decision.flip,
+        target,
+        invalidation,
+        scenarioId: scenario.scenario_id,
+        scenarioType: scenario.scenario_type,
+    };
 }
 
 function setText(id, value) {
@@ -2212,6 +2177,16 @@ function setClassText(id, value, className) {
     if (!el) return;
     el.innerText = value;
     el.className = className || '';
+}
+
+function renderMarketContext(context) {
+    const eventState = context?.event_risk?.state || 'UNAVAILABLE';
+    setClassText('contextEventRisk', eventState, eventState === 'BLOCKED' ? 'red-text' : eventState === 'CAUTION' ? 'amber-text' : 'green-text');
+    setText('contextImpliedMove', Number.isFinite(Number(context?.implied_move)) ? formatTargetPrice(context.implied_move) : 'Unavailable');
+    setText('contextRangeConsumed', Number.isFinite(Number(context?.range_consumed)) ? `${Math.round(Number(context.range_consumed) * 100)}%` : 'Unavailable');
+    setText('contextRealizedVol', Number.isFinite(Number(context?.realized_volatility_15m)) ? formatPct(context.realized_volatility_15m) : 'Unavailable');
+    setText('contextCrossAsset', context?.cross_asset_state || 'Unavailable');
+    setText('contextWarnings', (context?.warnings || []).join(' | ') || 'All configured context sources available');
 }
 
 function formatEdgeWinRate(value) {
@@ -2284,7 +2259,7 @@ function renderCockpit(model, symbolData, overviewData) {
     setText('cockpitContext', model.context);
     setClassText('cockpitBiasLabel', model.title, scoreClass);
     setClassText('cockpitBiasScore', `${Math.round(model.score * 100)}%`, scoreClass);
-    setText('cockpitConfidence', `${Math.round((model.confidence || 0) * 100)}%`);
+    setText('cockpitConfidence', `${Math.round((model.dataQuality?.score || 0) * 100)}%`);
     setText('cockpitTarget', model.plan.target);
     setText('cockpitInvalidation', model.plan.invalidation);
     setText('cockpitFlip', model.flip ? formatTargetPrice(model.flip) : '--');
@@ -2308,7 +2283,7 @@ function renderCockpit(model, symbolData, overviewData) {
     const whaleVote = classifyVote(whaleScore);
     setClassText('tileWhaleValue', model.whale.label || whaleVote.label, whaleVote.className);
     setText('tileWhaleBadge', model.whale.confidence_label || whaleVote.badge);
-    setText('tileWhaleDetail', model.whale.strategy || 'No whale composite.');
+    setText('tileWhaleDetail', model.whale.strategy || 'No index-basket composite.');
 
     renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model, symbolData.gamma_sweep);
     renderSweepChart('cockpitSweepChart', symbolData.gamma_sweep, symbolData.snapshot);
@@ -2317,33 +2292,83 @@ function renderCockpit(model, symbolData, overviewData) {
     renderCockpitPillars(overviewData.components || []);
 }
 
-async function loadTradeSetups(requestContext = null) {
+async function loadExecutionCandidates(requestContext = null) {
     const symbol = document.getElementById('symbolSelector')?.value;
     if (!symbol) return;
 
-    let symbolData = cachedData;
-    if (!symbolData || symbolData.snapshot?.symbol !== symbol) {
-        symbolData = await eel.get_dashboard_data(symbol)();
-        if (!isSymbolContextCurrent(symbol, requestContext)) return;
-    }
-    let overview = cachedOverview;
-    if (!overview || overview.error) {
-        overview = await eel.get_market_overview()();
-        if (!isSymbolContextCurrent(symbol, requestContext)) return;
-    }
-    let model = cockpitModel;
-    if (symbolData && overview && !overview.error) {
-        model = buildCockpitModel(symbolData, overview);
-    }
-
-    const data = await eel.get_trade_setups(symbol)();
     if (!isSymbolContextCurrent(symbol, requestContext)) return;
-    cachedData = symbolData;
-    cachedSymbol = symbol;
-    cachedOverview = overview;
-    cockpitModel = model;
+    const data = cachedWorkspace?.execution_candidates;
     cachedTradeSetups = data;
-    renderTradeSetups(data, model, symbolData);
+    renderExecutionCandidates(data, cockpitModel, cachedData);
+}
+
+async function loadEdgeLab(requestContext = null) {
+    const symbol = document.getElementById('symbolSelector')?.value;
+    if (!symbol || !isSymbolContextCurrent(symbol, requestContext)) return;
+    const filters = {
+        symbol,
+        horizon: Number(document.getElementById('edgeLabHorizon')?.value || 30),
+        include_legacy: Boolean(document.getElementById('edgeLabLegacy')?.checked),
+    };
+    const payload = await eel.get_edge_lab(filters)();
+    if (!isSymbolContextCurrent(symbol, requestContext)) return;
+    EdgeLab.render(payload, {
+        status: document.getElementById('edgeLabStatus'),
+        summary: document.getElementById('edgeLabSummary'),
+        table: document.getElementById('edgeLabTable'),
+        chart: document.getElementById('edgeLabExpectancyChart'),
+    }, echarts);
+    await loadJournal(symbol);
+}
+
+function prefillJournalFromCockpit() {
+    const workspace = cachedWorkspace;
+    if (!workspace) return;
+    switchView('edge-lab');
+    const now = new Date();
+    const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString();
+    const session = workspace.as_of ? String(workspace.as_of).slice(0, 10) : local.slice(0, 10);
+    const dateInput = document.getElementById('journalSessionDate');
+    const timeInput = document.getElementById('journalEntryTime');
+    if (dateInput) dateInput.value = session;
+    if (timeInput) timeInput.value = local.slice(0, 16);
+}
+
+async function saveJournalEntry() {
+    const workspace = cachedWorkspace || {};
+    const payload = {
+        symbol: document.getElementById('symbolSelector')?.value,
+        session_date: document.getElementById('journalSessionDate')?.value,
+        scenario_id: workspace.active_scenario?.scenario_id,
+        scenario_type: workspace.active_scenario?.scenario_type,
+        regime: workspace.regime?.traders?.label,
+        liquidity_grade: Object.values(workspace.execution_candidates?.ideas || {}).find(item => item.status === 'EXECUTABLE')?.liquidity_grade,
+        contracts: Number(document.getElementById('journalContracts')?.value),
+        entry_price: Number(document.getElementById('journalEntryPrice')?.value),
+        exit_price: document.getElementById('journalExitPrice')?.value || null,
+        entry_time: document.getElementById('journalEntryTime')?.value,
+        fees: Number(document.getElementById('journalFees')?.value || 0),
+        adhered_to_plan: Boolean(document.getElementById('journalAdhered')?.checked),
+        notes: document.getElementById('journalNotes')?.value || '',
+    };
+    try {
+        await eel.create_journal_entry(payload)();
+        await loadJournal(payload.symbol);
+        showToast('Journal saved', 'Execution result saved locally.', 'info');
+    } catch (error) {
+        showToast('Journal validation', String(error), 'info');
+    }
+}
+
+async function loadJournal(symbol) {
+    const [entries, review] = await Promise.all([
+        eel.get_journal_entries(symbol)(),
+        eel.get_weekly_journal_review(null)(),
+    ]);
+    const results = document.getElementById('journalExecutionResults');
+    const weekly = document.getElementById('journalWeeklyReview');
+    if (results) results.innerHTML = entries.length ? `<table class="analysis-table"><thead><tr><th>Entry</th><th>Scenario</th><th>Contracts</th><th>P&amp;L</th><th>Adherence</th></tr></thead><tbody>${entries.map(row => `<tr><td>${String(row.entry_time).replace('T', ' ')}</td><td>${row.scenario_type || '--'}</td><td>${row.contracts}</td><td>${row.pnl == null ? 'Open' : formatTradeDollars(row.pnl)}</td><td>${row.adhered_to_plan ? 'Followed' : 'Deviated'}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No user execution entries for this symbol.</p>';
+    if (weekly) weekly.innerHTML = review.groups.length ? review.groups.map(group => `<article class="edge-stat"><span>${group.dimension}: ${group.value}</span><strong>${formatTradeDollars(group.pnl)}</strong><em>${group.trades} user trades</em></article>`).join('') : '<article class="edge-stat"><span>Weekly review</span><strong>--</strong><em>No user trades this week</em></article>';
 }
 
 function formatTradePoints(value, decimals = 2) {
@@ -2373,20 +2398,41 @@ function renderSetupStat(label, value, className = '') {
 }
 
 function unavailableSetupCard(title, idea) {
+    const status = idea?.status || 'UNAVAILABLE';
+    const modeled = status === 'MODELED_ONLY';
     return `
         <div class="setup-card-head">
             <span>${title}</span>
-            <em>Unavailable</em>
+            <em>${status}</em>
         </div>
-        <strong class="amber-text">No Setup</strong>
-        <p>${idea?.reason || 'No eligible strike structure in the current snapshot.'}</p>
+        <strong class="amber-text">${modeled ? `Theoretical debit ${formatTradePoints(idea?.estimated_debit)}` : 'Not executable'}</strong>
+        <p>${idea?.reason || 'No eligible quoted structure in the current snapshot.'}</p>
+    `;
+}
+
+function renderExecutionQuote(idea) {
+    const quote = idea?.quote;
+    if (!quote) return '';
+    const age = Number.isFinite(Number(quote.age_seconds)) ? `${Math.round(Number(quote.age_seconds))}s old` : 'age unavailable';
+    const sizing = idea.status === 'EXECUTABLE' ? renderSetupStat('Contracts', String(idea.contracts ?? 0), 'green-text') : '';
+    return `
+        <div class="setup-stat-grid">
+            ${renderSetupStat('Bid / Mid / Ask', `${formatTradePoints(quote.bid)} / ${formatTradePoints(quote.mid)} / ${formatTradePoints(quote.ask)}`)}
+            ${renderSetupStat('Quote age', age)}
+            ${renderSetupStat('Liquidity', idea.liquidity_grade || '--', idea.liquidity_grade === 'REJECTED' ? 'red-text' : 'green-text')}
+            ${renderSetupStat('Max loss', formatTradeDollars(idea.max_loss_dollars), 'amber-text')}
+            ${renderSetupStat('Max reward', formatTradeDollars(idea.max_reward_dollars), 'green-text')}
+            ${renderSetupStat('Settlement', idea.settlement_type || '--')}
+            ${renderSetupStat('Close', idea.time_to_close || '--')}
+            ${sizing}
+        </div>
     `;
 }
 
 function renderButterflyCard(idea) {
-    const card = document.getElementById('butterflySetupCard');
+    const card = document.getElementById('butterflyCandidateCard');
     if (!card) return;
-    if (!idea || idea.status !== 'ready') {
+    if (!idea || idea.status === 'MODELED_ONLY' || idea.status === 'REJECTED') {
         card.innerHTML = unavailableSetupCard('Butterfly', idea);
         return;
     }
@@ -2395,7 +2441,7 @@ function renderButterflyCard(idea) {
     card.innerHTML = `
         <div class="setup-card-head">
             <span>Butterfly</span>
-            <em>${idea.method}</em>
+            <em>${idea.status} / ${idea.liquidity_grade}</em>
         </div>
         <strong class="${sideClass}">${idea.side} ${formatTargetPrice(idea.lower)} / ${formatTargetPrice(idea.center)} / ${formatTargetPrice(idea.upper)}</strong>
         <div class="setup-stat-grid">
@@ -2404,14 +2450,15 @@ function renderButterflyCard(idea) {
             ${renderSetupStat('Risk', formatTradeDollars(idea.estimated_debit_dollars), 'amber-text')}
             ${renderSetupStat('Tent', `${formatTargetPrice(idea.lower_breakeven)} - ${formatTargetPrice(idea.upper_breakeven)}`)}
         </div>
+        ${renderExecutionQuote(idea)}
         <p>${idea.rationale}</p>
     `;
 }
 
 function renderDebitSpreadCard(idea) {
-    const card = document.getElementById('debitSpreadSetupCard');
+    const card = document.getElementById('debitSpreadCandidateCard');
     if (!card) return;
-    if (!idea || idea.status !== 'ready') {
+    if (!idea || idea.status === 'MODELED_ONLY' || idea.status === 'REJECTED') {
         card.innerHTML = unavailableSetupCard('Debit Spread', idea);
         return;
     }
@@ -2420,7 +2467,7 @@ function renderDebitSpreadCard(idea) {
     card.innerHTML = `
         <div class="setup-card-head">
             <span>Debit Spread</span>
-            <em>${idea.method}</em>
+            <em>${idea.status} / ${idea.liquidity_grade}</em>
         </div>
         <strong class="${sideClass}">${idea.side} ${formatTargetPrice(idea.long_strike)} / ${formatTargetPrice(idea.short_strike)}</strong>
         <div class="setup-stat-grid">
@@ -2429,6 +2476,7 @@ function renderDebitSpreadCard(idea) {
             ${renderSetupStat('Breakeven', formatTargetPrice(idea.breakeven))}
             ${renderSetupStat('Pit Target', formatTargetPrice(idea.target), 'amber-text')}
         </div>
+        ${renderExecutionQuote(idea)}
         <p>${idea.rationale}</p>
     `;
 }
@@ -2531,26 +2579,17 @@ function renderSetupProfileChart(setups, model) {
     attachClickZoom('setupProfileChart', rows.map(row => row.strike));
 }
 
-function renderTradeSetups(setups, model, symbolData) {
+function renderExecutionCandidates(setups, model, symbolData) {
     if (!setups || setups.error) {
         showToast('Setups unavailable', setups?.error || 'No setup data', 'info');
         return;
     }
 
-    const biasClass = model?.score > 0.22 ? 'green-text' : model?.score < -0.22 ? 'red-text' : 'amber-text';
-    setText('setupSymbol', setups.symbol || symbolData?.snapshot?.symbol || '--');
-    setClassText('setupCockpitBias', model?.title || 'WAIT', biasClass);
-    setText('setupConfidence', model ? `${Math.round((model.confidence || 0) * 100)}%` : '--');
-    setText('setupCockpitTarget', model?.plan?.target || '--');
-    setText('setupTimestamp', setups.timestamp ? new Date(setups.timestamp).toLocaleTimeString() : '--');
-    setText('setupPricingModel', setups.pricing_model || 'Model pricing');
-    setText('setupButterflyLens', setups.backtest_lens?.butterfly || '--');
-    setText('setupSpreadLens', setups.backtest_lens?.debit_spread || '--');
-    setText('setupSampleWarning', setups.backtest_lens?.sample_warning || '--');
+    const executable = Object.values(setups.ideas || {}).filter(idea => idea.status === 'EXECUTABLE').length;
+    setText('executionQuoteStatus', executable ? `${executable} quote-backed candidate${executable === 1 ? '' : 's'}; sizing uses conservative max loss` : 'No executable quote; modeled/rejected candidates remain visible');
 
     renderButterflyCard(setups.ideas?.butterfly);
     renderDebitSpreadCard(setups.ideas?.debit_spread);
-    renderSetupProfileChart(setups, model);
 }
 
 function renderMetricStrip(symbolData, model) {
@@ -2586,7 +2625,8 @@ function renderCockpitPillars(components) {
         card.className = 'asset-card';
         const pct = Number(comp.distance_pct || 0);
         const isPos = pct >= 0;
-        const quality = comp.confidence >= 0.8 ? 'A' : comp.confidence >= 0.65 ? 'B+' : comp.confidence >= 0.45 ? 'B' : 'C';
+        const score = comp.data_quality?.score ?? comp.confidence ?? 0;
+        const quality = score >= 0.8 ? 'A' : score >= 0.65 ? 'B+' : score >= 0.45 ? 'B' : 'C';
         const accelLabel = Math.abs(comp.acceleration || 0) > 10000000 ? 'High' : Math.abs(comp.acceleration || 0) > 3000000 ? 'Rising' : 'Neutral';
         const width = Math.min(Math.abs(pct) / 3 * 50, 50);
         const barStyle = isPos
@@ -2600,7 +2640,7 @@ function renderCockpitPillars(components) {
             </div>
             <div class="asset-metrics">
                 <div><span>Flip Dist</span><strong class="${isPos ? 'green-text' : 'red-text'}">${pct.toFixed(1)}%</strong></div>
-                <div><span>Quality</span><strong class="${comp.confidence >= 0.65 ? 'green-text' : 'amber-text'}">${quality}</strong></div>
+                <div><span>Quality</span><strong class="${score >= 0.65 ? 'green-text' : 'amber-text'}">${quality}</strong></div>
                 <div><span>Accel</span><strong class="${accelLabel === 'High' ? 'red-text' : accelLabel === 'Rising' ? 'amber-text' : ''}">${accelLabel}</strong></div>
             </div>
             <div class="pressure-label">Pressure</div>
@@ -2730,126 +2770,31 @@ function renderCockpitProfileChart(profileData, spotPrice, model, gammaSweep = n
     attachClickZoom('cockpitProfileChart', strikes);
 }
 
-function nearestAnySignificant(rows, spot, direction) {
-    const strength = row => Math.max(Math.abs(row.netGex || 0), Math.abs(row.callGex || 0), Math.abs(row.putGex || 0));
-    const maxAbs = rows.reduce((max, row) => Math.max(max, strength(row)), 0);
-    const threshold = maxAbs * 0.18;
-    const candidates = rows
-        .filter(row => direction === 1 ? row.strike > spot : row.strike < spot)
-        .filter(row => strength(row) >= threshold)
-        .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
-    return candidates[0] || null;
-}
-
-function fallbackTarget(spot, direction, expansion) {
-    const movePct = expansion ? 0.012 : 0.006;
-    return spot * (1 + (direction * movePct));
-}
-
-function choosePriceObjective(rows, spot, direction, expansion, flip) {
-    if (!rows.length) return fallbackTarget(spot, direction, expansion);
-
-    if (!expansion && flip > 0 && ((direction === 1 && flip > spot) || (direction === -1 && flip < spot))) {
-        return flip;
-    }
-
-    const preferredSign = expansion ? -1 : 1;
-    const preferred = nearestSignificant(rows, spot, direction === 1 ? 'above' : 'below', preferredSign);
-    const anyLevel = preferred || nearestAnySignificant(rows, spot, direction);
-    return anyLevel ? anyLevel.strike : fallbackTarget(spot, direction, expansion);
-}
-
-function chooseInvalidation(rows, spot, direction, flip) {
-    const oppositeDirection = direction === 1 ? 'below' : 'above';
-    const wall = nearestSignificant(rows, spot, oppositeDirection, 1) || nearestAnySignificant(rows, spot, -direction);
-    if (wall) return wall.strike;
-
-    if (flip > 0 && ((direction === 1 && flip < spot) || (direction === -1 && flip > spot))) {
-        return flip;
-    }
-
-    return spot * (1 - (direction * 0.006));
-}
-
-function buildTradePlan(symbolData, overviewData, component, finalScore, marketVote) {
-    if (!symbolData || symbolData.error || Math.abs(finalScore) < 0.22) {
-        return {
-            setupType: 'No Trade',
-            target: '---',
-            invalidation: '---',
-            description: 'Bias is too mixed for a price objective.'
-        };
-    }
-
-    const rows = buildStrikeProfile(symbolData.profile);
-    const spot = symbolData.snapshot.spot_price;
-    const localRows = rows.filter(row => Math.abs(row.strike - spot) / spot <= 0.02);
-    const localNet = localRows.reduce((sum, row) => sum + row.netGex, 0);
-    const fallbackFlip = estimateFlipFromProfileRows(rows);
-    const flip = component && component.flip_strike ? component.flip_strike : fallbackFlip.strike;
-    const marketVol = ((overviewData.compass_traders?.x_score || 0) + (overviewData.compass_whale?.x_score || 0)) / 2;
-    const direction = finalScore > 0 ? 1 : -1;
-    const isExpansion = localNet < 0 || marketVol < -0.15 || (Math.sign(marketVote.score) === direction && Math.abs(marketVote.score) > 0.65);
-    const side = direction === 1 ? 'Call' : 'Put';
-    const setupType = isExpansion
-        ? `Expansion ${direction === 1 ? 'Up' : 'Down'} ${side}`
-        : `Mean-Reversion ${side}`;
-    const target = choosePriceObjective(rows, spot, direction, isExpansion, flip);
-    const invalidation = chooseInvalidation(rows, spot, direction, flip);
-    const description = isExpansion
-        ? `Target follows open liquidity in the ${direction === 1 ? 'upside' : 'downside'} direction.`
-        : `Target is a reversion move toward flip or the next stabilizing gamma level.`;
-
-    return {
-        setupType,
-        target: formatTargetPrice(target),
-        invalidation: formatTargetPrice(invalidation),
-        description
-    };
-}
-
 function renderActionOverview(overviewData, symbolData) {
     const titleEl = document.getElementById('actionBiasTitle');
     const contextEl = document.getElementById('actionBiasContext');
     const scoreEl = document.getElementById('actionBiasScore');
     if (!titleEl || !contextEl || !scoreEl) return;
 
-    const selectedSymbol = symbolData && symbolData.snapshot ? symbolData.snapshot.symbol : document.getElementById('symbolSelector').value;
-    const component = findComponent(overviewData, selectedSymbol);
-    const marketVote = buildMarketVote(overviewData);
-    const dealerVote = buildDealerVote(symbolData, component);
-    const liquidityVote = buildLiquidityVote(symbolData);
-    const rawScore = clamp((marketVote.score * 0.45) + (dealerVote.score * 0.35) + (liquidityVote.score * 0.20), -1, 1);
-    const agreement = [marketVote.score, dealerVote.score, liquidityVote.score]
-        .filter(score => Math.sign(score) === Math.sign(rawScore) && Math.abs(score) > 0.20).length;
-    const confidencePenalty = component ? component.confidence || 0.5 : 0.45;
-    const finalScore = rawScore * clamp(0.65 + (agreement * 0.12), 0.65, 1) * confidencePenalty;
-    const absScore = Math.abs(finalScore);
-
-    let title = 'WAIT / NO TRADE';
-    if (absScore >= 0.55) title = finalScore > 0 ? 'STRONG CALL BIAS' : 'STRONG PUT BIAS';
-    else if (absScore >= 0.22) title = finalScore > 0 ? 'CALL BIAS' : 'PUT BIAS';
-
-    const conflictText = agreement < 2 ? 'Inputs are mixed; require price confirmation.' : 'Inputs are aligned enough for directional context.';
-    const symbolText = selectedSymbol ? `${selectedSymbol}: ` : '';
-    const actionClass = finalScore > 0.22 ? 'action-call' : finalScore < -0.22 ? 'action-put' : 'action-wait';
-    const plan = buildTradePlan(symbolData, overviewData, component, finalScore, marketVote);
-    contextEl.innerText = `${symbolText}${conflictText} ${plan.description}`;
-    titleEl.innerText = title;
+    const model = cachedWorkspace ? cockpitModelFromWorkspace(cachedWorkspace) : null;
+    if (!model) return;
+    const actionClass = model.score > 0.22 ? 'action-call' : model.score < -0.22 ? 'action-put' : 'action-wait';
+    contextEl.innerText = `${model.symbol}: ${model.context}`;
+    titleEl.innerText = model.title;
     titleEl.className = actionClass;
-    scoreEl.innerText = `${Math.round(finalScore * 100)}%`;
+    scoreEl.innerText = `${Math.round(model.score * 100)}%`;
     scoreEl.className = `action-score ${actionClass}`;
 
-    setVote('voteMarket', 'voteMarketDetail', marketVote);
-    setVote('voteDealer', 'voteDealerDetail', dealerVote);
-    setVote('voteLiquidity', 'voteLiquidityDetail', liquidityVote);
+    setVote('voteMarket', 'voteMarketDetail', model.marketVote);
+    setVote('voteDealer', 'voteDealerDetail', model.dealerVote);
+    setVote('voteLiquidity', 'voteLiquidityDetail', model.liquidityVote);
 
     const setupEl = document.getElementById('actionSetupType');
     const targetEl = document.getElementById('actionTargetPrice');
     const invalidationEl = document.getElementById('actionInvalidation');
-    if (setupEl) setupEl.innerText = plan.setupType;
-    if (targetEl) targetEl.innerText = plan.target;
-    if (invalidationEl) invalidationEl.innerText = plan.invalidation;
+    if (setupEl) setupEl.innerText = model.scenarioType;
+    if (targetEl) targetEl.innerText = model.plan.target;
+    if (invalidationEl) invalidationEl.innerText = model.plan.invalidation;
 }
 
 function renderCompass(compassData, type) {
@@ -2860,7 +2805,7 @@ function renderCompass(compassData, type) {
     // Show composition + default explanation
     const container = document.getElementById(`compass${type}`);
     if (container) {
-        const baseTooltip = "X-Axis = normalized net-vs-gross gamma imbalance. Y-Axis = spot vs estimated flip. Confidence falls when data is stale, thin, or approximate.";
+        const baseTooltip = "X-Axis = normalized net-vs-gross gamma imbalance. Y-Axis = spot vs estimated flip. Data Quality falls when data is stale, thin, or approximate.";
         container.setAttribute('data-tooltip', `${compassData.composition}. ${baseTooltip}`);
     }
 
@@ -2873,7 +2818,8 @@ function renderCompass(compassData, type) {
     const warnings = compassData.warnings && compassData.warnings.length
         ? ` | ${compassData.warnings.join(', ')}`
         : '';
-    descEl.innerText = `${compassData.strategy} Confidence: ${formatPct(compassData.confidence)} ${compassData.confidence_label || ''}${warnings}`;
+    const quality = compassData.data_quality || { score: compassData.confidence, label: compassData.confidence_label };
+    descEl.innerText = `${compassData.strategy} Data quality: ${formatPct(quality.score)} ${quality.label || ''}${warnings}`;
 
     // 2. Position the Puck
     // scores are -1 to 1. 0 is center (50%).
@@ -2951,7 +2897,7 @@ function renderPillars(components) {
         const isPos = pct >= 0;
         const colorClass = isPos ? 'val-positive' : 'val-negative';
         const rawDist = pct.toFixed(2);
-        const confidence = formatPct(comp.confidence);
+        const quality = formatPct(comp.data_quality?.score ?? comp.confidence);
         const imbalance = formatPct(comp.gex_imbalance, 0);
         const warnings = comp.warnings && comp.warnings.length ? comp.warnings.join(', ') : 'clean';
         const flipQuality = (comp.flip_quality || 'unknown').replace('_', ' ');
@@ -2980,7 +2926,7 @@ function renderPillars(components) {
                 Flip: ${parseInt(comp.flip_strike)} | Spot: ${parseInt(comp.spot)}
             </div>
             <div class="pillar-quality">
-                <span>Quality ${confidence}</span>
+                <span>Quality ${quality}</span>
                 <span>${formatAge(comp.age_seconds)}</span>
                 <span>Flip ${flipQuality}</span>
             </div>
@@ -3100,7 +3046,6 @@ eel.expose(handle_backend_event);
 function handle_backend_event(event) {
     console.log("Backend Event Received:", event);
 
-    // 1. Add to Panel
     addNotificationToPanel(event);
 
     // 2. Handle Specifics
@@ -3111,13 +3056,11 @@ function handle_backend_event(event) {
         if (event.payload.symbol === currentSymbol) {
             console.log("Refreshing data for current symbol...");
             loadSymbol(); // Reloads data from DB
-            showToast("Data Updated", `New data available for ${event.payload.symbol}`, "info");
         }
     }
     else if (event.type === 'MARKET_UPDATE') {
         updateBackendStatus();
         loadSymbol();
-        showToast("Backend Cycle Complete", "Dashboard loaded the latest local snapshot.", "info");
     }
     else if (event.type === 'magnet_change') {
         const p = event.payload;
@@ -3127,51 +3070,47 @@ function handle_backend_event(event) {
             `${p.symbol} Magnet Moved: ${p.old_magnet.toFixed(0)} -> ${p.new_magnet.toFixed(0)}`,
             "magnet"
         );
+    } else if (event.type === 'decision_alert') {
+        showToast(event.payload.alert_type || 'Decision Alert', event.payload.message, event.payload.severity === 'critical' ? 'magnet' : 'info');
     }
 }
 
 function addNotificationToPanel(event) {
-    const feed = document.getElementById('activityFeed');
-    if (!feed) return;
+    recordActivity(ActivityFeed.eventActivity(event));
+}
 
-    // Remove "Listening..." placeholder if exists
+function recordActivity(activity) {
+    const feed = document.getElementById('activityFeed');
+    if (!feed || !activity) return;
+
     if (feed.children.length === 1 && feed.children[0].innerText.includes('Listening')) {
         feed.innerHTML = '';
     }
 
-    const div = document.createElement('div');
-    const ts = new Date().toLocaleTimeString();
-
-    let title = "Event";
-    let body = "";
-    let typeClass = "type-info";
-
-    if (event.type === 'magnet_change') {
-        title = "Magnet Shift";
-        body = `${event.payload.symbol}: ${event.payload.old_magnet.toFixed(0)} -> ${event.payload.new_magnet.toFixed(0)}`;
-        typeClass = "type-magnet";
-    } else if (event.type === 'data_refresh') {
-        title = "Data Update";
-        body = `Refresh for ${event.payload.symbol}`;
-    } else if (event.type === 'MARKET_UPDATE') {
-        title = "Backend Cycle";
-        body = "Market overview and Ninja payload updated";
+    let div = null;
+    if (activity.key) {
+        div = [...feed.children].find(item => item.dataset.feedKey === activity.key) || null;
+    }
+    if (!div) {
+        div = document.createElement('div');
+        if (activity.key) div.dataset.feedKey = activity.key;
     }
 
-    div.className = `activity-item ${typeClass}`;
-    div.innerHTML = `
-        <span class="activity-time">${ts}</span>
-        <span class="activity-title">${title}</span>
-        <span class="activity-msg">${body}</span>
-    `;
-
-    // Prepend
+    div.className = `activity-item ${activity.typeClass || 'type-info'}`;
+    div.replaceChildren();
+    for (const [className, value] of [
+        ['activity-time', new Date().toLocaleTimeString()],
+        ['activity-title', activity.title || 'Event'],
+        ['activity-msg', activity.body || '']
+    ]) {
+        const span = document.createElement('span');
+        span.className = className;
+        span.textContent = value;
+        div.appendChild(span);
+    }
     feed.insertBefore(div, feed.firstChild);
 
-    // Limit history
-    if (feed.children.length > 50) {
-        feed.removeChild(feed.lastChild);
-    }
+    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
 }
 
 // --- Toast Notifications ---

@@ -1,0 +1,300 @@
+{
+  "project": {
+    "name": "PublicGex Market-Decision Upgrade",
+    "source_root": ".",
+    "target_path": "PublicGex OSS Dashboard",
+    "plan_file": "plans/MARKET_DECISION_IMPLEMENTATION_PLAN.md",
+    "created_for": "Planning and execution handoff"
+  },
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "Lock the decision-workspace contracts and terminology",
+      "status": "done",
+      "goal": "Establish one documented vocabulary, navigation map, payload schema, and compatibility policy before implementation branches diverge.",
+      "subgoals": [
+        "Document the final navigation: Cockpit, Edge Lab, Regime, TRACE, Strike Matrix, One-Off, Settings.",
+        "Define schema-version-2 field names for Data Quality, Historical Edge, Index Gamma Basket, scenarios, execution candidates, market context, and alerts.",
+        "Define compatibility aliases and a one-release removal window for NinjaTrader and legacy Eel consumers.",
+        "Record evidence gates and the hard prohibition on calling Public order/preflight endpoints."
+      ],
+      "notes": "Completed 2026-08-14. The implementation plan fixes schema_version 2, the seven-view navigation, Data Quality versus Historical Edge semantics, index_basket naming, evidence gates, a one-release legacy alias window, and a strict market-data/strategy-quote-only Public API boundary. Verified the concrete get_decision_workspace example and dependency-consistent terminology in plans/MARKET_DECISION_IMPLEMENTATION_PLAN.md.",
+      "verify_complete": [
+        "The Markdown plan contains the approved navigation and a concrete decision-workspace JSON example.",
+        "All new code tasks refer to the same schema-version-2 names.",
+        "No task uses Whale Flow, predictive Confidence, or observed-flow language."
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "T02",
+      "title": "Add an additive SQLite migration framework",
+      "status": "done",
+      "goal": "Make every planned schema change safe for the existing production-sized database without requiring a reset.",
+      "subgoals": [
+        "Create schema_migrations.py using PRAGMA user_version and idempotent ordered migrations.",
+        "Invoke the existing database backup path before the first production migration.",
+        "Add quote, signal-event, market-context, alert, and journal schema changes as additive migrations.",
+        "Test legacy, current, interrupted-retry, and already-migrated temporary databases."
+      ],
+      "notes": "Completed 2026-08-14. Added schema_migrations.py with three ordered additive migrations, PRAGMA user_version, pre-migration copy backup for the production path, quote/evidence/context/alert/journal schema, and SQLAlchemy models. Verified only against temporary databases: 4 migration tests plus 2 lifecycle tests pass; retry is idempotent and a simulated failure leaves user_version at the last committed step.",
+      "verify_complete": [
+        "A legacy temporary database migrates without data loss.",
+        "Running migrations twice produces no changes or errors.",
+        "A failed migration does not advance PRAGMA user_version.",
+        "No verification command touches the user's live gex_data.db."
+      ],
+      "depends_on": ["T01"]
+    },
+    {
+      "id": "T03",
+      "title": "Simplify navigation and relocate obsolete tab content",
+      "status": "done",
+      "goal": "Remove the redundant Gamma view and turn the obsolete Setups view into Edge Lab without losing useful charts or execution candidates.",
+      "subgoals": [
+        "Delete the Gamma navigation entry and view-dashboard DOM/CSS/JavaScript paths.",
+        "Move Net Gamma Trend into TRACE and keep the existing Cockpit gamma profile/sweep.",
+        "Replace view-setups with view-edge-lab and move strategy-card placeholders into Cockpit Scenario & Execution.",
+        "Rename Flow navigation to Regime and update switchView, resizing, symbol reload, and toggle logic.",
+        "Extract shared symbol/header updates from renderDashboard before deleting legacy DOM dependencies."
+      ],
+      "notes": "Completed 2026-08-14. Navigation is now Cockpit, Edge Lab, Regime, TRACE, Strike Matrix, One-Off, Settings. Removed the Gamma view and legacy Setups view IDs, moved Net Gamma Trend into TRACE, placed candidate-card containers in Cockpit Scenario & Execution, extracted shared header rendering, and updated reload/resize/toggle paths. Nine JavaScript tests pass, including the new DOM contract.",
+      "verify_complete": [
+        "No view-dashboard or view-setups ID remains in web source.",
+        "No Gamma or Setups navigation button remains.",
+        "Net Gamma Trend renders inside TRACE.",
+        "A DOM contract test covers every final navigation target and removed ID."
+      ],
+      "depends_on": ["T01"]
+    },
+    {
+      "id": "T04",
+      "title": "Separate Data Quality from Historical Edge",
+      "status": "done",
+      "goal": "Prevent freshness/profile quality from being presented as a predictive probability across the web and NinjaTrader surfaces.",
+      "subgoals": [
+        "Rename calculate_component_confidence to calculate_component_data_quality and return explicit score, label, warnings, and age.",
+        "Add schema-version-2 Data Quality and optional edge-probability fields while retaining legacy aliases for one release.",
+        "Rename Whale fields and UI labels to Index Gamma Basket or Index Basket.",
+        "Update docs and C# parsing with schema-version fallback fixtures."
+      ],
+      "notes": "Completed 2026-08-14. Added calculate_component_data_quality with score/label/warnings/age, schema-v2 data_quality and index_basket fields, and one-release confidence/compass_whale aliases. Updated Cockpit/Regime terminology and NinjaTrader to prefer v2 fields with v1 fallbacks. Data Quality is never copied into edge_probability. Three contract tests, six broadcaster/server tests, and JavaScript syntax checks pass.",
+      "verify_complete": [
+        "The UI contains Data Quality and Historical Edge as separate labels.",
+        "No user-facing Whale Flow or bare Confidence label remains.",
+        "Version-1 and version-2 NinjaTrader payload fixtures both parse.",
+        "Data Quality never populates edge_probability."
+      ],
+      "depends_on": ["T01", "T02"]
+    },
+    {
+      "id": "T05",
+      "title": "Capture option quotes and build the strategy-quote adapter",
+      "status": "done",
+      "goal": "Persist fresh executable-market inputs and expose a tested, read-only adapter for butterfly and debit-spread quotes.",
+      "subgoals": [
+        "Raise publicdotcom-py minimum to 0.1.22 and persist bid, ask, sizes, mid, last, volume, IV, and source timestamps on RawOptionGreek.",
+        "Create execution_quotes.py around PublicApiClient.get_strategy_quote with dependency injection.",
+        "Implement stale, crossed, zero-bid, missing, and spread-width validation.",
+        "Implement A/B/C/REJECTED liquidity grades and conservative ask-entry/bid-exit economics.",
+        "Prove no code invokes order, cancel, replace, or preflight endpoints."
+      ],
+      "notes": "Completed 2026-08-14. Raised publicdotcom-py to 0.1.22, added bounded read-only option quote collection, and persisted bid/ask/mid/last/sizes/volume/IV/source timestamps. Added execution_quotes.py around get_strategy_quote with dependency injection, freshness/crossed/zero-bid/missing/spread gates, A/B/C/REJECTED grades, and conservative ask-entry/bid-exit economics. Thirteen focused tests pass and source search finds no order, cancel, replace, or preflight call.",
+      "verify_complete": [
+        "New snapshots store quote fields and old snapshots with null fields remain readable.",
+        "Quote fixture tests cover every acceptance/rejection path.",
+        "Strategy quote responses include timestamp, bid/mid/ask, spread, leg liquidity, and status.",
+        "A repository search finds no new order-placement or preflight call."
+      ],
+      "depends_on": ["T02"]
+    },
+    {
+      "id": "T06",
+      "title": "Build the Market Conditions service and ribbon",
+      "status": "done",
+      "goal": "Add event, implied-move, realized-volatility, and cross-asset context that can qualify GEX scenarios without pretending to be GEX data quality.",
+      "subgoals": [
+        "Create cached BLS ICS and Federal Reserve FOMC providers with timezone-safe normalization.",
+        "Compute ATM-straddle implied move, session range consumed, 15-minute realized volatility, and cross-asset agreement.",
+        "Add optional Public quotes for VIX1D/VIX9D/VIX with explicit unavailable states.",
+        "Persist normalized market_context_snapshots and render the Cockpit ribbon.",
+        "Implement NORMAL, CAUTION, and BLOCKED event windows; only BLOCKED forces No Trade."
+      ],
+      "notes": "Completed 2026-08-14. Added cached BLS/FOMC ICS support, Eastern-time/DST normalization, duplicate suppression, NORMAL/CAUTION/BLOCKED windows, ATM-straddle implied move, range consumed, 15m realized volatility, cross-asset/volatility unavailable states, persistence, and the Cockpit ribbon. Ten Python checks plus the DOM contract pass; missing/network data remains visibly partial and never alters Data Quality.",
+      "verify_complete": [
+        "Frozen fixtures cover DST, duplicate events, cache expiry, and network failure.",
+        "The dashboard loads with no network and visible context warnings.",
+        "Event risk affects eligibility but does not alter Data Quality.",
+        "Missing quote data returns null rather than a constant implied move."
+      ],
+      "depends_on": ["T02", "T05"]
+    },
+    {
+      "id": "T07",
+      "title": "Implement the server-side scenario engine and decision workspace",
+      "status": "done",
+      "goal": "Create one snapshot-consistent backend contract for conditions, regimes, scenarios, evidence, eligibility, and execution candidates.",
+      "subgoals": [
+        "Create scenario_engine.py and move trade-plan/target/invalidation heuristics out of web/main.js.",
+        "Generate Pin/Mean Reversion, Upside Expansion, Downside Expansion, and No Trade contracts with zones and reasons.",
+        "Use volatility/strike-spacing zone widths and refuse to manufacture zones when required inputs are absent.",
+        "Expose get_decision_workspace(symbol) with schema_version 2 and snapshot-consistent subqueries.",
+        "Use the request coordinator to discard stale workspace responses."
+      ],
+      "notes": "Completed 2026-08-14. Added scenario_engine.py with Pin/Mean Reversion, Upside Expansion, Downside Expansion, and No Trade scenarios, stable scenario IDs, volatility/spacing zones, and explicit gates. get_decision_workspace(schema_version=2) now returns one selected snapshot with timestamps, data quality, context, regime, evidence, scenarios, eligibility, and matching candidates. Cockpit uses the existing stale-response coordinator and client buildTradePlan/target/invalidation helpers were removed. Eleven Python and nine JavaScript checks pass.",
+      "verify_complete": [
+        "Table-driven tests cover all scenario types and every eligibility gate.",
+        "Cockpit, NinjaTrader, replay, alerts, and outcomes consume the same scenario identifiers.",
+        "Client-side buildTradePlan/target/invalidation logic is removed.",
+        "The workspace payload includes timestamps and explicit unavailable/warning states."
+      ],
+      "depends_on": ["T04", "T05", "T06"]
+    },
+    {
+      "id": "T08",
+      "title": "Integrate executable candidates into Cockpit",
+      "status": "done",
+      "goal": "Show defined-risk, quote-backed structures beside the scenario that makes them relevant, with no standalone Setups workflow.",
+      "subgoals": [
+        "Render Scenario & Execution cards in Cockpit from the decision-workspace contract.",
+        "Display quote age, bid/mid/ask, spread, liquidity grade, max loss/reward, breakeven, time to close, and settlement type.",
+        "Add local maximum-risk sizing using conservative max loss plus configured fees.",
+        "Keep MODELED_ONLY and REJECTED states visible but prevent them from showing contract sizing.",
+        "Retire get_trade_setups after all consumers migrate to build_execution_candidates."
+      ],
+      "notes": "Completed 2026-08-14. Cockpit Scenario & Execution now consumes snapshot-matched candidates from the decision workspace. Persisted leg markets produce conservative strategy bid/mid/ask, age, spread, liquidity grade, max loss/reward, settlement, close time, and local maximum-risk sizing. MODELED_ONLY and REJECTED remain visible but never receive contract counts; the web no longer calls get_trade_setups. Twenty-two focused tests pass and no broker mutation UI/path was added.",
+      "verify_complete": [
+        "No execution card shows an unlabeled theoretical debit.",
+        "Only EXECUTABLE candidates may show a contract count.",
+        "Changing symbols cannot display a quote from the previous symbol.",
+        "There is no order button or broker mutation path."
+      ],
+      "depends_on": ["T03", "T05", "T07"]
+    },
+    {
+      "id": "T09",
+      "title": "Correct signal opportunity sampling and outcome statistics",
+      "status": "done",
+      "goal": "Base empirical claims on state transitions, non-overlapping horizons, unique days, and conservative after-cost outcomes.",
+      "subgoals": [
+        "Stop recording identical signal payloads on every broadcast; persist state transitions and scenario changes.",
+        "Mark eligible SignalEvent rows as opportunities and exclude legacy rows by default.",
+        "Derive non-overlapping samples separately for 15, 30, and 60 minutes.",
+        "Add day-clustered bootstrap intervals, walk-forward holdout, after-cost expectancy, MFE, MAE, target-first, invalidation-first, and time-to-target.",
+        "Implement INSUFFICIENT, EMERGING, and CALIBRATED evidence gates."
+      ],
+      "notes": "Completed 2026-08-14. Broadcast persistence now records state/scenario transitions only and marks eligible opportunities; edge_probability remains null. Statistics exclude legacy correlated rows by default, greedily select non-overlapping samples per horizon, and report independent opportunities, unique days, after-cost and holdout expectancy, MFE/MAE, target/invalidation-first rates, and day-clustered intervals. Evidence gates are INSUFFICIENT (<20 opportunities or <10 days), EMERGING, and CALIBRATED (>=50/20 plus positive holdout). Six signal tests pass.",
+      "verify_complete": [
+        "Synthetic overlapping signals collapse to the expected independent counts by horizon.",
+        "Statistics report independent opportunities and unique days beside every rate.",
+        "Legacy correlated observations are hidden by default and clearly warned when enabled.",
+        "Historical Edge cannot affect live bias before CALIBRATED status and positive holdout expectancy."
+      ],
+      "depends_on": ["T02", "T04", "T07"]
+    },
+    {
+      "id": "T10",
+      "title": "Build the repurposed Edge Lab view",
+      "status": "done",
+      "goal": "Replace the obsolete Setups tab with a transparent analysis workspace for independent historical evidence and calibration.",
+      "subgoals": [
+        "Add get_edge_lab(filters) for symbol, horizon, scenario, regime, event tag, time bucket, and liquidity grade.",
+        "Create web/edge_lab.js and render status/evidence cards, calibration, expectancy distribution, outcome breakdown, and opportunity table with ECharts.",
+        "Show empty and insufficient states without probability-like styling.",
+        "Add a diagnostic-only legacy observation toggle with a persistent correlation warning."
+      ],
+      "notes": "Completed 2026-08-14. Added get_edge_lab filters for symbol, horizon, scenario, regime, event tag, time bucket, and liquidity grade; default queries exclude legacy rows. web/edge_lab.js renders evidence cards, after-cost distribution, and opportunity table with ECharts plus honest empty/INSUFFICIENT/EMERGING/CALIBRATED states. The opt-in legacy toggle carries a persistent correlation warning. Seven Python and five JavaScript checks pass.",
+      "verify_complete": [
+        "Edge Lab occupies the former Setups navigation position and contains no strategy cards.",
+        "Every displayed rate includes independent count and unique days.",
+        "Filters return snapshot-consistent, symbol-correct results.",
+        "Frontend unit tests cover empty, insufficient, emerging, and calibrated states."
+      ],
+      "depends_on": ["T03", "T09"]
+    },
+    {
+      "id": "T11",
+      "title": "Add deduplicated state-transition alerts",
+      "status": "done",
+      "goal": "Notify only when the decision changes, with one persisted alert identity across the app and NinjaTrader.",
+      "subgoals": [
+        "Create decision_alerts.py and the decision_alerts table with unique dedupe keys.",
+        "Implement flip, GEX sign, wall, scenario, data/quote failure, implied-move, and event alerts.",
+        "Apply a 10-minute default cooldown with immediate opposite/critical transitions.",
+        "Emit the same alert ID/scenario ID to Eel and NinjaTrader schema version 2.",
+        "Remove refresh-only notifications from actionable alert channels."
+      ],
+      "notes": "Completed 2026-08-14; follow-up verified 2026-08-14. Added decision_alerts.py and persisted unique dedupe keys, 10-minute cooldown, immediate opposite/critical overrides, stable alert IDs, scenario/event alerts, workspace history, and schema-v2 NinjaTrader fields. Actionable toasts remain limited to decision alerts and magnet changes. The Activity Feed now shows coalesced, non-actionable collector health, event-bridge heartbeats, data_refresh/MARKET_UPDATE telemetry, and cockpit renders so users can verify updates without alert noise. Focused Python and JavaScript regression tests pass, including shared alert/scenario identity and feed telemetry classification.",
+      "verify_complete": [
+        "Replaying identical state produces no duplicate alert.",
+        "Opposite and critical transitions emit immediately.",
+        "Activity feed and NinjaTrader fixtures share alert and scenario IDs.",
+        "Routine data refreshes do not create actionable alerts."
+      ],
+      "depends_on": ["T07", "T09"]
+    },
+    {
+      "id": "T12",
+      "title": "Upgrade TRACE with replay, overlays, trend, Delta, and Charm",
+      "status": "done",
+      "goal": "Turn TRACE into the historical review surface while adding clearly modeled pressure lenses on shared option math.",
+      "subgoals": [
+        "Extract inferred-volatility and charm helpers into option_math.py and update runtime/backtests.",
+        "Add session-date selection and bounded get_trace_dates/get_trace_data contracts.",
+        "Overlay scenarios, alerts, target/invalidation zones, and outcomes.",
+        "Relocate Net Gamma Trend from the removed Gamma view and synchronize its cursor/zoom.",
+        "Add Modeled Delta Pressure and Modeled Charm Pressure with matched-contract coverage warnings."
+      ],
+      "notes": "Completed 2026-08-14. Extracted shared inferred-volatility/charm/delta helpers into option_math.py and updated runtime/backtest use. Added bounded get_trace_dates/get_trace_data session contracts, scenario/alert/target/invalidation overlays, retained Net Gamma Trend in TRACE, and added Modeled Delta/Charm modes with matched-contract coverage warnings. Replay queries are symbol/session bounded. Sixteen Python and three timeline tests pass.",
+      "verify_complete": [
+        "Backtest and runtime option-math fixtures match.",
+        "Replay never mixes sessions or symbols.",
+        "Overlay timestamps align with the TRACE timeline.",
+        "Delta/Charm labels always say Modeled and coverage below 80% warns the user."
+      ],
+      "depends_on": ["T03", "T04", "T07", "T11"]
+    },
+    {
+      "id": "T13",
+      "title": "Add the manual trade journal and weekly review",
+      "status": "done",
+      "goal": "Close the learning loop by separating model performance from the user's actual fills and rule adherence.",
+      "subgoals": [
+        "Add validated journal CRUD endpoints and local SQLite persistence.",
+        "Prefill entries from Cockpit scenarios or TRACE replay while requiring actual fills/contracts/exits.",
+        "Calculate P&L, slippage, underlying MFE/MAE, exit reason, and adherence.",
+        "Add weekly groupings by scenario, regime, event tag, time bucket, liquidity grade, and adherence.",
+        "Keep account-history import and screenshots out of scope."
+      ],
+      "notes": "Completed 2026-08-14. Added validated local journal create/update/delete/list endpoints, scenario symbol/session linking, actual fills/contracts/exits, fees, P&L, slippage, MFE/MAE, exit/adherence fields, Cockpit prefill, and weekly grouping by scenario/regime/liquidity/adherence. Edge Lab presents user execution separately from model outcomes. Five temporary-database validation/CRUD tests pass, including malformed timestamps and negative contracts.",
+      "verify_complete": [
+        "Temporary-database CRUD and validation tests pass.",
+        "Linked journal entries match signal symbol/session.",
+        "Model outcomes and user execution results appear in separate sections.",
+        "Malformed timestamps and negative contract counts are rejected."
+      ],
+      "depends_on": ["T02", "T07", "T10", "T12"]
+    },
+    {
+      "id": "T14",
+      "title": "Complete documentation, performance validation, and rollout",
+      "status": "done",
+      "goal": "Ship the new decision workflow with reproducible verification, safe feature flags, truthful documentation, and no legacy-tab residue.",
+      "subgoals": [
+        "Update README, setup, API, thesis, development notes, and CI for all new modules and terminology.",
+        "Run fresh, legacy-migration, no-network, rapid-symbol-switching, and NinjaTrader compatibility suites.",
+        "Benchmark cached decision workspace and full-session TRACE queries on a copy of the production-sized database.",
+        "Enable feature flags phase by phase and remove version-1 aliases only after one verified release.",
+        "Search source/docs/tests for removed IDs, Gamma/Setups tabs, Whale Flow, and misleading Confidence language."
+      ],
+      "notes": "Completed 2026-08-14. Updated README/setup/API/thesis/development docs, feature flags, settings, and Windows CI. Full verification passes: 83 Python tests and 11 JavaScript tests plus syntax and diff checks. On an online backup of the 5.688 GB production database, cached SPX workspace p50/p95 measured 5.23/7.25 ms (target <500 ms) and full 2026-08-14 TRACE measured 897.31 ms for 8,232 cells (target <2 s); cold workspace was 777.25 ms. Removed-ID/label and prohibited broker-call scans are clean outside explicit compatibility tests/aliases and archived web/Old files. The temporary 6.1 GB benchmark copy was deleted; the live database was never migrated or written.",
+      "verify_complete": [
+        "All Python and JavaScript verification commands pass.",
+        "Cached workspace p95 is under 500 ms and full TRACE session query is under 2 seconds on the database copy.",
+        "No removed tab IDs or misleading labels remain.",
+        "No runtime cache, database, log, credential, or generated export is tracked."
+      ],
+      "depends_on": ["T08", "T10", "T11", "T12", "T13"]
+    }
+  ]
+}

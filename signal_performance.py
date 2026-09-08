@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import re
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -26,6 +27,9 @@ DASHBOARD_FIELDS = (
     "dashboard_bias",
     "dashboard_bias_score",
     "dashboard_confidence",
+    "dashboard_data_quality",
+    "dashboard_scenario_id",
+    "dashboard_scenario_type",
     "dashboard_target",
     "dashboard_invalidation",
     "dashboard_flip",
@@ -34,6 +38,7 @@ DASHBOARD_FIELDS = (
     "dashboard_dealer",
     "dashboard_liquidity",
     "dashboard_whale",
+    "dashboard_index_basket",
 )
 
 
@@ -58,8 +63,9 @@ def parse_datetime(value) -> Optional[datetime]:
 
 def _clean_label(value: str) -> str:
     text = str(value or "").strip()
-    text = re.sub(r"^(Market|Dealer|Liquidity|Whale):\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(Market|Dealer|Liquidity|Whale|Index Basket):\s*", "", text, flags=re.IGNORECASE)
     text = text.replace("LOW CONFIDENCE ", "")
+    text = text.replace("LOW DATA QUALITY ", "")
     text = re.sub(r"\s+", " ", text)
     return text.upper() or "UNKNOWN"
 
@@ -153,7 +159,7 @@ def _session_or_new(session=None):
 
 
 def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -> int:
-    """Persist one signal event per symbol from a broadcast payload."""
+    """Persist only decision-state transitions, not routine refreshes."""
 
     db, owns_session = _session_or_new(session)
     try:
@@ -166,21 +172,48 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -
                 continue
 
             setup_key, direction_key = setup_keys(symbol, dashboard, payload.get("regime", ""))
+            state_key = str(dashboard.get("dashboard_scenario_id") or setup_key)
+            previous = (
+                db.query(SignalEvent)
+                .filter(SignalEvent.symbol == symbol)
+                .order_by(SignalEvent.emitted_at.desc(), SignalEvent.id.desc())
+                .first()
+            )
+            if previous and previous.state_key == state_key:
+                continue
+            data_quality = _float_or_none(
+                dashboard.get("dashboard_data_quality")
+                if dashboard.get("dashboard_data_quality") is not None
+                else dashboard.get("dashboard_confidence")
+            )
+            bias = _bias_family(dashboard.get("dashboard_bias"))
+            target = _float_or_none(dashboard.get("dashboard_target"))
+            invalidation = _float_or_none(dashboard.get("dashboard_invalidation"))
+            is_opportunity = bias != "WAIT" and (data_quality or 0) >= 0.45 and target is not None and invalidation is not None
             event = SignalEvent(
                 emitted_at=emitted_at,
                 symbol=symbol,
                 spot_price=float(dashboard["spot"]),
                 regime=_clean_label(payload.get("regime")),
-                bias=_bias_family(dashboard.get("dashboard_bias")),
+                bias=bias,
                 bias_score=_float_or_none(dashboard.get("dashboard_bias_score")),
-                confidence=_float_or_none(dashboard.get("dashboard_confidence")),
-                target=_float_or_none(dashboard.get("dashboard_target")),
-                invalidation=_float_or_none(dashboard.get("dashboard_invalidation")),
+                confidence=data_quality,
+                data_quality=data_quality,
+                edge_probability=None,
+                target=target,
+                invalidation=invalidation,
                 flip=_float_or_none(dashboard.get("dashboard_flip")),
                 market_state=_clean_label(dashboard.get("dashboard_market")),
                 dealer_state=_clean_label(dashboard.get("dashboard_dealer")),
                 liquidity_state=_clean_label(dashboard.get("dashboard_liquidity")),
-                whale_state=_clean_label(dashboard.get("dashboard_whale")),
+                whale_state=_clean_label(dashboard.get("dashboard_index_basket") or dashboard.get("dashboard_whale")),
+                state_key=state_key,
+                scenario_type=dashboard.get("dashboard_scenario_type"),
+                scenario_id=dashboard.get("dashboard_scenario_id"),
+                session_date=emitted_at.date(),
+                event_tags_json="[]",
+                liquidity_grade=None,
+                is_opportunity=is_opportunity,
                 setup_key=setup_key,
                 direction_key=direction_key,
                 payload_json=json.dumps(payload, default=str),
@@ -389,12 +422,53 @@ def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: i
             db.close()
 
 
+def independent_outcomes(rows, horizon_minutes: int):
+    """Greedily retain non-overlapping opportunities per symbol and horizon."""
+    selected = []
+    next_allowed = {}
+    ordered = sorted(rows, key=lambda row: parse_datetime(row.signal.emitted_at) or datetime.min)
+    for row in ordered:
+        event_time = parse_datetime(row.signal.emitted_at)
+        if event_time is None:
+            continue
+        symbol = row.signal.symbol
+        if event_time < next_allowed.get(symbol, datetime.min):
+            continue
+        selected.append(row)
+        next_allowed[symbol] = event_time + timedelta(minutes=horizon_minutes)
+    return selected
+
+
+def _clustered_interval(rows, value_getter, samples=300):
+    by_day = defaultdict(list)
+    for row in rows:
+        day = row.signal.session_date or parse_datetime(row.signal.emitted_at).date()
+        value = value_getter(row)
+        if value is not None:
+            by_day[day].append(float(value))
+    days = list(by_day)
+    if len(days) < 2:
+        return None
+    rng = random.Random(42)
+    estimates = []
+    for _ in range(samples):
+        sampled = [rng.choice(days) for _ in days]
+        values = [value for day in sampled for value in by_day[day]]
+        estimates.append(sum(values) / len(values))
+    estimates.sort()
+    return [estimates[int(0.025 * (len(estimates) - 1))], estimates[int(0.975 * (len(estimates) - 1))]]
+
+
 def _stats_from_rows(rows, fallback_label: str, horizon_minutes: int) -> dict:
+    rows = independent_outcomes(rows, horizon_minutes)
     sample_size = len(rows)
     if not rows:
         return {
             "horizon_minutes": horizon_minutes,
             "sample_size": 0,
+            "independent_opportunities": 0,
+            "unique_days": 0,
+            "evidence_status": "INSUFFICIENT",
             "wins": 0,
             "win_rate": None,
             "median_move_points": None,
@@ -415,20 +489,40 @@ def _stats_from_rows(rows, fallback_label: str, horizon_minutes: int) -> dict:
     ]
     favorable_values = [row.max_favorable_points for row in rows if row.max_favorable_points is not None]
     adverse_values = [row.max_adverse_points for row in rows if row.max_adverse_points is not None]
+    after_cost_values = [value - 0.10 for value in move_values if value is not None]
     median_move = median(move_values) if move_values else None
     median_favorable = median(favorable_values) if favorable_values else None
     median_adverse = median(adverse_values) if adverse_values else None
     win_text = "--" if win_rate is None else f"{round(win_rate * 100)}%"
     move_text = "--" if median_move is None else f"{median_move:+.0f}"
+    unique_days = len({row.signal.session_date or parse_datetime(row.signal.emitted_at).date() for row in rows})
+    holdout_count = max(1, sample_size // 5)
+    holdout = after_cost_values[-holdout_count:]
+    holdout_expectancy = sum(holdout) / len(holdout) if holdout else None
+    after_cost_expectancy = sum(after_cost_values) / len(after_cost_values) if after_cost_values else None
+    if sample_size < 20 or unique_days < 10:
+        evidence_status = "INSUFFICIENT"
+    elif sample_size < 50 or unique_days < 20 or not (holdout_expectancy is not None and holdout_expectancy > 0):
+        evidence_status = "EMERGING"
+    else:
+        evidence_status = "CALIBRATED"
 
     return {
         "horizon_minutes": horizon_minutes,
         "sample_size": sample_size,
+        "independent_opportunities": sample_size,
+        "unique_days": unique_days,
+        "evidence_status": evidence_status,
         "wins": wins,
         "win_rate": win_rate,
         "median_move_points": median_move,
         "median_favorable_points": median_favorable,
         "median_adverse_points": median_adverse,
+        "after_cost_expectancy": after_cost_expectancy,
+        "holdout_expectancy": holdout_expectancy,
+        "win_rate_interval": _clustered_interval(rows, lambda row: 1 if row.is_win else 0 if row.is_win is False else None),
+        "target_first_rate": sum(1 for row in rows if row.target_first) / sample_size,
+        "invalidation_first_rate": sum(1 for row in rows if row.invalidation_first) / sample_size,
         "sample_label": fallback_label,
         "summary": f"{horizon_minutes}m {win_text} n={sample_size} med {move_text}",
     }
@@ -441,6 +535,7 @@ def _query_outcome_rows(session, symbol: str, key_name: str, key_value: str, hor
         .join(SignalEvent)
         .filter(SignalEvent.symbol == symbol)
         .filter(signal_attr == key_value)
+        .filter(SignalEvent.is_opportunity.is_(True))
         .filter(SignalOutcome.horizon_minutes == horizon_minutes)
         .order_by(SignalOutcome.observed_at.desc())
         .limit(500)

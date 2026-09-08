@@ -53,6 +53,16 @@ The dashboard behavior is controlled by `settings.json`.
   "min_poll_interval_seconds": 15,
   "max_poll_interval_seconds": 120,
   "raw_retention_days": 30,
+  "maximum_risk_dollars": 500,
+  "fees_per_contract": 1.25,
+  "feature_flags": {
+    "decision_workspace": true,
+    "execution_quotes": true,
+    "edge_lab": true,
+    "decision_alerts": true,
+    "trace_replay": true,
+    "trade_journal": true
+  },
   "weights": {
     "SPY": 1.0,
     "QQQ": 0.5,
@@ -67,6 +77,9 @@ The dashboard behavior is controlled by `settings.json`.
 *   **api_rate_limit_utilization**: Fraction of that ceiling the collector is allowed to plan around.
 *   **min_poll_interval_seconds** / **max_poll_interval_seconds**: Bounds for the collector's calculated next poll delay.
 *   **raw_retention_days**: Number of days to keep raw option rows before compaction.
+*   **maximum_risk_dollars** / **fees_per_contract**: Local sizing inputs; they never place an order.
+*   **feature_flags**: Rollout switches for each decision-workspace surface.
+*   **weights_index_basket**: Preferred name for the SPX/NDX/IWM gamma basket. `weights_whale` is accepted for one compatibility release.
 
 > [!NOTE]
 > Collection is strict target-day 0DTE. Before 6 PM local time, the target is today; at or after 6 PM, the target rolls to the next weekday. If Public.com does not return an expiration for that target date, the symbol is skipped instead of falling back to a later weekly or monthly expiration.
@@ -95,4 +108,4 @@ If the database schema changes or you want a clean start, run:
 python publicData.py --reset-db
 ```
 
-The existing `gex_data.db` is renamed to a timestamped backup before the new schema is created.
+Explicit reset still renames `gex_data.db` to a timestamped backup. Normal startup uses additive migrations and makes a non-destructive pre-migration copy when a production-path upgrade is pending.
