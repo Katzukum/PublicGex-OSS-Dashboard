@@ -16,7 +16,14 @@ This dashboard bridges the gap between raw option chain data (from Public.com) a
 *   **Gamma Flip Detection**: Identifies the precise strike price where market stability flips.
 *   **Market Compass**: Visualizes Trend vs. Volatility to categorize the market regime (Grind Up, Melt Up, Chop, Crash).
 *   **NinjaTrader Integration**: Includes a custom C# indicator (`OpenGamma.cs`) to plot levels and regimes directly on your charts.
-*   **Live Dashboard**: A local web UI (Eel/HTML) for monitoring the system.
+*   **Decision Workspace**: Cockpit combines Data Quality, market conditions, one server-side scenario, Historical Edge, and read-only execution candidates.
+*   **Edge Lab and TRACE**: Independent-opportunity evidence, session replay, alerts, overlays, Net Gamma Trend, and modeled Delta/Charm pressure.
+*   **Manual Journal**: Local actual-fill tracking and weekly execution review, separate from model outcomes.
+*   **NinjaTrader Integration**: Schema-v2 data-quality, scenario, and alert fields with one-release version-1 fallbacks.
+
+The final navigation is Cockpit, Edge Lab, Regime, TRACE, Strike Matrix, One-Off, and Settings. The former Gamma tab was redundant with Cockpit/TRACE and was removed; the former Setups location is now Edge Lab.
+
+Public API usage is read-only: market data and strategy quotes only. The app does not submit, preflight, replace, cancel, or expose buttons for broker orders.
 
 ## 📚 Documentation
 
@@ -62,6 +69,32 @@ Detailed documentation is available in the `docs/` directory:
     python publicData.py --reset-db
     ```
     Existing `gex_data.db` is backed up before a fresh schema is created.
+
+## Verification
+
+Install the development dependencies and run the full Python suite:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Check the active JavaScript entry points:
+
+```bash
+node --check web/request_coordinator.js
+node --check web/trace_timeline.js
+node --check web/edge_lab.js
+node --check web/main.js
+node --check ui-playground/playground.js
+```
+
+Frontend unit tests use Node's built-in test runner and are included automatically
+by the Windows CI workflow when files matching `test_web_*.js` are present.
+
+```bash
+node --test test_web_*.js
+```
 
 ## ⚠️ Disclaimer
 

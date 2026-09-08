@@ -1,13 +1,14 @@
 import eel
 import pandas as pd
 import atexit
+import copy
 import json
 import re
 import socket
 import subprocess
 import sys
 import threading
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from sqlalchemy import text
 
@@ -23,6 +24,7 @@ from backtest_gamma_butterflies import (
     _strike_summary,
     _rows_by_strike_and_side,
 )
+from gamma_sweep import build_gamma_sweep
 from gex_levels import aggregate_gamma_levels
 from models import get_engine, initialize_database, schema_is_current
 
@@ -31,6 +33,21 @@ eel.init('web')
 APP_ROOT = Path(__file__).resolve().parent
 ONE_OFF_DB_PATH = APP_ROOT / "one_off_gex_data.db"
 collector_process = None
+engine = None
+DB_SCHEMA_CURRENT = False
+event_thread = None
+event_stop_event = threading.Event()
+_runtime_lock = threading.RLock()
+_runtime_initialized = False
+_overview_cache_lock = threading.RLock()
+_overview_cache_key = None
+_overview_cache_value = None
+_decision_workspace_cache = {}
+_decision_workspace_cache_lock = threading.RLock()
+_event_health_lock = threading.RLock()
+_last_event_at = None
+_last_event_type = None
+_event_count = 0
 
 DEFAULT_SETTINGS = {
     "refresh_interval": 10,
@@ -43,6 +60,16 @@ DEFAULT_SETTINGS = {
     "raw_retention_days": 30,
     "weights": {"SPY": 1.0},
     "weights_whale": {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20},
+    "maximum_risk_dollars": 500,
+    "fees_per_contract": 1.25,
+    "feature_flags": {
+        "decision_workspace": True,
+        "execution_quotes": True,
+        "edge_lab": True,
+        "decision_alerts": True,
+        "trace_replay": True,
+        "trade_journal": True,
+    },
 }
 
 # --- Event/Notification Server ---
@@ -76,8 +103,6 @@ def stop_collector_process():
         collector_process.kill()
         collector_process.wait(timeout=5)
 
-
-atexit.register(stop_collector_process)
 
 # --- 0DTE Optimization Helpers ---
 
@@ -220,7 +245,7 @@ def calculate_gex_imbalance_score(net_gex, call_gex, put_gex):
     imbalance = clamp_score((net_gex or 0) / gross_gex)
     return math.tanh(2.0 * imbalance), imbalance
 
-def calculate_component_confidence(row, profile_count, flip_state, gross_gex):
+def calculate_component_data_quality(row, profile_count, flip_state, gross_gex):
     score = 1.0
     warnings = []
 
@@ -257,11 +282,19 @@ def calculate_component_confidence(row, profile_count, flip_state, gross_gex):
         score -= 0.15
         warnings.append("unknown snapshot age")
 
+    normalized_score = clamp_score(score, 0.0, 1.0)
+    label = "LOW" if normalized_score < 0.45 else "MEDIUM" if normalized_score < 0.70 else "HIGH"
     return {
-        "score": clamp_score(score, 0.0, 1.0),
+        "score": normalized_score,
+        "label": label,
         "warnings": warnings,
         "age_seconds": age_seconds
     }
+
+
+def calculate_component_confidence(row, profile_count, flip_state, gross_gex):
+    """Version-1 compatibility alias; use calculate_component_data_quality."""
+    return calculate_component_data_quality(row, profile_count, flip_state, gross_gex)
 
 def calculate_gex_slope(spot, profile_data):
     """
@@ -299,7 +332,7 @@ def calculate_gex_slope(spot, profile_data):
     # Slope = Rate of change of GEX per dollar
     return (g2 - g1) / (s2 - s1) if s2 != s1 else 0
 
-def run_event_server(port=5005):
+def run_event_server(port=5005, stop_event=None):
     """
     Listens on a local TCP socket for JSON messages from external scripts
     (like publicData.py) and forwards them to the frontend via Eel.
@@ -307,14 +340,24 @@ def run_event_server(port=5005):
     Args:
         port: The local port to bind to (default: 5005).
     """
+    global _last_event_at, _last_event_type, _event_count
+
+    if stop_event is None:
+        stop_event = event_stop_event
+
     print(f"Starting Event Server on port {port}...")
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(('127.0.0.1', port))
         server.listen(5)
+        server.settimeout(0.5)
 
-        while True:
-            client_sock, addr = server.accept()
+        while not stop_event.is_set():
+            try:
+                client_sock, addr = server.accept()
+            except socket.timeout:
+                continue
             try:
                 client_sock.settimeout(5)
                 chunks = []
@@ -331,6 +374,10 @@ def run_event_server(port=5005):
                 if data:
                     # Decode and parse
                     msg = json.loads(data.decode('utf-8'))
+                    with _event_health_lock:
+                        _last_event_at = datetime.now()
+                        _last_event_type = msg.get('type', 'UNKNOWN')
+                        _event_count += 1
                     print(f"Event received: {msg.get('type', 'UNKNOWN')}")
 
                     # 1. Handle Market Updates (Forward canonical dashboard state to NinjaTrader)
@@ -340,6 +387,11 @@ def run_event_server(port=5005):
                             overview_data = get_market_overview()
                             if overview_data.get("error"):
                                 raise RuntimeError(overview_data["error"])
+                            from decision_alerts import recent_alerts
+                            from models import get_session_factory
+                            Session = get_session_factory(engine)
+                            with Session() as session:
+                                overview_data["alerts"] = recent_alerts(session)
                             msg['data'] = overview_data
                             send_regime_update(overview_data)
                             print(f"[Bridge] Forwarded market update to NinjaTrader")
@@ -357,27 +409,80 @@ def run_event_server(port=5005):
             finally:
                 client_sock.close()
 
+    except OSError as e:
+        if not stop_event.is_set():
+            print(f"Event Server Failed to Start: {e}")
     except Exception as e:
         print(f"Event Server Failed to Start: {e}")
     finally:
         server.close()
 
-# Start Server in Background Thread
-event_thread = threading.Thread(target=run_event_server, daemon=True)
-event_thread.start()
+def initialize_runtime():
+    """Initialize dashboard-owned database and socket services exactly once."""
+    global engine, DB_SCHEMA_CURRENT, event_thread, _runtime_initialized
 
-# Start NinjaTrader Broadcast Server (Port 5010)
-try:
-    from ninjatrader_broadcaster import start_server as start_nt_server
-    start_nt_server(5010)
-except ImportError:
-    print("Could not import ninjatrader_broadcaster")
+    with _runtime_lock:
+        if _runtime_initialized:
+            return engine
+
+        engine = initialize_database(allow_legacy_on_lock=True)
+        _clear_overview_cache()
+        from signal_performance import configure_engine
+        configure_engine(engine)
+        DB_SCHEMA_CURRENT = schema_is_current()
+        if not DB_SCHEMA_CURRENT:
+            print("Legacy database schema is still active. Close other DB users and run: python publicData.py --reset-db")
+
+        event_stop_event.clear()
+        event_thread = threading.Thread(
+            target=run_event_server,
+            kwargs={"stop_event": event_stop_event},
+            name="dashboard-event-server",
+            daemon=True,
+        )
+        event_thread.start()
+
+        try:
+            from ninjatrader_broadcaster import start_server as start_nt_server
+            start_nt_server(5010)
+        except ImportError:
+            print("Could not import ninjatrader_broadcaster")
+
+        _runtime_initialized = True
+        return engine
+
+
+def shutdown_runtime():
+    """Stop dashboard-owned processes, socket services, and database resources."""
+    global engine, DB_SCHEMA_CURRENT, event_thread, _runtime_initialized
+
+    with _runtime_lock:
+        stop_collector_process()
+        event_stop_event.set()
+        if event_thread and event_thread.is_alive():
+            event_thread.join(timeout=2)
+        event_thread = None
+
+        try:
+            from ninjatrader_broadcaster import stop_server as stop_nt_server
+        except (ImportError, AttributeError):
+            stop_nt_server = None
+        if stop_nt_server:
+            stop_nt_server()
+
+        if engine is not None:
+            engine.dispose()
+        from signal_performance import configure_engine
+        configure_engine(None)
+        _clear_overview_cache()
+        engine = None
+        DB_SCHEMA_CURRENT = False
+        _runtime_initialized = False
+
+
+atexit.register(shutdown_runtime)
 
 # --- Database Connection ---
-engine = initialize_database(allow_legacy_on_lock=True)
-DB_SCHEMA_CURRENT = schema_is_current()
-if not DB_SCHEMA_CURRENT:
-    print("Legacy database schema is still active. Close other DB users and run: python publicData.py --reset-db")
 
 def _load_settings() -> dict:
     try:
@@ -388,6 +493,15 @@ def _load_settings() -> dict:
     merged = DEFAULT_SETTINGS.copy()
     merged.update(settings)
     return merged
+
+
+def _clear_overview_cache() -> None:
+    global _overview_cache_key, _overview_cache_value
+    with _overview_cache_lock:
+        _overview_cache_key = None
+        _overview_cache_value = None
+    with _decision_workspace_cache_lock:
+        _decision_workspace_cache.clear()
 
 def _validate_settings(settings: dict) -> dict:
     symbols = settings.get("symbols", [])
@@ -484,6 +598,7 @@ def save_settings(new_settings: dict) -> dict:
 
     with open('settings.json', 'w', encoding='utf-8') as f:
         json.dump(existing, f, indent=2)
+    _clear_overview_cache()
     print(f"Settings merged and saved: {existing.keys()}")
     return {"ok": True, "message": "Settings saved.", "settings": existing}
 
@@ -522,6 +637,13 @@ def get_backend_status() -> dict:
             if parsed_run_started:
                 run_age_seconds = max(0, (now - parsed_run_started).total_seconds())
 
+        with _event_health_lock:
+            last_event_at = _last_event_at
+            last_event_type = _last_event_type
+            event_count = _event_count
+        event_age_seconds = max(0, (now - last_event_at).total_seconds()) if last_event_at else None
+        bridge_listening = bool(event_thread and event_thread.is_alive())
+
         return {
             "ok": bool(run),
             "run_id": getattr(run, "id", None) if run else None,
@@ -533,6 +655,13 @@ def get_backend_status() -> dict:
             "latest_symbol": getattr(snap, "symbol", None) if snap else None,
             "latest_snapshot_at": str(latest_snapshot_at) if latest_snapshot_at else None,
             "snapshot_age_seconds": snapshot_age_seconds,
+            "event_bridge": {
+                "status": "listening" if bridge_listening else "stopped",
+                "last_event_at": str(last_event_at) if last_event_at else None,
+                "last_event_type": last_event_type,
+                "last_event_age_seconds": event_age_seconds,
+                "event_count": event_count,
+            },
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -592,7 +721,9 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
 
             if schema_current:
                 query_profile = text("""
-                    SELECT strike_price, option_type, gex_value, open_interest, expiration_date
+                    SELECT strike_price, option_type, delta, gamma, gex_value, open_interest, underlying_price, expiration_date,
+                           bid, ask, mid_price, last_price, bid_size, ask_size, volume,
+                           implied_volatility, bid_timestamp, ask_timestamp, last_timestamp
                     FROM raw_option_greeks
                     WHERE snapshot_id = :snapshot_id
                     ORDER BY strike_price ASC
@@ -646,12 +777,411 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
             return {
                 "snapshot": snapshot,
                 "profile": df_profile.to_dict(orient='records'),
-                "history": df_hist.to_dict(orient='records')
+                "history": df_hist.to_dict(orient='records'),
+                "gamma_sweep": build_gamma_sweep(df_profile.to_dict(orient='records'), spot, symbol),
             }
 
     except Exception as e:
         print(f"Error: {e}")
         return {"error": str(e)}
+
+
+@eel.expose
+def get_decision_workspace(symbol: str = "SPX") -> dict:
+    """Return the schema-v2 decision contract from one selected snapshot."""
+    symbol = str(symbol or "SPX").strip().upper()
+    with engine.connect() as conn:
+        latest_id = conn.execute(
+            text("SELECT id FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC, id DESC LIMIT 1"),
+            {"symbol": symbol},
+        ).scalar()
+    cache_key = (str(engine.url), symbol, latest_id)
+    with _decision_workspace_cache_lock:
+        cached = _decision_workspace_cache.get(cache_key)
+    if cached is not None:
+        workspace = copy.deepcopy(cached)
+        workspace["execution_candidates"] = build_execution_candidates(symbol, snapshot_id=latest_id)
+        return workspace
+    dashboard = _dashboard_data_from_engine(engine, symbol, DB_SCHEMA_CURRENT)
+    if dashboard.get("error"):
+        return {"schema_version": 2, "symbol": symbol, "error": dashboard["error"]}
+
+    overview = get_market_overview()
+    if overview.get("error"):
+        return {"schema_version": 2, "symbol": symbol, "error": overview["error"]}
+
+    snapshot = dashboard["snapshot"]
+    component = next((item for item in overview.get("components", []) if item.get("symbol") == symbol), {})
+    data_quality = component.get("data_quality") or {
+        "score": component.get("confidence", 0),
+        "label": "LEGACY",
+        "warnings": component.get("warnings", []),
+        "age_seconds": component.get("age_seconds"),
+    }
+    traders = overview.get("compass_traders") or overview.get("compass") or {}
+    index_basket = overview.get("index_basket") or overview.get("compass_whale") or {}
+    trader_quality = (traders.get("data_quality") or {}).get("score", traders.get("confidence", 0)) or 0
+    basket_quality = (index_basket.get("data_quality") or {}).get("score", index_basket.get("confidence", 0)) or 0
+    quality_total = trader_quality + basket_quality
+    market_score = (
+        ((traders.get("y_score", 0) or 0) * trader_quality + (index_basket.get("y_score", 0) or 0) * basket_quality)
+        / quality_total
+        if quality_total
+        else 0
+    )
+
+    from market_context import build_market_context
+    from scenario_engine import build_scenario_workspace
+
+    market_context = build_market_context(
+        symbol,
+        snapshot.get("spot_price"),
+        dashboard.get("profile", []),
+        dashboard.get("history", []),
+        [],
+        cross_asset_state=(index_basket.get("label") or None),
+    )
+    scenario = build_scenario_workspace(
+        snapshot,
+        dashboard.get("profile", []),
+        market_context,
+        data_quality,
+        market_score=market_score,
+        index_basket=index_basket,
+    )
+    candidates = build_execution_candidates(symbol, snapshot_id=snapshot.get("id"))
+    for idea in (candidates.get("ideas") or {}).values():
+        if idea.get("status") == "ready":
+            idea["status"] = "MODELED_ONLY"
+            idea["liquidity_grade"] = None
+
+    workspace = {
+        "schema_version": 2,
+        "symbol": symbol,
+        "snapshot_id": snapshot.get("id"),
+        "as_of": snapshot.get("timestamp"),
+        "data_quality": data_quality,
+        "historical_edge": overview.get("edge_stats", {}).get(symbol),
+        "market_context": market_context,
+        "regime": {"traders": traders, "index_basket": index_basket},
+        **scenario,
+        "execution_candidates": candidates,
+        "dashboard": dashboard,
+        "compatibility": {"version_1_aliases": True, "removal_after": "one verified release"},
+    }
+    from decision_alerts import evaluate_workspace_alerts, recent_alerts
+    from models import get_session_factory
+
+    Session = get_session_factory(engine)
+    with Session.begin() as session:
+        workspace["emitted_alerts"] = evaluate_workspace_alerts(session, workspace)
+        workspace["alerts"] = recent_alerts(session)
+    with _decision_workspace_cache_lock:
+        _decision_workspace_cache.clear()
+        _decision_workspace_cache[cache_key] = copy.deepcopy(workspace)
+    return workspace
+
+
+@eel.expose
+def get_edge_lab(filters: dict | None = None) -> dict:
+    from edge_lab import query_edge_lab
+    from models import get_session_factory
+
+    Session = get_session_factory(engine)
+    with Session() as session:
+        return query_edge_lab(session, filters or {})
+
+
+@eel.expose
+def create_journal_entry(payload: dict) -> dict:
+    from models import get_session_factory
+    from trade_journal import create_entry
+    Session = get_session_factory(engine)
+    with Session.begin() as session:
+        return create_entry(session, payload)
+
+
+@eel.expose
+def update_journal_entry(entry_id: int, payload: dict) -> dict:
+    from models import get_session_factory
+    from trade_journal import update_entry
+    Session = get_session_factory(engine)
+    with Session.begin() as session:
+        return update_entry(session, entry_id, payload)
+
+
+@eel.expose
+def delete_journal_entry(entry_id: int) -> bool:
+    from models import get_session_factory
+    from trade_journal import delete_entry
+    Session = get_session_factory(engine)
+    with Session.begin() as session:
+        return delete_entry(session, entry_id)
+
+
+@eel.expose
+def get_journal_entries(symbol: str | None = None) -> list[dict]:
+    from models import get_session_factory
+    from trade_journal import list_entries
+    Session = get_session_factory(engine)
+    with Session() as session:
+        return list_entries(session, symbol)
+
+
+@eel.expose
+def get_weekly_journal_review(week_start: str | None = None) -> dict:
+    from models import get_session_factory
+    from trade_journal import weekly_review
+    Session = get_session_factory(engine)
+    with Session() as session:
+        return weekly_review(session, week_start)
+
+
+@eel.expose
+def get_trace_dates(symbol: str = "SPX", limit: int = 30) -> list[str]:
+    symbol = str(symbol or "SPX").strip().upper()
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text("SELECT DISTINCT date(timestamp) AS session_date FROM gex_snapshots WHERE symbol = :symbol ORDER BY session_date DESC LIMIT :limit"),
+            {"symbol": symbol, "limit": max(1, min(int(limit or 30), 90))},
+        ).fetchall()
+    return [str(row.session_date) for row in rows if row.session_date]
+
+
+@eel.expose
+def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | None = None) -> dict:
+    """Returns a TRACE-style intraday gamma heatmap grid for one symbol."""
+    symbol = str(symbol or "").strip().upper()
+    try:
+        lookback_minutes = max(30, min(int(minutes or 390), 480))
+    except (TypeError, ValueError):
+        lookback_minutes = 390
+
+    try:
+        with engine.connect() as conn:
+            latest = conn.execute(
+                text("""
+                    SELECT id, timestamp, symbol, spot_price, flip_strike, total_net_gex
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                      AND (:session_date IS NULL OR date(timestamp) = :session_date)
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """),
+                {"symbol": symbol, "session_date": str(session_date) if session_date else None},
+            ).fetchone()
+
+            if not latest:
+                return {"error": f"No data found for {symbol}.", "symbol": symbol}
+
+            latest_time = parse_timestamp(latest.timestamp) or datetime.now()
+            start_time = latest_time - timedelta(minutes=lookback_minutes)
+
+            heatmap_rows = conn.execute(
+                text("""
+                    SELECT
+                        strftime('%Y-%m-%d %H:%M:00', r.timestamp) AS bucket,
+                        r.strike_price,
+                        SUM(r.gex_value) AS net_gex,
+                        SUM(CASE WHEN UPPER(r.option_type) LIKE '%CALL%' THEN r.gex_value ELSE 0 END) AS call_gex,
+                        SUM(CASE WHEN UPPER(r.option_type) LIKE '%PUT%' THEN r.gex_value ELSE 0 END) AS put_gex,
+                        SUM(r.open_interest) AS open_interest
+                    FROM raw_option_greeks r
+                    WHERE r.symbol = :symbol
+                      AND r.timestamp >= :start_time
+                      AND date(r.timestamp) = date(:latest_time)
+                    GROUP BY bucket, r.strike_price
+                    ORDER BY bucket ASC, r.strike_price ASC
+                """),
+                {
+                    "symbol": symbol,
+                    "start_time": start_time,
+                    "latest_time": latest_time,
+                },
+            ).fetchall()
+
+            spot_rows = conn.execute(
+                text("""
+                    SELECT
+                        strftime('%Y-%m-%d %H:%M:00', timestamp) AS bucket,
+                        AVG(spot_price) AS spot_price
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                      AND timestamp >= :start_time
+                      AND date(timestamp) = date(:latest_time)
+                    GROUP BY bucket
+                    ORDER BY bucket ASC
+                """),
+                {
+                    "symbol": symbol,
+                    "start_time": start_time,
+                    "latest_time": latest_time,
+                },
+            ).fetchall()
+
+            spot_tick_rows = conn.execute(
+                text("""
+                    SELECT timestamp, spot_price
+                    FROM gex_snapshots
+                    WHERE symbol = :symbol
+                      AND timestamp >= :start_time
+                      AND date(timestamp) = date(:latest_time)
+                    ORDER BY timestamp ASC
+                """),
+                {
+                    "symbol": symbol,
+                    "start_time": start_time,
+                    "latest_time": latest_time,
+                },
+            ).fetchall()
+
+            latest_profile_rows = conn.execute(
+                text("""
+                    SELECT
+                        strike_price,
+                        SUM(gex_value) AS net_gex,
+                        SUM(CASE WHEN UPPER(option_type) LIKE '%CALL%' THEN gex_value ELSE 0 END) AS call_gex,
+                        SUM(CASE WHEN UPPER(option_type) LIKE '%PUT%' THEN gex_value ELSE 0 END) AS put_gex,
+                        SUM(open_interest) AS open_interest
+                    FROM raw_option_greeks
+                    WHERE snapshot_id = :snapshot_id
+                    GROUP BY strike_price
+                    ORDER BY strike_price ASC
+                """),
+                {"snapshot_id": latest.id},
+            ).fetchall()
+
+            pressure_rows = conn.execute(
+                text("""
+                    SELECT timestamp, strike_price, option_type, delta, gamma,
+                           open_interest, underlying_price, expiration_date
+                    FROM raw_option_greeks
+                    WHERE symbol = :symbol
+                      AND timestamp >= :start_time
+                      AND date(timestamp) = date(:latest_time)
+                    ORDER BY timestamp, strike_price
+                """),
+                {"symbol": symbol, "start_time": start_time, "latest_time": latest_time},
+            ).fetchall() if DB_SCHEMA_CURRENT else []
+
+            overlay_rows = conn.execute(
+                text("""
+                    SELECT emitted_at AS timestamp, 'scenario' AS overlay_type,
+                           scenario_id, scenario_type AS label, target, invalidation
+                    FROM signal_events
+                    WHERE symbol = :symbol AND date(emitted_at) = date(:latest_time)
+                    UNION ALL
+                    SELECT created_at AS timestamp, 'alert' AS overlay_type,
+                           scenario_id, alert_type AS label, NULL AS target, NULL AS invalidation
+                    FROM decision_alerts
+                    WHERE symbol = :symbol AND date(created_at) = date(:latest_time)
+                    ORDER BY timestamp
+                """),
+                {"symbol": symbol, "latest_time": latest_time},
+            ).fetchall()
+
+        heatmap = [
+            {
+                "timestamp": str(row.bucket),
+                "time": str(row.bucket)[11:16],
+                "strike": float(row.strike_price or 0),
+                "net_gex": float(row.net_gex or 0),
+                "call_gex": float(row.call_gex or 0),
+                "put_gex": float(row.put_gex or 0),
+                "open_interest": int(row.open_interest or 0),
+            }
+            for row in heatmap_rows
+            if row.strike_price is not None
+        ]
+        from option_math import charm_exposure, delta_pressure
+
+        pressure = {}
+        matched_charm = 0
+        total_contracts = 0
+        for row in pressure_rows:
+            item = dict(row._mapping)
+            timestamp = parse_timestamp(item.get("timestamp"))
+            if timestamp is None or item.get("strike_price") is None:
+                continue
+            bucket = timestamp.strftime("%Y-%m-%d %H:%M:00")
+            key = (bucket, float(item["strike_price"]))
+            aggregate = pressure.setdefault(key, {"modeled_delta_pressure": 0.0, "modeled_charm_pressure": 0.0})
+            delta_value = delta_pressure(item)
+            charm_value = charm_exposure(item, float(item.get("underlying_price") or latest.spot_price or 0), timestamp, dt_time(16, 0))
+            total_contracts += 1
+            if delta_value is not None:
+                aggregate["modeled_delta_pressure"] += delta_value
+            if charm_value is not None:
+                aggregate["modeled_charm_pressure"] += charm_value
+                matched_charm += 1
+        for row in heatmap:
+            row.update(pressure.get((row["timestamp"], row["strike"]), {"modeled_delta_pressure": 0.0, "modeled_charm_pressure": 0.0}))
+        spot_path = [
+            {
+                "timestamp": str(row.bucket),
+                "time": str(row.bucket)[11:16],
+                "spot_price": float(row.spot_price or 0),
+            }
+            for row in spot_rows
+        ]
+        spot_ticks = [
+            {
+                "timestamp": str(row.timestamp),
+                "time": str(row.timestamp)[11:16],
+                "spot_price": float(row.spot_price or 0),
+            }
+            for row in spot_tick_rows
+        ]
+        latest_profile = [
+            {
+                "strike": float(row.strike_price or 0),
+                "net_gex": float(row.net_gex or 0),
+                "call_gex": float(row.call_gex or 0),
+                "put_gex": float(row.put_gex or 0),
+                "open_interest": int(row.open_interest or 0),
+            }
+            for row in latest_profile_rows
+            if row.strike_price is not None
+        ]
+        strikes = sorted({row["strike"] for row in heatmap})
+        buckets = sorted({row["timestamp"] for row in heatmap})
+        values = [row["net_gex"] for row in heatmap]
+
+        return {
+            "symbol": symbol,
+            "timestamp": str(latest.timestamp),
+            "session_date": str(latest_time.date()),
+            "spot_price": float(latest.spot_price or 0),
+            "flip_strike": float(latest.flip_strike or 0),
+            "total_net_gex": float(latest.total_net_gex or 0),
+            "range": {
+                "start": str(start_time),
+                "end": str(latest_time),
+                "minutes": lookback_minutes,
+                "buckets": len(buckets),
+                "strikes": len(strikes),
+                "cells": len(heatmap),
+                "min_strike": min(strikes) if strikes else None,
+                "max_strike": max(strikes) if strikes else None,
+                "min_net_gex": min(values) if values else 0,
+                "max_net_gex": max(values) if values else 0,
+            },
+            "heatmap": heatmap,
+            "spot_path": spot_path,
+            "spot_ticks": spot_ticks,
+            "latest_profile": latest_profile,
+            "overlays": [dict(row._mapping) | {"timestamp": str(row.timestamp)} for row in overlay_rows],
+            "modeled_pressure_coverage": {
+                "matched_contracts": matched_charm,
+                "total_contracts": total_contracts,
+                "ratio": (matched_charm / total_contracts) if total_contracts else 0,
+                "warning": "Modeled Charm coverage below 80%" if not total_contracts or matched_charm / total_contracts < 0.8 else None,
+            },
+        }
+
+    except Exception as e:
+        print(f"TRACE data error: {e}")
+        return {"error": str(e), "symbol": symbol}
 
 
 def _parse_one_off_date(value: str) -> date:
@@ -817,17 +1347,23 @@ def get_one_off_profile(snapshot_id: int) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def _latest_snapshot_and_raw_rows(conn, symbol: str):
-    snap_row = conn.execute(
-        text("""
-            SELECT *
-            FROM gex_snapshots
-            WHERE symbol = :symbol
-            ORDER BY timestamp DESC
-            LIMIT 1
-        """),
-        {"symbol": symbol},
-    ).fetchone()
+def _latest_snapshot_and_raw_rows(conn, symbol: str, snapshot_id: int | None = None):
+    if snapshot_id:
+        snap_row = conn.execute(
+            text("SELECT * FROM gex_snapshots WHERE id = :snapshot_id AND symbol = :symbol LIMIT 1"),
+            {"snapshot_id": snapshot_id, "symbol": symbol},
+        ).fetchone()
+    else:
+        snap_row = conn.execute(
+            text("""
+                SELECT *
+                FROM gex_snapshots
+                WHERE symbol = :symbol
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """),
+            {"symbol": symbol},
+        ).fetchone()
     if not snap_row:
         return None, []
 
@@ -842,7 +1378,9 @@ def _latest_snapshot_and_raw_rows(conn, symbol: str):
                 gamma,
                 open_interest,
                 underlying_price,
-                gex_value
+                gex_value,
+                bid, ask, mid_price, last_price, bid_size, ask_size, volume,
+                implied_volatility, bid_timestamp, ask_timestamp, last_timestamp
             FROM raw_option_greeks
             WHERE snapshot_id = :snapshot_id
             ORDER BY strike_price ASC, option_type ASC
@@ -855,10 +1393,7 @@ def _latest_snapshot_and_raw_rows(conn, symbol: str):
                 osi_symbol,
                 strike_price,
                 option_type,
-                delta,
-                gamma,
                 open_interest,
-                underlying_price,
                 gex_value
             FROM raw_option_greeks
             WHERE symbol = :symbol AND timestamp = :ts
@@ -1005,12 +1540,11 @@ def _build_debit_spread_idea(raw_rows: list[dict], summary: dict, spot: float) -
     }
 
 
-@eel.expose
-def get_trade_setups(symbol: str = "SPX") -> dict:
+def build_execution_candidates(symbol: str = "SPX", snapshot_id: int | None = None) -> dict:
     try:
         symbol = str(symbol or "SPX").upper()
         with engine.connect() as conn:
-            snap_row, raw_rows = _latest_snapshot_and_raw_rows(conn, symbol)
+            snap_row, raw_rows = _latest_snapshot_and_raw_rows(conn, symbol, snapshot_id=snapshot_id)
             if not snap_row:
                 return {"error": f"No data found for {symbol}"}
             if not raw_rows:
@@ -1040,6 +1574,27 @@ def get_trade_setups(symbol: str = "SPX") -> dict:
                 for item in sorted(summary.values(), key=lambda row: row["strike"])
             ]
 
+            ideas = {
+                "butterfly": _build_butterfly_idea(raw_rows, summary, spot),
+                "debit_spread": _build_debit_spread_idea(raw_rows, summary, spot),
+            }
+            from execution_quotes import candidate_from_persisted_quotes
+
+            settings = _load_settings()
+            maximum_risk = float(settings.get("maximum_risk_dollars", 500) or 500)
+            fees = float(settings.get("fees_per_contract", 1.25) or 0)
+            ideas = {
+                key: candidate_from_persisted_quotes(
+                    idea,
+                    raw_rows,
+                    symbol=symbol,
+                    now=datetime.now(),
+                    maximum_risk=maximum_risk,
+                    fees_per_contract=fees,
+                )
+                for key, idea in ideas.items()
+            }
+
             return {
                 "symbol": symbol,
                 "timestamp": str(getattr(snap_row, "timestamp", "")),
@@ -1048,10 +1603,7 @@ def get_trade_setups(symbol: str = "SPX") -> dict:
                 "pricing_model": "Greek-implied theoretical mid from stored snapshot delta/gamma",
                 "pit_wall_count": DEFAULT_PIT_WALL_COUNT,
                 "profile": profile,
-                "ideas": {
-                    "butterfly": _build_butterfly_idea(raw_rows, summary, spot),
-                    "debit_spread": _build_debit_spread_idea(raw_rows, summary, spot),
-                },
+                "ideas": ideas,
                 "backtest_lens": {
                     "butterfly": "GEX-centered flies led the sample.",
                     "debit_spread": "Major-wall pits had the strongest intraday touch profile among pit variants.",
@@ -1062,54 +1614,210 @@ def get_trade_setups(symbol: str = "SPX") -> dict:
         print(f"Error in trade setups: {e}")
         return {"error": str(e)}
 
+
+@eel.expose
+def get_trade_setups(symbol: str = "SPX") -> dict:
+    """Deprecated version-1 compatibility endpoint."""
+    return build_execution_candidates(symbol)
+
+def _latest_overview_snapshots(conn, symbols):
+    symbols = sorted({str(symbol).upper() for symbol in symbols if symbol})
+    if not symbols:
+        return {}
+    params = {f"symbol_{index}": symbol for index, symbol in enumerate(symbols)}
+    placeholders = ", ".join(f":symbol_{index}" for index in range(len(symbols)))
+    rows = conn.execute(
+        text(f"""
+            SELECT *
+            FROM (
+                SELECT snapshots.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY timestamp DESC, id DESC
+                       ) AS overview_rank
+                FROM gex_snapshots AS snapshots
+                WHERE symbol IN ({placeholders})
+            ) AS ranked
+            WHERE overview_rank = 1
+            ORDER BY symbol
+        """),
+        params,
+    ).fetchall()
+    return {str(row.symbol).upper(): row for row in rows}
+
+
+def _overview_raw_rows(conn, snapshots_by_symbol):
+    if not snapshots_by_symbol:
+        return {}
+
+    rows = []
+    if DB_SCHEMA_CURRENT:
+        snapshot_ids = [int(row.id) for row in snapshots_by_symbol.values()]
+        params = {f"snapshot_{index}": snapshot_id for index, snapshot_id in enumerate(snapshot_ids)}
+        placeholders = ", ".join(f":snapshot_{index}" for index in range(len(snapshot_ids)))
+        rows = conn.execute(
+            text(f"""
+                SELECT snapshot_id, symbol, timestamp, strike_price, option_type,
+                       delta, gamma, gex_value, open_interest, underlying_price,
+                       expiration_date
+                FROM raw_option_greeks
+                WHERE snapshot_id IN ({placeholders})
+                ORDER BY snapshot_id, strike_price
+            """),
+            params,
+        ).fetchall()
+    else:
+        clauses = []
+        params = {}
+        for index, (symbol, snapshot) in enumerate(sorted(snapshots_by_symbol.items())):
+            clauses.append(f"(symbol = :symbol_{index} AND timestamp = :timestamp_{index})")
+            params[f"symbol_{index}"] = symbol
+            params[f"timestamp_{index}"] = snapshot.timestamp
+        rows = conn.execute(
+            text(f"""
+                SELECT symbol, timestamp, strike_price, option_type, delta, gamma,
+                       gex_value, open_interest, underlying_price, expiration_date
+                FROM raw_option_greeks
+                WHERE {' OR '.join(clauses)}
+                ORDER BY symbol, strike_price
+            """),
+            params,
+        ).fetchall()
+
+    grouped = {symbol: [] for symbol in snapshots_by_symbol}
+    for row in rows:
+        grouped.setdefault(str(row.symbol).upper(), []).append(row)
+    return grouped
+
+
+def _overview_weight_key(weights):
+    return tuple(sorted((str(symbol).upper(), float(weight or 0)) for symbol, weight in weights.items()))
+
+
+def _attach_overview_edge_stats(core_overview):
+    overview_data = copy.deepcopy(core_overview)
+    overview_data["edge_stats"] = {}
+    overview_data.pop("edge_stats_error", None)
+    try:
+        from ninjatrader_broadcaster import _dashboard_payload_for_symbol
+        from signal_performance import edge_stats_for_dashboard
+
+        compass_label = overview_data["compass_traders"].get("label", "NEUTRAL")
+        for idx_symbol in ["NDX", "SPX"]:
+            dashboard_payload = _dashboard_payload_for_symbol(idx_symbol, overview_data)
+            overview_data["edge_stats"][idx_symbol] = edge_stats_for_dashboard(
+                dashboard_payload,
+                compass_label,
+            )
+    except Exception as exc:
+        overview_data["edge_stats_error"] = str(exc)
+    return overview_data
+
+
 @eel.expose
 def get_market_overview() -> dict:
+    global _overview_cache_key, _overview_cache_value
     try:
         import math
 
         settings = _load_settings()
 
         # Defaults if keys missing in settings
-        weights_traders = settings.get('weights', {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2})
-        weights_whale = settings.get('weights_whale', {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20})
+        weights_traders = {
+            str(symbol).upper(): float(weight or 0)
+            for symbol, weight in settings.get('weights', {"SPY": 0.5, "QQQ": 0.3, "IWM": 0.2}).items()
+        }
+        weights_whale = {
+            str(symbol).upper(): float(weight or 0)
+            for symbol, weight in settings.get('weights_index_basket', settings.get('weights_whale', {"SPX": 0.45, "NDX": 0.35, "IWM": 0.20})).items()
+        }
+        overview_symbols = set(weights_traders) | set(weights_whale) | {"NDX", "SPX"}
+
+        with engine.connect() as conn:
+            snapshots_by_symbol = _latest_overview_snapshots(conn, overview_symbols)
+
+        cache_key = (
+            str(engine.url),
+            bool(DB_SCHEMA_CURRENT),
+            _overview_weight_key(weights_traders),
+            _overview_weight_key(weights_whale),
+            tuple(
+                (symbol, getattr(snapshot, "id", None), str(getattr(snapshot, "timestamp", "")))
+                for symbol, snapshot in sorted(snapshots_by_symbol.items())
+            ),
+        )
+        with _overview_cache_lock:
+            cached_core = (
+                _overview_cache_value
+                if cache_key == _overview_cache_key and _overview_cache_value is not None
+                else None
+            )
+        if cached_core is not None:
+            return _attach_overview_edge_stats(cached_core)
+
+        with engine.connect() as conn:
+            raw_rows_by_symbol = _overview_raw_rows(conn, snapshots_by_symbol)
 
         overview_data = {
+            "schema_version": 2,
+            "compass": {},
             "compass_traders": {},
             "compass_whale": {},
+            "index_basket": {},
             "components": [],
             "tilt": [],
             "gamma_levels": {"NDX": [], "SPX": []},
             "cockpit_levels": {"NDX": [], "SPX": []},
+            "modeled_zero_gex": {"NDX": None, "SPX": None},
             "edge_stats": {}
         }
 
         def _gamma_levels_for_symbol(symbol, conn, per_side=5):
-            snap_row = conn.execute(
-                text("SELECT * FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC LIMIT 1"),
-                {"symbol": symbol}
-            ).fetchone()
+            snap_row = snapshots_by_symbol.get(symbol)
             if not snap_row:
                 return []
 
-            if DB_SCHEMA_CURRENT:
-                query_levels = text("""
-                    SELECT strike_price, option_type, gex_value, open_interest
-                    FROM raw_option_greeks
-                    WHERE snapshot_id = :snapshot_id
-                    ORDER BY strike_price
-                """)
-                level_rows = conn.execute(query_levels, {"snapshot_id": snap_row.id}).fetchall()
-            else:
-                query_levels = text("""
-                    SELECT strike_price, option_type, gex_value, open_interest
-                    FROM raw_option_greeks
-                    WHERE symbol = :symbol AND timestamp = :ts
-                    ORDER BY strike_price
-                """)
-                level_rows = conn.execute(query_levels, {"symbol": symbol, "ts": snap_row.timestamp}).fetchall()
-
             spot = getattr(snap_row, 'spot_price', 0) or 0
-            return aggregate_gamma_levels(level_rows, spot=spot, per_side=per_side)
+            return aggregate_gamma_levels(raw_rows_by_symbol.get(symbol, []), spot=spot, per_side=per_side)
+
+        def _nearest_modeled_zero(gamma_sweep: dict, spot: float):
+            if not gamma_sweep or gamma_sweep.get("status") != "ok":
+                return None
+
+            crossings = gamma_sweep.get("zero_crossings", {}).get("all", []) or []
+            finite_crossings = []
+            for crossing in crossings:
+                try:
+                    value = float(crossing)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(value) and value > 0:
+                    finite_crossings.append(value)
+
+            if not finite_crossings:
+                return None
+
+            try:
+                spot_value = float(spot)
+            except (TypeError, ValueError):
+                spot_value = 0
+
+            if spot_value and math.isfinite(spot_value):
+                return min(finite_crossings, key=lambda value: abs(value - spot_value))
+            return finite_crossings[0]
+
+        def _modeled_zero_gex_for_symbol(symbol, conn):
+            if not DB_SCHEMA_CURRENT:
+                return None
+
+            snap_row = snapshots_by_symbol.get(symbol)
+            if not snap_row:
+                return None
+
+            rows = raw_rows_by_symbol.get(symbol, [])
+            spot = getattr(snap_row, 'spot_price', 0) or 0
+            gamma_sweep = build_gamma_sweep([dict(row._mapping) for row in rows], spot, symbol)
+            return _nearest_modeled_zero(gamma_sweep, spot)
 
         def _calculate_compass_state(target_weights, conn):
             x_score_sum = 0
@@ -1121,9 +1829,7 @@ def get_market_overview() -> dict:
             composition_str = _normalized_composition(target_weights)
 
             for symbol, weight in target_weights.items():
-                # Fetch latest snapshot
-                query = text("SELECT * FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC LIMIT 1")
-                row = conn.execute(query, {"symbol": symbol}).fetchone()
+                row = snapshots_by_symbol.get(symbol)
 
                 if row:
                     # Safe Extraction
@@ -1133,21 +1839,7 @@ def get_market_overview() -> dict:
                     spot = getattr(row, 'spot_price', 0)
                     stored_flip = getattr(row, 'flip_strike', 0) or 0
                     eff_gex = getattr(row, 'effective_gex', 0)
-                    # Fetch Profile for slope calculation
-                    if DB_SCHEMA_CURRENT:
-                        query_profile = text("""
-                            SELECT strike_price, gex_value
-                            FROM raw_option_greeks
-                            WHERE snapshot_id = :snapshot_id
-                        """)
-                        profile_rows = conn.execute(query_profile, {"snapshot_id": row.id}).fetchall()
-                    else:
-                        query_profile = text("""
-                            SELECT strike_price, gex_value
-                            FROM raw_option_greeks
-                            WHERE symbol = :symbol AND timestamp = :ts
-                        """)
-                        profile_rows = conn.execute(query_profile, {"symbol": symbol, "ts": row.timestamp}).fetchall()
+                    profile_rows = raw_rows_by_symbol.get(symbol, [])
                     profile_data = [{"strike_price": r.strike_price, "gex_value": r.gex_value} for r in profile_rows]
                     acceleration = calculate_gex_slope(spot, profile_data)
 
@@ -1175,7 +1867,7 @@ def get_market_overview() -> dict:
                     # Net-vs-gross imbalance keeps tiny and massive one-sided
                     # profiles from receiving the same score.
                     vol_score, gex_imbalance = calculate_gex_imbalance_score(net_gex, call_gex, put_gex)
-                    quality = calculate_component_confidence(row, len(profile_data), flip_state, gross_gex)
+                    quality = calculate_component_data_quality(row, len(profile_data), flip_state, gross_gex)
 
                     # Add to aggregates
                     x_score_sum += vol_score * weight
@@ -1199,6 +1891,7 @@ def get_market_overview() -> dict:
                         "trend_score": trend_score,
                         "gex_imbalance": gex_imbalance,
                         "gross_gex": gross_gex,
+                        "data_quality": quality,
                         "confidence": quality["score"],
                         "warnings": quality["warnings"],
                         "age_seconds": quality["age_seconds"],
@@ -1212,6 +1905,7 @@ def get_market_overview() -> dict:
                     "y_score": 0,
                     "label": "NO DATA",
                     "strategy": "Run the strict target-day 0DTE collector to populate this view.",
+                    "data_quality": {"score": 0, "label": "NO DATA", "warnings": ["no active components"], "age_seconds": None},
                     "confidence": 0,
                     "confidence_label": "NO DATA",
                     "warnings": ["no active components"],
@@ -1273,7 +1967,7 @@ def get_market_overview() -> dict:
                 confidence_label = "HIGH"
 
             if magnitude < inner_ring_threshold or confidence < 0.60:
-                label = f"LOW CONFIDENCE {base_lbl}"
+                label = f"LOW DATA QUALITY {base_lbl}"
                 strategy = f"{base_strat} Confirm with price action; data quality is reduced."
             else:
                 label = base_lbl
@@ -1284,6 +1978,7 @@ def get_market_overview() -> dict:
                 "y_score": final_trend,
                 "label": label,
                 "strategy": strategy,
+                "data_quality": {"score": confidence, "label": confidence_label, "warnings": warnings, "age_seconds": max((c.get("age_seconds") or 0 for c in components), default=None)},
                 "confidence": confidence,
                 "confidence_label": confidence_label,
                 "warnings": warnings,
@@ -1295,10 +1990,12 @@ def get_market_overview() -> dict:
             # 1. Calculate Traders Compass
             traders_state = _calculate_compass_state(weights_traders, conn)
             overview_data["compass_traders"] = traders_state
+            overview_data["compass"] = traders_state
 
             # 2. Calculate Whale Compass
             whale_state = _calculate_compass_state(weights_whale, conn)
             overview_data["compass_whale"] = whale_state
+            overview_data["index_basket"] = whale_state
 
             # 3. Merge Unique Components for Table/Tilt Chart
             merged_comps = {}
@@ -1338,22 +2035,13 @@ def get_market_overview() -> dict:
             for idx_symbol in ["NDX", "SPX"]:
                 overview_data["gamma_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn)
                 overview_data["cockpit_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn, per_side=None)
+                overview_data["modeled_zero_gex"][idx_symbol] = _modeled_zero_gex_for_symbol(idx_symbol, conn)
 
-        try:
-            from ninjatrader_broadcaster import _dashboard_payload_for_symbol
-            from signal_performance import edge_stats_for_dashboard, label_due_outcomes
+        with _overview_cache_lock:
+            _overview_cache_key = cache_key
+            _overview_cache_value = copy.deepcopy(overview_data)
 
-            label_due_outcomes()
-            for idx_symbol in ["NDX", "SPX"]:
-                dashboard_payload = _dashboard_payload_for_symbol(idx_symbol, overview_data)
-                overview_data["edge_stats"][idx_symbol] = edge_stats_for_dashboard(
-                    dashboard_payload,
-                    overview_data.get("compass", {}).get("label", "NEUTRAL"),
-                )
-        except Exception as e:
-            overview_data["edge_stats_error"] = str(e)
-
-        return overview_data
+        return _attach_overview_edge_stats(overview_data)
 
     except Exception as e:
         print(f"Error in market overview: {e}")
@@ -1361,13 +2049,14 @@ def get_market_overview() -> dict:
 
 # --- Run App ---
 def main():
+    initialize_runtime()
     start_collector_process()
     try:
         eel.start('index.html', size=(1500, 900), port=8080)
     except OSError:
         eel.start('index.html', mode='edge', size=(1500, 900), port=8080)
     finally:
-        stop_collector_process()
+        shutdown_runtime()
 
 
 if __name__ == '__main__':

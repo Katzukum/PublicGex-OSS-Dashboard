@@ -276,11 +276,11 @@ The flip is one of the most important levels in the dashboard because it provide
 
 The system recognizes that not every flip estimate has equal quality.
 
-The best case is a true cumulative zero crossing inside the observed strike range. This receives the highest confidence.
+The best case is a true cumulative zero crossing inside the observed strike range. This receives the highest flip-quality weight.
 
-If no crossing exists, the dashboard can use a lower-confidence proxy. The proxy is selected from the strongest opposite-sign gamma cluster. This is saying: "There is no clean zero crossing, but this strike is the most meaningful opposing force in the current profile."
+If no crossing exists, the dashboard can use a lower-quality proxy. The proxy is selected from the strongest opposite-sign gamma cluster. This is saying: "There is no clean zero crossing, but this strike is the most meaningful opposing force in the current profile."
 
-If there is no zero crossing and no opposing cluster, the system can fall back to an edge estimate, which carries much lower confidence. An edge estimate means the observed strike window may not contain enough information to locate the real flip.
+If there is no zero crossing and no opposing cluster, the system can fall back to an edge estimate, which carries a much lower quality weight. An edge estimate means the observed strike window may not contain enough information to locate the real flip.
 
 The practical assumption is:
 
@@ -289,7 +289,7 @@ The practical assumption is:
 - Edge flip: weak reference level
 - Missing flip: no reliable level
 
-The dashboard lowers confidence when the flip is approximate.
+The dashboard lowers Data Quality when the flip is approximate.
 
 ## Gamma Slope
 
@@ -366,7 +366,7 @@ The dashboard scales that distance by symbol-specific sensitivity:
 trend_score = distance_pct / sensitivity
 ```
 
-Then the score is clamped between -1 and +1 and multiplied by flip confidence.
+Then the score is clamped between -1 and +1 and multiplied by the flip-quality weight.
 
 Current sensitivity values are:
 
@@ -399,19 +399,19 @@ For trend:
 basket_y = sum(trend_score_symbol * weight_symbol) / sum(weight_symbol)
 ```
 
-The dashboard calculates this separately for the Traders basket and the Whale basket.
+The dashboard calculates this separately for the Traders basket and the Index Gamma Basket.
 
 The Traders basket asks: "What does ETF-linked gamma structure say about the market?"
 
-The Whale basket asks: "What does larger index-linked gamma structure say about the market?"
+The Index Gamma Basket asks: "What does larger index-linked gamma structure say about the market?"
 
 When both baskets agree, the dashboard treats the market read as stronger. When they disagree, the cockpit becomes more cautious.
 
-## Confidence Model
+## Data Quality Model
 
-The dashboard does not treat every reading as equally trustworthy. Confidence begins at 1.0 and is reduced for known weaknesses.
+The dashboard does not treat every reading as equally trustworthy. Data Quality begins at 1.0 and is reduced for known weaknesses. It is a freshness/completeness score, not a probability that a trade will win.
 
-Confidence is reduced when:
+Data Quality is reduced when:
 
 - The option profile has fewer than 20 rows.
 - Gross GEX is missing or zero.
@@ -426,9 +426,9 @@ The time freshness assumptions are:
 - Older than 7 minutes: aging snapshot
 - Older than 15 minutes: stale snapshot
 
-The final confidence label is:
+The final Data Quality label is:
 
-| Confidence Score | Label |
+| Data Quality Score | Label |
 | ---: | --- |
 | Below 0.45 | Low |
 | 0.45 to 0.70 | Medium |
@@ -458,10 +458,10 @@ The weights are:
 raw_score = 0.45 * market_vote + 0.35 * dealer_vote + 0.20 * liquidity_vote
 ```
 
-The cockpit then adjusts the raw score by agreement and confidence:
+The server-side scenario engine adjusts the raw regime score by agreement and Data Quality:
 
 ```text
-final_score = raw_score * agreement_multiplier * component_confidence
+final_score = raw_score * agreement_multiplier * component_data_quality
 ```
 
 The agreement multiplier starts at 0.65 and increases when the pillars agree with the final direction:
@@ -482,15 +482,15 @@ The key design choice is that the cockpit requires alignment. A single bullish i
 
 ## Market Signal Pillar
 
-The Market Signal pillar blends the Traders and Whale trend scores using their confidence levels.
+The Market Signal pillar blends the Traders and Index Gamma Basket trend scores using their Data Quality levels.
 
 Conceptually:
 
 ```text
-market_vote = weighted average of Traders y-score and Whale y-score
+market_vote = Data-Quality-weighted average of Traders y-score and Index Basket y-score
 ```
 
-If the Traders and Whale baskets both point upward with good confidence, market vote becomes more positive. If both point downward, it becomes more negative. If they disagree, the result moves toward neutral.
+If the Traders and Index Gamma baskets both point upward with good Data Quality, market vote becomes more positive. If both point downward, it becomes more negative. If they disagree, the result moves toward neutral.
 
 This pillar is directional, but it is still regime-based. It does not say "buy calls because the market is up." It says the broad gamma regime is tilted in a call-supportive or put-supportive direction.
 
@@ -632,7 +632,7 @@ The dashboard also broadcasts regime and gamma level data to NinjaTrader. The ch
 
 - Market regime
 - Regime code
-- Confidence
+- Data Quality
 - X and Y compass scores
 - Strategy/context text
 - SPY, SPX, and NDX spot and flip values
@@ -685,7 +685,7 @@ These values are model parameters, not universal truths. They can be tuned over 
 
 ### Assumption 8: Weighted baskets represent useful market layers
 
-The Traders and Whale baskets are interpretations. SPY/QQQ/IWM are treated as trader-linked ETF pressure. SPX/NDX/IWM are treated as larger index-linked pressure.
+The Traders and Index Gamma baskets are interpretations. SPY/QQQ/IWM are treated as trader-linked ETF pressure. SPX/NDX/IWM are treated as larger index-linked pressure.
 
 This is a reasonable market structure split, but the weights are subjective. Different users may want different compositions.
 
@@ -715,7 +715,7 @@ Second, it converts contract-level Greeks and open interest into signed dollar g
 
 Third, it organizes that exposure by strike and by symbol, producing gamma profiles, total GEX, gamma flips, magnets, effective GEX, and slopes.
 
-Fourth, it converts the profiles into interpretable market states: compression versus expansion, bullish versus bearish trend pressure, confidence, and regime labels.
+Fourth, it converts the profiles into interpretable market states: compression versus expansion, bullish versus bearish trend pressure, Data Quality, and regime labels.
 
 Fifth, it synthesizes the broad market regime, selected-symbol dealer state, and local liquidity map into a cockpit bias.
 

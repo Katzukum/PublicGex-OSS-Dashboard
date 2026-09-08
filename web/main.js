@@ -16,13 +16,26 @@ let cachedData = null;
 let cachedSymbol = null;
 let cachedOverview = null;
 let cachedTradeSetups = null;
+let cachedOneOffData = null;
+let cachedTraceData = null;
+let cachedWorkspace = null;
 let cockpitModel = null;
+let gammaSweepOverlayEnabled = false;
+let traceMode = 'net_gex';
+let traceTimelineBuckets = [];
+let traceTimelineWindowSize = 1;
+let traceDatesSymbol = null;
 let compassHistory = { Traders: [], Whale: [] }; // Trail history per compass
+const symbolRequestCoordinator = createRequestCoordinator();
+let appliedSymbolGeneration = 0;
 
 const NUMERIC_FONT = '"Cascadia Mono", Consolas, "Roboto Mono", "JetBrains Mono", monospace';
 const CHART_TEXT = '#96a3af';
 const CHART_GRID = 'rgba(122,148,170,0.14)';
 const chartInstances = {};
+const chartZoomState = {};
+const chartInteractionHandlers = {};
+const profileAutoscaleState = {};
 
 function formatStatusAge(seconds) {
     if (seconds === null || seconds === undefined) return 'n/a';
@@ -37,6 +50,7 @@ async function updateBackendStatus() {
 
     try {
         const status = await eel.get_backend_status()();
+        recordActivity(ActivityFeed.statusActivity(status));
         if (!status.ok) {
             statusEl.className = 'status-offline';
             statusEl.innerHTML = '<i></i> No Backend';
@@ -64,6 +78,7 @@ async function updateBackendStatus() {
     } catch (e) {
         statusEl.className = 'status-error';
         statusEl.innerHTML = '<i></i> Status Error';
+        recordActivity(ActivityFeed.statusActivity({ ok: false, error: e?.message || 'Status request failed.' }));
         console.error('Backend status failed', e);
     }
 }
@@ -96,7 +111,13 @@ function resizeCharts(ids = Object.keys(chartInstances)) {
 function setChartOption(id, option) {
     const chart = getChart(id);
     if (!chart) return;
+    persistChartZoom(id);
+    const storedZoom = option?.dataZoom ? chartZoomState[id] : null;
+    chart.dispatchAction({ type: 'hideTip' });
     chart.setOption(option, true);
+    if (storedZoom) {
+        requestAnimationFrame(() => applyChartZoomState(chart, storedZoom));
+    }
     resizeCharts([id]);
 }
 
@@ -105,11 +126,11 @@ function zoomDataOptions(startValue = null, endValue = null) {
         type: 'inside',
         xAxisIndex: 0,
         filterMode: 'none',
-        zoomOnMouseWheel: true,
-        moveOnMouseWheel: true,
+        zoomOnMouseWheel: false,
+        moveOnMouseWheel: false,
         moveOnMouseMove: true,
         preventDefaultMouseMove: true,
-        throttle: 50
+        throttle: 80
     };
 
     if (Number.isFinite(startValue) && Number.isFinite(endValue) && startValue < endValue) {
@@ -118,6 +139,65 @@ function zoomDataOptions(startValue = null, endValue = null) {
     }
 
     return [insideZoom];
+}
+
+function captureChartZoomState(chart) {
+    const dataZoom = chart?.getOption?.()?.dataZoom?.[0];
+    if (!dataZoom) return null;
+
+    const state = {};
+    if (Number.isFinite(dataZoom.start) && Number.isFinite(dataZoom.end)) {
+        state.start = dataZoom.start;
+        state.end = dataZoom.end;
+    }
+    if (dataZoom.startValue !== undefined && dataZoom.startValue !== null) {
+        state.startValue = dataZoom.startValue;
+    }
+    if (dataZoom.endValue !== undefined && dataZoom.endValue !== null) {
+        state.endValue = dataZoom.endValue;
+    }
+
+    return Object.keys(state).length ? state : null;
+}
+
+function persistChartZoom(id) {
+    const chart = chartInstances[id];
+    if (!chart || chart.isDisposed()) return;
+    const state = captureChartZoomState(chart);
+    if (state) chartZoomState[id] = state;
+}
+
+function applyChartZoomState(chart, state) {
+    if (!chart || chart.isDisposed() || !state) return;
+
+    const action = { type: 'dataZoom', dataZoomIndex: 0 };
+    if (Number.isFinite(state.start) && Number.isFinite(state.end)) {
+        action.start = state.start;
+        action.end = state.end;
+    } else if (state.startValue !== undefined && state.endValue !== undefined) {
+        action.startValue = state.startValue;
+        action.endValue = state.endValue;
+    } else {
+        return;
+    }
+
+    chart.dispatchAction(action);
+}
+
+function resetChartZoom(id) {
+    delete chartZoomState[id];
+    const chart = chartInstances[id];
+    if (!chart || chart.isDisposed()) return;
+    chart.dispatchAction({
+        type: 'dataZoom',
+        dataZoomIndex: 0,
+        start: 0,
+        end: 100
+    });
+}
+
+function resetChartsZoom(ids = Object.keys(chartZoomState)) {
+    ids.forEach(resetChartZoom);
 }
 
 function nearestAxisIndex(axisValues, rawValue) {
@@ -134,46 +214,112 @@ function nearestAxisIndex(axisValues, rawValue) {
     return exactIndex >= 0 ? exactIndex : 0;
 }
 
+function currentZoomIndices(chart, axisValues) {
+    const maxIndex = axisValues.length - 1;
+    const state = captureChartZoomState(chart) || {};
+
+    if (state.startValue !== undefined && state.endValue !== undefined) {
+        const startIndex = nearestAxisIndex(axisValues, state.startValue);
+        const endIndex = nearestAxisIndex(axisValues, state.endValue);
+        return {
+            startIndex: Math.max(0, Math.min(startIndex, endIndex)),
+            endIndex: Math.min(maxIndex, Math.max(startIndex, endIndex))
+        };
+    }
+
+    const startPct = Number.isFinite(state.start) ? state.start : 0;
+    const endPct = Number.isFinite(state.end) ? state.end : 100;
+    return {
+        startIndex: Math.max(0, Math.round(maxIndex * startPct / 100)),
+        endIndex: Math.min(maxIndex, Math.round(maxIndex * endPct / 100))
+    };
+}
+
+function zoomChartToIndexRange(chart, axisValues, startIndex, endIndex) {
+    const maxIndex = axisValues.length - 1;
+    const boundedStart = Math.max(0, Math.min(startIndex, maxIndex));
+    const boundedEnd = Math.max(boundedStart, Math.min(endIndex, maxIndex));
+
+    chart.dispatchAction({
+        type: 'dataZoom',
+        dataZoomIndex: 0,
+        startValue: axisValues[boundedStart],
+        endValue: axisValues[boundedEnd]
+    });
+}
+
 function zoomChartAroundIndex(chart, axisValues, dataIndex, zoomSize) {
     const halfWindow = zoomSize / 2;
     const startIndex = Math.max(Math.floor(dataIndex - halfWindow), 0);
     const endIndex = Math.min(Math.ceil(dataIndex + halfWindow), axisValues.length - 1);
 
-    chart.dispatchAction({
-        type: 'dataZoom',
-        dataZoomIndex: 0,
-        startValue: axisValues[startIndex],
-        endValue: axisValues[endIndex]
-    });
+    zoomChartToIndexRange(chart, axisValues, startIndex, endIndex);
+}
+
+function wheelZoomChart(chart, axisValues, event, zoomSize = 6) {
+    if (!chart || !axisValues?.length) return;
+    const point = [event.offsetX, event.offsetY];
+    if (!chart.containPixel({ gridIndex: 0 }, point)) return;
+
+    event.event?.preventDefault?.();
+    const wheelDelta = Number(event.wheelDelta ?? -(event.event?.deltaY || 0));
+    if (!Number.isFinite(wheelDelta) || wheelDelta === 0) return;
+
+    const [rawX] = chart.convertFromPixel({ gridIndex: 0 }, point);
+    const centerIndex = nearestAxisIndex(axisValues, rawX);
+    const { startIndex, endIndex } = currentZoomIndices(chart, axisValues);
+    const currentSpan = Math.max(2, endIndex - startIndex + 1);
+    const minSpan = Math.max(2, Math.min(zoomSize, axisValues.length));
+    const factor = wheelDelta > 0 ? 0.88 : 1.12;
+    const nextSpan = Math.max(minSpan, Math.min(axisValues.length, Math.round(currentSpan * factor)));
+    const leftShare = currentSpan > 1 ? (centerIndex - startIndex) / (currentSpan - 1) : 0.5;
+    let nextStart = Math.round(centerIndex - (nextSpan - 1) * Math.max(0, Math.min(1, leftShare)));
+    let nextEnd = nextStart + nextSpan - 1;
+
+    if (nextStart < 0) {
+        nextEnd -= nextStart;
+        nextStart = 0;
+    }
+    if (nextEnd > axisValues.length - 1) {
+        nextStart -= nextEnd - (axisValues.length - 1);
+        nextEnd = axisValues.length - 1;
+    }
+
+    zoomChartToIndexRange(chart, axisValues, nextStart, nextEnd);
 }
 
 function attachClickZoom(id, axisValues, zoomSize = 6) {
     const chart = getChart(id);
     if (!chart || !axisValues?.length) return;
+    const previous = chartInteractionHandlers[id];
 
-    chart.off('click');
-    chart.on('click', params => {
-        if (params.componentType !== 'series' || params.dataIndex == null) return;
-        zoomChartAroundIndex(chart, axisValues, params.dataIndex, zoomSize);
-    });
+    if (previous?.dataZoom) chart.off('dataZoom', previous.dataZoom);
+    if (previous?.dblclick) chart.getZr().off('dblclick', previous.dblclick);
+    if (previous?.mousewheel) chart.getZr().off('mousewheel', previous.mousewheel);
 
-    chart.getZr().off('click');
-    chart.getZr().on('click', event => {
+    const dataZoom = event => {
+        chartZoomState[id] = captureChartZoomState(chart) || chartZoomState[id];
+        if (id === 'traceHeatmapChart') {
+            syncTraceTimelineFromChart(chart, axisValues);
+        }
+        const autoscale = profileAutoscaleState[id];
+        if (autoscale?.rows?.length) {
+            const { startValue, endValue } = resolveZoomRange(event, autoscale.strikes);
+            applyProfileAxisBounds(chart, autoscale.rows, startValue, endValue);
+        }
+    };
+    const dblclick = event => {
         const point = [event.offsetX, event.offsetY];
         if (!chart.containPixel({ gridIndex: 0 }, point)) return;
         const [rawX] = chart.convertFromPixel({ gridIndex: 0 }, point);
         zoomChartAroundIndex(chart, axisValues, nearestAxisIndex(axisValues, rawX), zoomSize);
-    });
+    };
+    const mousewheel = event => wheelZoomChart(chart, axisValues, event, zoomSize);
 
-    chart.off('dblclick');
-    chart.on('dblclick', () => {
-        chart.dispatchAction({
-            type: 'dataZoom',
-            dataZoomIndex: 0,
-            start: 0,
-            end: 100
-        });
-    });
+    chart.on('dataZoom', dataZoom);
+    chart.getZr().on('dblclick', dblclick);
+    chart.getZr().on('mousewheel', mousewheel);
+    chartInteractionHandlers[id] = { dataZoom, dblclick, mousewheel };
 }
 
 function formatCompactNumber(value) {
@@ -203,6 +349,61 @@ function formatMillionsValue(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return '--';
     return `${formatMillionsAxis(n)}M`;
+}
+
+function formatShareCount(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    const abs = Math.abs(n);
+    if (abs >= 1000000) return `${(n / 1000000).toFixed(2)}M sh`;
+    if (abs >= 1000) return `${(n / 1000).toFixed(1)}k sh`;
+    return `${n.toFixed(0)} sh`;
+}
+
+function sweepRowsFromPayload(gammaSweep, divisor = 1) {
+    if (!gammaSweep || gammaSweep.status !== 'ok' || !Array.isArray(gammaSweep.points)) return [];
+    return gammaSweep.points
+        .map(point => ({
+            spot: Number(point.spot),
+            netGex: Number(point.net_gex) / divisor,
+            hedgeShares: Number(point.hedge_shares)
+        }))
+        .filter(point => Number.isFinite(point.spot) && Number.isFinite(point.netGex) && Number.isFinite(point.hedgeShares));
+}
+
+function nearestSweepPoint(rows, spot) {
+    const target = Number(spot);
+    if (!rows.length || !Number.isFinite(target)) return null;
+    return rows.reduce((best, row) => (
+        !best || Math.abs(row.spot - target) < Math.abs(best.spot - target) ? row : best
+    ), null);
+}
+
+function sweepZeroLabel(gammaSweep, fallback) {
+    const below = Number(gammaSweep?.zero_crossings?.below);
+    const above = Number(gammaSweep?.zero_crossings?.above);
+    const hasBelow = Number.isFinite(below);
+    const hasAbove = Number.isFinite(above);
+    if (hasBelow && hasAbove) return `B ${formatTargetPrice(below)} / A ${formatTargetPrice(above)}`;
+    if (hasBelow) return `B ${formatTargetPrice(below)}`;
+    if (hasAbove) return `A ${formatTargetPrice(above)}`;
+    return fallback ? formatTargetPrice(fallback) : '--';
+}
+
+function sweepZeroMarkerLevels(gammaSweep, fallback, spot) {
+    const levels = [];
+    const below = Number(gammaSweep?.zero_crossings?.below);
+    const above = Number(gammaSweep?.zero_crossings?.above);
+    if (Number.isFinite(below)) {
+        levels.push({ label: 'Zero Gamma below', value: below, color: '#ff454f', dash: 'dash' });
+    }
+    if (Number.isFinite(above) && (!Number.isFinite(below) || Math.abs(above - below) > 0.0001)) {
+        levels.push({ label: 'Zero Gamma above', value: above, color: '#ff454f', dash: 'dash' });
+    }
+    if (levels.length) return levels;
+    return Number.isFinite(Number(fallback))
+        ? [{ label: 'Flip', value: fallback, color: '#ff454f', dash: 'dash' }]
+        : [];
 }
 
 function niceStep(value) {
@@ -305,13 +506,10 @@ function applyProfileAxisBounds(chart, rows, startValue, endValue) {
 function attachProfileAxisAutoscale(id, rows) {
     const chart = getChart(id);
     if (!chart || !rows.length) return;
-    const strikes = rows.map(row => row.strike);
-
-    chart.off('dataZoom');
-    chart.on('dataZoom', event => {
-        const { startValue, endValue } = resolveZoomRange(event, strikes);
-        applyProfileAxisBounds(chart, rows, startValue, endValue);
-    });
+    profileAutoscaleState[id] = {
+        rows,
+        strikes: rows.map(row => row.strike)
+    };
 }
 
 function focusedStrikeWindow(strikes, markers, spotPrice) {
@@ -398,9 +596,9 @@ function profileTooltipFormatter(rows, valueFormatter = formatCompactNumber) {
 
         return [
             `<strong>${formatAxisPrice(nearest.strike)}</strong>`,
-            `<span style="color:#ff8b1a">●</span> Call GEX: ${valueFormatter(nearest.call)}`,
-            `<span style="color:#2388e8">●</span> Put GEX: ${valueFormatter(nearest.put)}`,
-            `<span style="color:#b177ff">●</span> Net GEX: ${valueFormatter(nearest.net)}`,
+            `<span style="color:#ff8b1a">&bull;</span> Call GEX: ${valueFormatter(nearest.call)}`,
+            `<span style="color:#2388e8">&bull;</span> Put GEX: ${valueFormatter(nearest.put)}`,
+            `<span style="color:#b177ff">&bull;</span> Net GEX by Strike: ${valueFormatter(nearest.net)}`,
         ].join('<br/>');
     };
 }
@@ -484,22 +682,29 @@ function switchView(viewName) {
     document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
 
     const target = document.getElementById(`view-${viewName}`);
-    if (target) target.style.display = ['cockpit', 'setups', 'one-off'].includes(viewName) ? 'grid' : 'block';
+    if (target) {
+        target.style.display = viewName === 'one-off'
+            ? 'flex'
+            : ['cockpit', 'edge-lab', 'trace'].includes(viewName) ? 'grid' : 'block';
+        if (viewName === 'one-off') target.scrollTop = 0;
+    }
 
     document.querySelectorAll(`[data-view="${viewName}"]`).forEach(btn => btn.classList.add('active'));
-    if (viewName === 'dashboard') document.querySelector('[data-view="dashboard"]')?.classList.add('active');
-
     if (viewName === 'cockpit') {
         document.querySelector('[data-view="cockpit"]')?.classList.add('active');
         loadCockpit();
     }
-    if (viewName === 'setups') {
-        document.querySelector('[data-view="setups"]')?.classList.add('active');
-        loadTradeSetups();
+    if (viewName === 'edge-lab') {
+        document.querySelector('[data-view="edge-lab"]')?.classList.add('active');
+        loadEdgeLab();
     }
-    if (viewName === 'market-signal') {
-        document.querySelector('[data-view="market-signal"]')?.classList.add('active');
+    if (viewName === 'regime') {
+        document.querySelector('[data-view="regime"]')?.classList.add('active');
         loadOverview();
+    }
+    if (viewName === 'trace') {
+        document.querySelector('[data-view="trace"]')?.classList.add('active');
+        loadTrace();
     }
     if (viewName === 'analysis') document.querySelector('[data-view="analysis"]')?.classList.add('active');
     if (viewName === 'one-off') {
@@ -508,106 +713,97 @@ function switchView(viewName) {
     }
     if (viewName === 'settings') document.querySelector('[data-view="settings"]')?.classList.add('active');
 
-    if (viewName === 'dashboard' && cachedData) resizeCharts(['profileChart', 'historyChart']);
-    if (viewName === 'market-signal') resizeCharts(['tiltChart']);
-    if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart']);
-    if (viewName === 'setups' && cachedData) resizeCharts(['setupProfileChart']);
-    if (viewName === 'one-off') resizeCharts(['oneOffProfileChart']);
+    if (viewName === 'regime') resizeCharts(['tiltChart']);
+    if (viewName === 'trace') resizeCharts(['traceHeatmapChart', 'traceProfileChart', 'traceTrendChart']);
+    if (viewName === 'cockpit' && cachedData) resizeCharts(['cockpitProfileChart', 'cockpitSweepChart']);
+    if (viewName === 'edge-lab') resizeCharts(['edgeLabExpectancyChart']);
+    if (viewName === 'one-off') resizeCharts(['oneOffProfileChart', 'oneOffSweepChart']);
 }
 
 async function loadSymbol() {
     const symbol = document.getElementById('symbolSelector').value;
     if (!symbol) return;
-    const data = await eel.get_dashboard_data(symbol)();
 
-    if (data.error) {
-        console.error(data.error);
-        showToast("No Data", data.error, "info");
+    const result = await symbolRequestCoordinator.request(
+        symbol,
+        () => eel.get_decision_workspace(symbol)()
+    );
+    const selectedSymbol = document.getElementById('symbolSelector').value;
+    if (!symbolRequestCoordinator.isCurrent(result, selectedSymbol)) return false;
+    if (result.generation === appliedSymbolGeneration) return true;
+    if (result.error) {
+        console.error(result.error);
+        showToast("No Data", "Could not load the selected symbol.", "info");
+        return false;
+    }
+
+    const workspace = result.value;
+
+    if (workspace.error) {
+        console.error(workspace.error);
+        showToast("No Data", workspace.error, "info");
         return;
     }
+    const data = workspace.dashboard;
 
+    const symbolChanged = cachedSymbol && cachedSymbol !== symbol;
+    if (symbolChanged) resetChartsZoom(Object.keys(chartInstances));
+    appliedSymbolGeneration = result.generation;
     cachedData = data;
     cachedSymbol = symbol;
-    renderDashboard(data);
+    cachedWorkspace = workspace;
+    recordActivity(ActivityFeed.workspaceActivity(symbol, workspace));
+    renderSharedSnapshot(data);
+    renderMarketContext(workspace.market_context);
     renderAnalysisTable(data);
     if (document.getElementById('view-cockpit').style.display !== 'none') {
-        await loadCockpit();
+        await loadCockpit(result);
     }
-    if (document.getElementById('view-setups').style.display !== 'none') {
-        await loadTradeSetups();
+    if (document.getElementById('view-edge-lab').style.display !== 'none') {
+        await loadEdgeLab(result);
     }
     if (
-        document.getElementById('view-market-signal').style.display === 'block'
+        document.getElementById('view-regime').style.display === 'block'
     ) {
-        loadOverview();
+        await loadOverview(result);
     }
-    timeLeft = currentSettings.refresh_interval;
+    if (document.getElementById('view-trace').style.display !== 'none') {
+        await loadTrace(result);
+    }
+    if (symbolRequestCoordinator.isCurrent(result, document.getElementById('symbolSelector').value)) {
+        timeLeft = currentSettings.refresh_interval;
+        return true;
+    }
+    return false;
 }
 
-function renderDashboard(data) {
-    // Pre-process data for KPIs to find High/Low Vol Points
-    let strikes = {};
-    let maxNetPos = { val: 0, strike: 0 };
-    let maxNetNeg = { val: 0, strike: 0 };
-
-    data.profile.forEach(row => {
-        const s = row.strike_price;
-        if (!strikes[s]) strikes[s] = 0;
-        strikes[s] += row.gex_value; // Combine Call (+) and Put (-)
-    });
-
-    for (const [s, netGex] of Object.entries(strikes)) {
-        const strike = parseFloat(s);
-        if (netGex > maxNetPos.val) maxNetPos = { val: netGex, strike: strike };
-        if (netGex < maxNetNeg.val) maxNetNeg = { val: netGex, strike: strike };
+function toggleGammaSweepOverlay(enabled) {
+    gammaSweepOverlayEnabled = Boolean(enabled);
+    const cockpitToggle = document.getElementById('cockpitGammaSweepToggle');
+    const oneOffToggle = document.getElementById('oneOffGammaSweepToggle');
+    if (cockpitToggle) cockpitToggle.checked = gammaSweepOverlayEnabled;
+    if (oneOffToggle) oneOffToggle.checked = gammaSweepOverlayEnabled;
+    if (cachedData && cockpitModel) {
+        renderCockpitProfileChart(cachedData.profile, cachedData.snapshot.spot_price, cockpitModel, cachedData.gamma_sweep);
+        renderSweepChart('cockpitSweepChart', cachedData.gamma_sweep, cachedData.snapshot);
     }
-
-    updateKPIs(data.snapshot, maxNetPos.strike, maxNetNeg.strike);
-    renderProfileChart(data.profile, data.snapshot.spot_price);
-    renderHistoryChart(data.history);
+    if (cachedOneOffData) {
+        renderSweepChart('oneOffSweepChart', cachedOneOffData.gamma_sweep, cachedOneOffData.snapshot);
+    }
 }
 
-function updateKPIs(snap, lowVolStrike, highVolStrike) {
-    document.getElementById('kpiSpot').innerText = `$${snap.spot_price.toFixed(2)}`;
+function renderSharedSnapshot(data) {
+    const snap = data?.snapshot || {};
     const topSpot = document.getElementById('topSpot');
     const cockpitSymbol = document.getElementById('cockpitSymbol');
-    if (topSpot) topSpot.innerText = snap.spot_price.toFixed(2);
+    if (topSpot) topSpot.innerText = Number.isFinite(Number(snap.spot_price))
+        ? Number(snap.spot_price).toFixed(2)
+        : '--';
     if (cockpitSymbol) cockpitSymbol.innerText = snap.symbol || cachedSymbol || '--';
-
-    // Update Regime Gauge
-    const netGexM = snap.total_net_gex / 1000000;
-    const regimeMarker = document.getElementById('regimeIndicator');
-    const regimeText = document.getElementById('regimeText');
-
-    // Normalize for gauge (assume +/- $1B range for visual sake, clamp it)
-    let pct = 50 + (netGexM / 1000) * 50;
-    if (pct > 95) pct = 95;
-    if (pct < 5) pct = 5;
-
-    regimeMarker.style.left = `${pct}%`;
-
-    if (netGexM > 0) {
-        regimeText.innerText = `COMPRESSION ($${netGexM.toFixed(0)}M)`;
-        regimeText.style.color = "var(--green)";
-    } else {
-        regimeText.innerText = `EXPANSION ($${netGexM.toFixed(0)}M)`;
-        regimeText.style.color = "var(--red)";
-    }
-
-    // High/Low Vol Points
-    document.getElementById('kpiLowVol').innerText = lowVolStrike > 0 ? lowVolStrike.toFixed(0) : 'N/A';
-    document.getElementById('kpiHighVol').innerText = highVolStrike > 0 ? highVolStrike.toFixed(0) : 'N/A';
-
-    // Acceleration (GEX Slope)
-    const accelEl = document.getElementById('kpiAcceleration');
-    if (accelEl && snap.gex_slope !== undefined) {
-        const slopeM = snap.gex_slope / 1000000;
-        accelEl.innerText = `$${slopeM.toFixed(1)}M`;
-        accelEl.style.color = snap.gex_slope >= 0 ? 'var(--green)' : 'var(--red)';
-    }
-
     const dateObj = new Date(snap.timestamp);
-    document.getElementById('lastUpdate').innerText = dateObj.toLocaleTimeString();
+    const lastUpdate = document.getElementById('lastUpdate');
+    if (lastUpdate) lastUpdate.innerText = Number.isNaN(dateObj.getTime()) ? '--:--' : dateObj.toLocaleTimeString();
+    renderHistoryChart(data?.history || []);
 }
 
 function renderProfileChartTo(chartId, profileData, spotPrice) {
@@ -650,7 +846,7 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
         yAxis: [
             {
                 type: 'value',
-                name: 'Net Gamma Exposure',
+                name: 'Net GEX by Strike',
                 min: netBounds.min,
                 max: netBounds.max,
                 nameTextStyle: chartText(12, '#b177ff'),
@@ -689,7 +885,7 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
                 barWidth: 10
             },
             {
-                name: 'Net GEX',
+                name: 'Net GEX by Strike',
                 type: 'line',
                 smooth: true,
                 symbol: 'none',
@@ -720,6 +916,153 @@ function renderProfileChartTo(chartId, profileData, spotPrice) {
 
 function renderProfileChart(profileData, spotPrice) {
     renderProfileChartTo('profileChart', profileData, spotPrice);
+}
+
+function renderSweepChart(chartId, gammaSweep, snapshot = {}) {
+    const el = document.getElementById(chartId);
+    if (!el) return;
+
+    const rows = gammaSweepOverlayEnabled ? sweepRowsFromPayload(gammaSweep, 1000000) : [];
+    if (!rows.length) {
+        el.style.display = 'none';
+        const chart = chartInstances[chartId];
+        if (chart && !chart.isDisposed()) chart.clear();
+        return;
+    }
+
+    el.style.display = 'block';
+    const spot = Number(snapshot?.spot_price ?? gammaSweep?.current?.spot);
+    const current = gammaSweep?.current
+        ? {
+            spot: Number(gammaSweep.current.spot),
+            netGex: Number(gammaSweep.current.net_gex) / 1000000,
+            hedgeShares: Number(gammaSweep.current.hedge_shares)
+        }
+        : nearestSweepPoint(rows, spot);
+    const zeroCrossings = (gammaSweep?.zero_crossings?.all || [])
+        .map(Number)
+        .filter(Number.isFinite)
+        .map(value => ({
+            xAxis: value,
+            lineStyle: { color: '#ff454f', width: 1, type: 'dashed' },
+            label: {
+                formatter: `Zero Gamma ${formatTargetPrice(value)}`,
+                color: '#ff8b8f',
+                fontFamily: NUMERIC_FONT,
+                fontSize: 11
+            }
+        }));
+    const spotLine = Number.isFinite(spot) ? [{
+        xAxis: spot,
+        lineStyle: { color: '#ffffff', width: 1 },
+        label: {
+            formatter: 'Spot',
+            color: '#ffffff',
+            fontFamily: NUMERIC_FONT,
+            fontSize: 11
+        }
+    }] : [];
+
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        tooltip: {
+            ...baseChartOptions({ valueFormatter: formatMillionsValue }).tooltip,
+            formatter: params => {
+                const items = Array.isArray(params) ? params : [params];
+                const axisLabel = items[0]?.axisValueLabel || items[0]?.axisValue || '';
+                const lines = [`<strong>${axisLabel}</strong>`];
+                items.forEach(item => {
+                    const raw = Array.isArray(item.value) ? item.value[1] : item.value;
+                    const formatter = item.seriesName === 'Cumulative Hedge Demand'
+                        ? formatShareCount
+                        : formatMillionsValue;
+                    lines.push(`${item.marker}${item.seriesName}: ${formatter(Number(raw))}`);
+                });
+                return lines.join('<br/>');
+            }
+        },
+        grid: { top: 38, left: 62, right: 86, bottom: 42, containLabel: true },
+        dataZoom: zoomDataOptions(),
+        legend: {
+            top: 4,
+            right: 12,
+            textStyle: chartText(11),
+            itemWidth: 16,
+            itemHeight: 8
+        },
+        xAxis: {
+            type: 'value',
+            name: 'Hypothetical Spot',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(12), formatter: formatAxisPrice },
+            axisLine: { onZero: false, lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: CHART_GRID } },
+            ...strikeAxisBounds(rows.map(row => row.spot))
+        },
+        yAxis: [
+            {
+                type: 'value',
+                name: 'Modeled Net GEX (M)',
+                ...chartBounds(rows.map(row => row.netGex), 0.18),
+                nameTextStyle: chartText(12, '#00d37f'),
+                axisLabel: { ...chartText(12, '#00d37f'), formatter: formatMillionsAxis },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { lineStyle: { color: CHART_GRID } }
+            },
+            {
+                type: 'value',
+                name: 'Cumulative Hedge Demand',
+                ...chartBounds(rows.map(row => row.hedgeShares), 0.18),
+                nameTextStyle: chartText(12, '#f5a524'),
+                axisLabel: { ...chartText(12, '#f5a524'), formatter: formatShareCount },
+                axisLine: { lineStyle: { color: '#223140' } },
+                splitLine: { show: false }
+            }
+        ],
+        series: [
+            {
+                name: 'Modeled Net GEX Sweep',
+                type: 'line',
+                smooth: true,
+                symbol: 'none',
+                data: rows.map(row => [row.spot, row.netGex]),
+                lineStyle: { color: '#00d37f', width: 2, type: 'dashed' },
+                markLine: { symbol: 'none', silent: true, data: spotLine.concat(zeroCrossings) },
+                markPoint: current && Number.isFinite(current.netGex) ? {
+                    symbolSize: 44,
+                    data: [{
+                        coord: [current.spot, current.netGex],
+                        value: current.netGex,
+                        itemStyle: { color: '#00d37f' },
+                        label: { formatter: formatMillionsValue(current.netGex), color: '#06120d', fontSize: 10 }
+                    }]
+                } : undefined
+            },
+            {
+                name: 'Cumulative Hedge Demand',
+                type: 'line',
+                yAxisIndex: 1,
+                smooth: true,
+                symbol: 'none',
+                data: rows.map(row => [row.spot, row.hedgeShares]),
+                lineStyle: { color: '#f5a524', width: 2, type: 'dotted' },
+                markPoint: current && Number.isFinite(current.hedgeShares) ? {
+                    symbolSize: 44,
+                    data: [{
+                        coord: [current.spot, current.hedgeShares],
+                        value: current.hedgeShares,
+                        itemStyle: { color: '#f5a524' },
+                        label: { formatter: formatShareCount(current.hedgeShares), color: '#1a1001', fontSize: 10 }
+                    }]
+                } : undefined
+            }
+        ]
+    };
+
+    setChartOption(chartId, option);
+    attachClickZoom(chartId, rows.map(row => row.spot));
 }
 
 function renderHistoryChart(history) {
@@ -762,8 +1105,461 @@ function renderHistoryChart(history) {
         }]
     };
 
-    setChartOption('historyChart', option);
-    attachClickZoom('historyChart', history.map(d => d.timestamp), 16);
+    setChartOption('traceTrendChart', option);
+    attachClickZoom('traceTrendChart', history.map(d => d.timestamp), 16);
+}
+
+function traceMetricLabel(metric = traceMode) {
+    if (metric === 'call_gex') return 'Call GEX';
+    if (metric === 'put_gex') return 'Put GEX';
+    if (metric === 'modeled_delta_pressure') return 'Modeled Delta Pressure';
+    if (metric === 'modeled_charm_pressure') return 'Modeled Charm Pressure';
+    return 'Net GEX';
+}
+
+function traceMetricColor(metric = traceMode) {
+    if (metric === 'call_gex') return '#ff8b1a';
+    if (metric === 'put_gex') return '#2388e8';
+    if (metric === 'modeled_delta_pressure') return '#00d37f';
+    if (metric === 'modeled_charm_pressure') return '#f5a524';
+    return '#18c7b7';
+}
+
+function setTraceMode(mode) {
+    const nextMode = ['net_gex', 'call_gex', 'put_gex', 'modeled_delta_pressure', 'modeled_charm_pressure'].includes(mode) ? mode : 'net_gex';
+    const changed = nextMode !== traceMode;
+    traceMode = nextMode;
+    if (changed) resetChartsZoom(['traceHeatmapChart', 'traceProfileChart']);
+    document.querySelectorAll('[data-trace-mode]').forEach(button => {
+        button.classList.toggle('active', button.dataset.traceMode === traceMode);
+    });
+    if (cachedTraceData) renderTraceView(cachedTraceData);
+}
+
+function resetTraceCharts() {
+    resetChartsZoom(['traceHeatmapChart', 'traceProfileChart']);
+    if (cachedTraceData) renderTraceView(cachedTraceData);
+}
+
+function updateTraceTimelineControl(range) {
+    const slider = document.getElementById('traceTimelineSlider');
+    const fill = document.getElementById('traceTrackFill');
+    const scrubber = document.getElementById('traceScrubber');
+    if (slider) slider.value = String(range.index);
+    if (fill) fill.style.width = `${range.positionPct}%`;
+    if (scrubber) scrubber.style.left = `${range.positionPct}%`;
+    setText('traceTimelineValue', range.label || '--:--');
+}
+
+function configureTraceTimeline(buckets) {
+    traceTimelineBuckets = Array.isArray(buckets) ? buckets : [];
+    const slider = document.getElementById('traceTimelineSlider');
+    const latestIndex = Math.max(0, traceTimelineBuckets.length - 1);
+    const range = traceTimelineRange(traceTimelineBuckets, latestIndex);
+    traceTimelineWindowSize = Math.max(1, range.endIndex - range.startIndex + 1);
+    if (slider) {
+        slider.min = '0';
+        slider.max = String(latestIndex);
+        slider.disabled = traceTimelineBuckets.length <= 1;
+    }
+    updateTraceTimelineControl(range);
+}
+
+function scrubTraceTimeline(rawIndex) {
+    if (!traceTimelineBuckets.length) return;
+    const range = traceTimelineRange(
+        traceTimelineBuckets,
+        rawIndex,
+        traceTimelineWindowSize
+    );
+    updateTraceTimelineControl(range);
+    const chart = chartInstances.traceHeatmapChart;
+    if (!chart || chart.isDisposed()) return;
+    zoomChartToIndexRange(
+        chart,
+        traceTimelineBuckets,
+        range.startIndex,
+        range.endIndex
+    );
+}
+
+function syncTraceTimelineFromChart(chart, buckets = traceTimelineBuckets) {
+    if (!chart || !buckets?.length) return;
+    const { endIndex } = currentZoomIndices(chart, buckets);
+    const range = traceTimelineRange(buckets, endIndex, traceTimelineWindowSize);
+    updateTraceTimelineControl(range);
+}
+
+function isSymbolContextCurrent(symbol, requestContext = null) {
+    const selectedSymbol = document.getElementById('symbolSelector')?.value;
+    return selectedSymbol === symbol && (
+        !requestContext || symbolRequestCoordinator.isCurrent(requestContext, selectedSymbol)
+    );
+}
+
+async function loadTrace(requestContext = null) {
+    const symbol = document.getElementById('symbolSelector')?.value || cachedSymbol || 'SPX';
+    const statusEl = document.getElementById('traceStatus');
+    if (statusEl) statusEl.innerText = 'Loading';
+
+    try {
+        const dateSelect = document.getElementById('traceSessionDate');
+        if (traceDatesSymbol !== symbol) {
+            const dates = await eel.get_trace_dates(symbol, 30)();
+            if (!isSymbolContextCurrent(symbol, requestContext)) return;
+            if (dateSelect) {
+                dateSelect.innerHTML = dates.map((value, index) => `<option value="${value}"${index === 0 ? ' selected' : ''}>${value}</option>`).join('') || '<option value="">No sessions</option>';
+            }
+            traceDatesSymbol = symbol;
+        }
+        const sessionDate = dateSelect?.value || null;
+        const data = await eel.get_trace_data(symbol, 390, sessionDate)();
+        if (!isSymbolContextCurrent(symbol, requestContext)) return;
+        if (data.error) {
+            if (statusEl) statusEl.innerText = data.error;
+            showToast('TRACE unavailable', data.error, 'info');
+            return;
+        }
+        cachedTraceData = data;
+        renderTraceView(data);
+    } catch (error) {
+        if (!isSymbolContextCurrent(symbol, requestContext)) return;
+        console.error('TRACE load failed', error);
+        if (statusEl) statusEl.innerText = 'Load failed';
+        showToast('TRACE unavailable', 'Could not load local heatmap data.', 'info');
+    }
+}
+
+function renderTraceView(data) {
+    if (!data) return;
+    const profileRows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    const heatmapRows = Array.isArray(data.heatmap) ? data.heatmap : [];
+    const buckets = [...new Set(heatmapRows.map(row => row.timestamp))].sort();
+    const gross = profileRows.reduce((sum, row) => sum + Math.abs(Number(row.net_gex || 0)), 0);
+    const net = Math.abs(Number(data.total_net_gex || 0));
+    const stability = gross > 0 ? Math.round(Math.min(99, Math.max(1, (net / gross) * 100))) : 0;
+    const date = data.timestamp ? new Date(data.timestamp) : null;
+    const latestTime = date ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--:--';
+    const startTime = buckets[0] ? String(buckets[0]).slice(11, 16) : '--:--';
+    const endTime = buckets[buckets.length - 1] ? String(buckets[buckets.length - 1]).slice(11, 16) : latestTime;
+
+    setText('traceSymbol', data.symbol || '--');
+    setText('traceSpot', data.spot_price ? formatTargetPrice(data.spot_price) : '--');
+    setText('traceNetGex', formatMoneyM(data.total_net_gex || 0, 0));
+    setText('traceStability', stability ? `${stability}%` : '--');
+    setText('traceCells', formatCompactNumber(data.range?.cells || heatmapRows.length || 0));
+    setText('traceUpdated', latestTime);
+    setText('traceStatus', `${traceMetricLabel()} | ${buckets.length || 0} time buckets`);
+    setText('traceStartTime', startTime);
+    setText('traceEndTime', endTime);
+    configureTraceTimeline(buckets);
+    setText('traceScaleLabel', traceMode.startsWith('modeled_') ? `${traceMetricLabel()} (modeled contract exposure)` : `${traceMetricLabel()} ($ Notional)`);
+    setText('traceCoverageWarning', traceMode.startsWith('modeled_') ? (data.modeled_pressure_coverage?.warning || `Modeled pressure coverage ${Math.round(Number(data.modeled_pressure_coverage?.ratio || 0) * 100)}%`) : '');
+
+    renderTraceHeatmap(data);
+    renderTraceProfile(data);
+}
+
+function buildTraceCandles(spotTicks, buckets) {
+    const grouped = {};
+    (spotTicks || []).forEach(tick => {
+        const ts = String(tick.timestamp || '');
+        const bucket = ts.length >= 16 ? `${ts.slice(0, 16)}:00` : tick.timestamp;
+        const spot = Number(tick.spot_price);
+        if (!bucket || !Number.isFinite(spot)) return;
+        if (!grouped[bucket]) grouped[bucket] = [];
+        grouped[bucket].push(spot);
+    });
+
+    let previousClose = null;
+    return buckets.map(bucket => {
+        const values = grouped[bucket] || [];
+        if (!values.length) {
+            if (!Number.isFinite(previousClose)) return null;
+            return [previousClose, previousClose, previousClose, previousClose];
+        }
+        const open = Number.isFinite(previousClose) ? previousClose : values[0];
+        const close = values[values.length - 1];
+        const low = Math.min(open, close, ...values);
+        const high = Math.max(open, close, ...values);
+        previousClose = close;
+        return [open, close, low, high];
+    });
+}
+
+function renderTraceHeatmap(data) {
+    const heatmap = Array.isArray(data.heatmap) ? data.heatmap : [];
+    const spotPath = Array.isArray(data.spot_path) ? data.spot_path : [];
+    const spotTicks = Array.isArray(data.spot_ticks) ? data.spot_ticks : [];
+    const chart = getChart('traceHeatmapChart');
+    if (!chart) return;
+
+    if (!heatmap.length) {
+        chart.clear();
+        return;
+    }
+
+    const buckets = [...new Set(heatmap.map(row => row.timestamp))].sort();
+    const hadStoredZoom = Boolean(chartZoomState.traceHeatmapChart);
+    const bucketIndex = new Map(buckets.map((bucket, index) => [bucket, index]));
+    const valuesM = heatmap.map(row => Number(row[traceMode] || 0) / 1000000).filter(Number.isFinite);
+    const maxAbs = Math.max(...valuesM.map(value => Math.abs(value)), 1);
+    const minValue = traceMode === 'call_gex' ? 0 : traceMode === 'put_gex' ? -maxAbs : -maxAbs;
+    const maxValue = traceMode === 'put_gex' ? 0 : maxAbs;
+    const heatmapData = heatmap
+        .map(row => [bucketIndex.get(row.timestamp), Number(row.strike), Number(row[traceMode] || 0) / 1000000])
+        .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]) && Number.isFinite(row[2]));
+    const priceData = spotPath
+        .map(row => [bucketIndex.get(row.timestamp), Number(row.spot_price)])
+        .filter(row => Number.isFinite(row[0]) && Number.isFinite(row[1]));
+    const candleData = buildTraceCandles(spotTicks, buckets);
+    const strikes = heatmap.map(row => Number(row.strike)).filter(Number.isFinite);
+    const yBounds = strikes.length
+        ? { min: Math.min(...strikes), max: Math.max(...strikes) }
+        : {};
+    const labelStep = Math.max(1, Math.ceil(buckets.length / 8));
+    const currentSpot = Number(data.spot_price);
+    const flip = Number(data.flip_strike);
+
+    const colorRange = traceMode === 'call_gex'
+        ? ['#111820', '#8f5a17', '#ff8b1a']
+        : traceMode === 'put_gex'
+            ? ['#2388e8', '#262d6e', '#111820']
+            : ['#2388e8', '#111820', '#ff8b1a'];
+
+    const markerLines = [];
+    if (Number.isFinite(currentSpot) && currentSpot > 0) {
+        markerLines.push({
+            yAxis: currentSpot,
+            lineStyle: { color: '#ffffff', width: 1 },
+            label: {
+                formatter: 'Spot',
+                position: 'insideEndTop',
+                color: '#ffffff',
+                fontFamily: NUMERIC_FONT,
+                fontSize: 11
+            }
+        });
+    }
+    (data.overlays || []).forEach(overlay => {
+        const bucket = String(overlay.timestamp || '').slice(0, 16) + ':00';
+        const index = bucketIndex.get(bucket);
+        if (Number.isFinite(index)) markerLines.push({
+            xAxis: index,
+            lineStyle: { color: overlay.overlay_type === 'alert' ? '#ff454f' : '#f5a524', width: 1, type: 'dashed' },
+            label: { formatter: overlay.label || overlay.overlay_type, color: '#f2f5f8', fontSize: 10 }
+        });
+    });
+    if (Number.isFinite(flip) && flip > 0) {
+        markerLines.push({
+            yAxis: flip,
+            lineStyle: { color: '#ff454f', width: 1, type: 'dashed' },
+            label: { formatter: `Flip ${formatTargetPrice(flip)}`, color: '#ff8b8f', fontSize: 11 }
+        });
+    }
+
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        backgroundColor: 'transparent',
+        grid: { top: 28, left: 60, right: 18, bottom: 40, containLabel: true },
+        dataZoom: zoomDataOptions(),
+        tooltip: {
+            trigger: 'item',
+            backgroundColor: '#071018',
+            borderColor: '#223140',
+            textStyle: chartText(12, '#f2f5f8'),
+            formatter: params => {
+                if (params.seriesName === 'Spot Path') {
+                    return `<strong>${buckets[params.value[0]]?.slice(11, 16) || ''}</strong><br/>Spot: ${formatTargetPrice(params.value[1])}`;
+                }
+                if (params.seriesName === 'Price Candles') {
+                    return [
+                        `<strong>${buckets[params.dataIndex]?.slice(11, 16) || ''}</strong>`,
+                        `Open: ${formatTargetPrice(params.value[0])}`,
+                        `Close: ${formatTargetPrice(params.value[1])}`,
+                        `Low: ${formatTargetPrice(params.value[2])}`,
+                        `High: ${formatTargetPrice(params.value[3])}`
+                    ].join('<br/>');
+                }
+                const time = buckets[params.value[0]]?.slice(11, 16) || '';
+                return [
+                    `<strong>${time}</strong>`,
+                    `Strike: ${formatAxisPrice(params.value[1])}`,
+                    `${traceMetricLabel()}: ${formatMillionsValue(params.value[2])}`
+                ].join('<br/>');
+            }
+        },
+        visualMap: {
+            show: false,
+            min: minValue,
+            max: maxValue,
+            calculable: true,
+            orient: 'vertical',
+            right: 12,
+            top: 54,
+            bottom: 54,
+            textStyle: chartText(11),
+            inRange: { color: colorRange }
+        },
+        xAxis: {
+            type: 'category',
+            data: buckets,
+            axisLabel: {
+                ...chartText(11),
+                formatter: (value, index) => index % labelStep === 0 ? String(value).slice(11, 16) : ''
+            },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { show: false }
+        },
+        yAxis: {
+            type: 'value',
+            name: 'Strike / Price ($)',
+            nameTextStyle: chartText(12),
+            axisLabel: { ...chartText(11), formatter: formatAxisPrice },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } },
+            ...yBounds
+        },
+        series: [
+            {
+                name: traceMetricLabel(),
+                type: 'heatmap',
+                data: heatmapData,
+                progressive: 2500,
+                itemStyle: { opacity: 0.78 },
+                emphasis: { itemStyle: { borderColor: '#ffffff', borderWidth: 1 } }
+            },
+            {
+                name: 'Price Candles',
+                type: 'candlestick',
+                data: candleData,
+                itemStyle: {
+                    color: '#f2f5f8',
+                    color0: '#101720',
+                    borderColor: '#d8e3ee',
+                    borderColor0: '#667584'
+                },
+                barWidth: '36%',
+                z: 6
+            },
+            {
+                name: 'Spot Path',
+                type: 'line',
+                symbol: 'none',
+                data: priceData,
+                lineStyle: { color: '#2f9bff', width: 2 },
+                z: 7,
+                markLine: markerLines.length ? { symbol: 'none', silent: true, data: markerLines } : undefined
+            }
+        ]
+    };
+
+    setChartOption('traceHeatmapChart', option);
+    attachClickZoom('traceHeatmapChart', buckets, 18);
+    requestAnimationFrame(() => {
+        if (hadStoredZoom) {
+            syncTraceTimelineFromChart(chart, buckets);
+        } else {
+            scrubTraceTimeline(buckets.length - 1);
+        }
+    });
+}
+
+function renderTraceProfile(data) {
+    let rows = Array.isArray(data.latest_profile) ? data.latest_profile : [];
+    if (traceMode.startsWith('modeled_')) {
+        const heatmap = Array.isArray(data.heatmap) ? data.heatmap : [];
+        const latestBucket = heatmap.map(row => row.timestamp).sort().at(-1);
+        rows = heatmap.filter(row => row.timestamp === latestBucket);
+    }
+    const chart = getChart('traceProfileChart');
+    if (!chart) return;
+
+    if (!rows.length) {
+        chart.clear();
+        return;
+    }
+
+    const metric = traceMode;
+    const values = rows.map(row => Number(row[metric] || 0) / 1000000);
+    const bounds = chartBounds(values, 0.18);
+    const strikes = rows.map(row => Number(row.strike)).filter(Number.isFinite);
+    const yBounds = strikes.length
+        ? { min: Math.min(...strikes), max: Math.max(...strikes) }
+        : {};
+    const maxAbs = Math.max(...values.map(value => Math.abs(value)), 1);
+    const option = {
+        ...baseChartOptions({ valueFormatter: formatMillionsValue }),
+        backgroundColor: 'transparent',
+        grid: { top: 12, left: 42, right: 10, bottom: 34, containLabel: true },
+        tooltip: {
+            trigger: 'item',
+            backgroundColor: '#071018',
+            borderColor: '#223140',
+            textStyle: chartText(12, '#f2f5f8'),
+            formatter: params => {
+                return `<strong>${formatAxisPrice(params.value[1])}</strong><br/>${traceMetricLabel()}: ${formatMillionsValue(params.value[0])}`;
+            }
+        },
+        xAxis: {
+            type: 'value',
+            min: Math.min(bounds.min, -maxAbs),
+            max: Math.max(bounds.max, maxAbs),
+            axisLabel: { ...chartText(11), formatter: value => `${value.toFixed(0)}M` },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { lineStyle: { color: 'rgba(122,148,170,0.11)' } }
+        },
+        yAxis: {
+            type: 'value',
+            axisLabel: { show: false },
+            axisLine: { lineStyle: { color: '#223140' } },
+            splitLine: { show: false },
+            ...yBounds
+        },
+        series: [{
+            name: traceMetricLabel(),
+            type: 'custom',
+            data: rows.map(row => [Number(row[metric] || 0) / 1000000, Number(row.strike)]),
+            encode: { x: 0, y: 1 },
+            renderItem: (params, api) => {
+                const value = Number(api.value(0));
+                const strike = Number(api.value(1));
+                const zero = api.coord([0, strike]);
+                const end = api.coord([value, strike]);
+                const height = Math.max(3, Math.min(12, api.size([0, 5])[1] * 0.72));
+                const x = Math.min(zero[0], end[0]);
+                return {
+                    type: 'rect',
+                    shape: {
+                        x,
+                        y: end[1] - height / 2,
+                        width: Math.max(1, Math.abs(end[0] - zero[0])),
+                        height
+                    },
+                    style: api.style()
+                };
+            },
+            itemStyle: {
+                color: params => {
+                    const value = Array.isArray(params.value) ? Number(params.value[0]) : Number(params.value);
+                    if (metric === 'call_gex') return '#ff8b1a';
+                    if (metric === 'put_gex') return '#2388e8';
+                    return value >= 0 ? '#b177ff' : '#ff454f';
+                }
+            },
+            markLine: {
+                symbol: 'none',
+                silent: true,
+                data: [{
+                    xAxis: 0,
+                    lineStyle: { color: '#667584', width: 1, type: 'dotted' },
+                    label: { show: false }
+                }]
+            }
+        }]
+    };
+
+    setChartOption('traceProfileChart', option);
 }
 
 // --- Analysis Table (Matches previous redesign) ---
@@ -876,8 +1672,9 @@ function startTimers() {
 async function manualRefresh() {
     const lastUpdateEl = document.getElementById('lastUpdate');
     if (lastUpdateEl) lastUpdateEl.innerText = "Reloading...";
-    await loadSymbol();
-    showToast("Dashboard Reloaded", "Local market snapshot reloaded.", "info");
+    if (await loadSymbol()) {
+        showToast("Dashboard Reloaded", "Local market snapshot reloaded.", "info");
+    }
 }
 
 function oneOffSetText(id, value) {
@@ -898,6 +1695,7 @@ function renderOneOffProfile(data, dbPath = '') {
         return;
     }
 
+    cachedOneOffData = data;
     const snap = data.snapshot;
     const rows = buildStrikeProfile(data.profile || []);
     oneOffSetText('oneOffProfileLabel', snap.symbol || '--');
@@ -910,6 +1708,7 @@ function renderOneOffProfile(data, dbPath = '') {
     if (dbPath) oneOffSetText('oneOffDbPath', dbPath.split(/[\\/]/).pop());
 
     renderProfileChartTo('oneOffProfileChart', data.profile || [], snap.spot_price || 0);
+    renderSweepChart('oneOffSweepChart', data.gamma_sweep, snap);
 
     const tbody = document.getElementById('oneOffTableBody');
     if (!tbody) return;
@@ -1090,18 +1889,20 @@ async function saveSettings() {
 
 // --- Overview / Signal Dashboard ---
 
-async function loadOverview() {
-    const data = await eel.get_market_overview()();
-    if (data.error) { console.error(data.error); return; }
-    cachedOverview = data;
+async function loadOverview(requestContext = null) {
     const selectedSymbol = document.getElementById('symbolSelector').value;
+    const data = await eel.get_market_overview()();
+    if (!isSymbolContextCurrent(selectedSymbol, requestContext)) return;
+    if (data.error) { console.error(data.error); return; }
     let symbolData = cachedData;
     if (selectedSymbol && (!symbolData || cachedSymbol !== selectedSymbol)) {
         symbolData = await eel.get_dashboard_data(selectedSymbol)();
-        if (!symbolData.error) {
-            cachedData = symbolData;
-            cachedSymbol = selectedSymbol;
-        }
+        if (!isSymbolContextCurrent(selectedSymbol, requestContext)) return;
+    }
+    cachedOverview = data;
+    if (symbolData && !symbolData.error) {
+        cachedData = symbolData;
+        cachedSymbol = selectedSymbol;
     }
     renderSignalDashboard(data);
     renderActionOverview(data, symbolData);
@@ -1111,7 +1912,7 @@ async function loadOverview() {
 
 function renderSignalDashboard(data) {
     renderCompass(data.compass_traders, 'Traders');
-    renderCompass(data.compass_whale, 'Whale');
+    renderCompass(data.index_basket || data.compass_whale, 'Whale');
 
     renderPillars(data.components);
     renderTiltChart(data.tilt);
@@ -1213,16 +2014,16 @@ function findComponent(overviewData, symbol) {
 
 function buildMarketVote(overviewData) {
     const traders = overviewData.compass_traders || {};
-    const whale = overviewData.compass_whale || {};
-    const traderConfidence = traders.confidence || 0;
-    const whaleConfidence = whale.confidence || 0;
-    const totalConfidence = traderConfidence + whaleConfidence || 1;
+    const whale = overviewData.index_basket || overviewData.compass_whale || {};
+    const traderQuality = traders.data_quality?.score ?? traders.confidence ?? 0;
+    const basketQuality = whale.data_quality?.score ?? whale.confidence ?? 0;
+    const totalQuality = traderQuality + basketQuality || 1;
     const score = clamp(
-        ((traders.y_score || 0) * traderConfidence + (whale.y_score || 0) * whaleConfidence) / totalConfidence,
+        ((traders.y_score || 0) * traderQuality + (whale.y_score || 0) * basketQuality) / totalQuality,
         -1,
         1
     );
-    const detail = `Traders ${voteLabel(traders.y_score || 0)} / Whale ${voteLabel(whale.y_score || 0)} | confidence ${formatPct((traderConfidence + whaleConfidence) / 2)}`;
+    const detail = `Traders ${voteLabel(traders.y_score || 0)} / Index Basket ${voteLabel(whale.y_score || 0)} | data quality ${formatPct((traderQuality + basketQuality) / 2)}`;
     return { score, detail };
 }
 
@@ -1320,56 +2121,50 @@ function selectedComponent(overviewData, symbolData) {
     return findComponent(overviewData, selectedSymbol) || null;
 }
 
-function buildCockpitModel(symbolData, overviewData) {
-    if (!symbolData || symbolData.error || !overviewData || overviewData.error) return null;
-
-    const component = selectedComponent(overviewData, symbolData);
-    const marketVote = buildMarketVote(overviewData);
-    const dealerVote = buildDealerVote(symbolData, component);
-    const liquidityVote = buildLiquidityVote(symbolData);
-    const rawScore = clamp((marketVote.score * 0.45) + (dealerVote.score * 0.35) + (liquidityVote.score * 0.20), -1, 1);
-    const agreement = [marketVote.score, dealerVote.score, liquidityVote.score]
-        .filter(score => Math.sign(score) === Math.sign(rawScore) && Math.abs(score) > 0.20).length;
-    const confidencePenalty = component ? component.confidence || 0.5 : 0.45;
-    const finalScore = rawScore * clamp(0.65 + (agreement * 0.12), 0.65, 1) * confidencePenalty;
-    const plan = buildTradePlan(symbolData, overviewData, component, finalScore, marketVote);
-    const rows = buildStrikeProfile(symbolData.profile);
-    const fallbackFlip = estimateFlipFromProfileRows(rows);
-    const flip = component?.flip_strike || fallbackFlip.strike;
-    const direction = finalScore > 0.22 ? 1 : finalScore < -0.22 ? -1 : 0;
-    const title = direction > 0 ? 'CALL BIAS' : direction < 0 ? 'PUT BIAS' : 'WAIT';
-    const selectedSymbol = symbolData.snapshot.symbol || document.getElementById('symbolSelector').value;
-    const conflictText = agreement < 2 ? 'Inputs are mixed; require price confirmation.' : 'Inputs are aligned enough for directional context.';
-    const context = `${conflictText} ${plan.description}`;
-    const whale = overviewData.compass_whale || {};
-
-    return {
-        symbol: selectedSymbol,
-        component,
-        marketVote,
-        dealerVote,
-        liquidityVote,
-        whale,
-        score: finalScore,
-        confidence: component?.confidence ?? Math.abs(finalScore),
-        title,
-        context,
-        plan,
-        flip,
-        target: parseLevel(plan.target),
-        invalidation: parseLevel(plan.invalidation)
+async function loadCockpit(requestContext = null) {
+    const symbol = document.getElementById('symbolSelector')?.value;
+    const symbolData = cachedData;
+    if (!symbol || !symbolData || symbolData.error || symbolData.snapshot?.symbol !== symbol) return;
+    const workspace = cachedWorkspace;
+    if (!workspace || workspace.symbol !== symbol || !isSymbolContextCurrent(symbol, requestContext)) return;
+    const overview = {
+        components: [],
+        edge_stats: { [symbol]: workspace.historical_edge },
+        index_basket: workspace.regime?.index_basket,
     };
+    cockpitModel = cockpitModelFromWorkspace(workspace);
+    renderCockpit(cockpitModel, symbolData, overview);
+    renderMarketContext(workspace.market_context);
+    renderExecutionCandidates(workspace.execution_candidates, cockpitModel, symbolData);
 }
 
-async function loadCockpit() {
-    if (!cachedData || cachedData.error) return;
-    cachedOverview = await eel.get_market_overview()();
-    if (cachedOverview.error) {
-        console.error(cachedOverview.error);
-        return;
-    }
-    cockpitModel = buildCockpitModel(cachedData, cachedOverview);
-    renderCockpit(cockpitModel, cachedData, cachedOverview);
+function cockpitModelFromWorkspace(workspace) {
+    const decision = workspace?.decision || {};
+    const scenario = workspace?.active_scenario || {};
+    const target = decision.target;
+    const invalidation = decision.invalidation;
+    const bias = decision.bias || 'WAIT';
+    return {
+        symbol: workspace.symbol,
+        marketVote: decision.market_vote || { score: 0, detail: 'Unavailable' },
+        dealerVote: decision.dealer_vote || { score: 0, detail: 'Unavailable' },
+        liquidityVote: decision.liquidity_vote || { score: 0, detail: 'Candidate-specific' },
+        whale: decision.index_basket || {},
+        score: Number(decision.score || 0),
+        dataQuality: decision.data_quality || workspace.data_quality || { score: 0, warnings: [] },
+        title: bias === 'CALL' ? 'CALL BIAS' : bias === 'PUT' ? 'PUT BIAS' : 'WAIT',
+        context: decision.context || (scenario.reasons || []).join('; '),
+        plan: {
+            target: Number.isFinite(Number(target)) ? formatTargetPrice(target) : '--',
+            invalidation: Number.isFinite(Number(invalidation)) ? formatTargetPrice(invalidation) : '--',
+            description: scenario.scenario_type || 'NO_TRADE',
+        },
+        flip: decision.flip,
+        target,
+        invalidation,
+        scenarioId: scenario.scenario_id,
+        scenarioType: scenario.scenario_type,
+    };
 }
 
 function setText(id, value) {
@@ -1382,6 +2177,16 @@ function setClassText(id, value, className) {
     if (!el) return;
     el.innerText = value;
     el.className = className || '';
+}
+
+function renderMarketContext(context) {
+    const eventState = context?.event_risk?.state || 'UNAVAILABLE';
+    setClassText('contextEventRisk', eventState, eventState === 'BLOCKED' ? 'red-text' : eventState === 'CAUTION' ? 'amber-text' : 'green-text');
+    setText('contextImpliedMove', Number.isFinite(Number(context?.implied_move)) ? formatTargetPrice(context.implied_move) : 'Unavailable');
+    setText('contextRangeConsumed', Number.isFinite(Number(context?.range_consumed)) ? `${Math.round(Number(context.range_consumed) * 100)}%` : 'Unavailable');
+    setText('contextRealizedVol', Number.isFinite(Number(context?.realized_volatility_15m)) ? formatPct(context.realized_volatility_15m) : 'Unavailable');
+    setText('contextCrossAsset', context?.cross_asset_state || 'Unavailable');
+    setText('contextWarnings', (context?.warnings || []).join(' | ') || 'All configured context sources available');
 }
 
 function formatEdgeWinRate(value) {
@@ -1454,7 +2259,7 @@ function renderCockpit(model, symbolData, overviewData) {
     setText('cockpitContext', model.context);
     setClassText('cockpitBiasLabel', model.title, scoreClass);
     setClassText('cockpitBiasScore', `${Math.round(model.score * 100)}%`, scoreClass);
-    setText('cockpitConfidence', `${Math.round((model.confidence || 0) * 100)}%`);
+    setText('cockpitConfidence', `${Math.round((model.dataQuality?.score || 0) * 100)}%`);
     setText('cockpitTarget', model.plan.target);
     setText('cockpitInvalidation', model.plan.invalidation);
     setText('cockpitFlip', model.flip ? formatTargetPrice(model.flip) : '--');
@@ -1478,31 +2283,92 @@ function renderCockpit(model, symbolData, overviewData) {
     const whaleVote = classifyVote(whaleScore);
     setClassText('tileWhaleValue', model.whale.label || whaleVote.label, whaleVote.className);
     setText('tileWhaleBadge', model.whale.confidence_label || whaleVote.badge);
-    setText('tileWhaleDetail', model.whale.strategy || 'No whale composite.');
+    setText('tileWhaleDetail', model.whale.strategy || 'No index-basket composite.');
 
-    renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model);
+    renderCockpitProfileChart(symbolData.profile, symbolData.snapshot.spot_price, model, symbolData.gamma_sweep);
+    renderSweepChart('cockpitSweepChart', symbolData.gamma_sweep, symbolData.snapshot);
     renderMetricStrip(symbolData, model);
     renderEdgeStats(overviewData.edge_stats?.[model.symbol]);
     renderCockpitPillars(overviewData.components || []);
 }
 
-async function loadTradeSetups() {
+async function loadExecutionCandidates(requestContext = null) {
     const symbol = document.getElementById('symbolSelector')?.value;
     if (!symbol) return;
 
-    if (!cachedData || cachedData.snapshot?.symbol !== symbol) {
-        cachedData = await eel.get_dashboard_data(symbol)();
-    }
-    if (!cachedOverview || cachedOverview.error) {
-        cachedOverview = await eel.get_market_overview()();
-    }
-    if (cachedData && cachedOverview && !cachedOverview.error) {
-        cockpitModel = buildCockpitModel(cachedData, cachedOverview);
-    }
-
-    const data = await eel.get_trade_setups(symbol)();
+    if (!isSymbolContextCurrent(symbol, requestContext)) return;
+    const data = cachedWorkspace?.execution_candidates;
     cachedTradeSetups = data;
-    renderTradeSetups(data, cockpitModel, cachedData);
+    renderExecutionCandidates(data, cockpitModel, cachedData);
+}
+
+async function loadEdgeLab(requestContext = null) {
+    const symbol = document.getElementById('symbolSelector')?.value;
+    if (!symbol || !isSymbolContextCurrent(symbol, requestContext)) return;
+    const filters = {
+        symbol,
+        horizon: Number(document.getElementById('edgeLabHorizon')?.value || 30),
+        include_legacy: Boolean(document.getElementById('edgeLabLegacy')?.checked),
+    };
+    const payload = await eel.get_edge_lab(filters)();
+    if (!isSymbolContextCurrent(symbol, requestContext)) return;
+    EdgeLab.render(payload, {
+        status: document.getElementById('edgeLabStatus'),
+        summary: document.getElementById('edgeLabSummary'),
+        table: document.getElementById('edgeLabTable'),
+        chart: document.getElementById('edgeLabExpectancyChart'),
+    }, echarts);
+    await loadJournal(symbol);
+}
+
+function prefillJournalFromCockpit() {
+    const workspace = cachedWorkspace;
+    if (!workspace) return;
+    switchView('edge-lab');
+    const now = new Date();
+    const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString();
+    const session = workspace.as_of ? String(workspace.as_of).slice(0, 10) : local.slice(0, 10);
+    const dateInput = document.getElementById('journalSessionDate');
+    const timeInput = document.getElementById('journalEntryTime');
+    if (dateInput) dateInput.value = session;
+    if (timeInput) timeInput.value = local.slice(0, 16);
+}
+
+async function saveJournalEntry() {
+    const workspace = cachedWorkspace || {};
+    const payload = {
+        symbol: document.getElementById('symbolSelector')?.value,
+        session_date: document.getElementById('journalSessionDate')?.value,
+        scenario_id: workspace.active_scenario?.scenario_id,
+        scenario_type: workspace.active_scenario?.scenario_type,
+        regime: workspace.regime?.traders?.label,
+        liquidity_grade: Object.values(workspace.execution_candidates?.ideas || {}).find(item => item.status === 'EXECUTABLE')?.liquidity_grade,
+        contracts: Number(document.getElementById('journalContracts')?.value),
+        entry_price: Number(document.getElementById('journalEntryPrice')?.value),
+        exit_price: document.getElementById('journalExitPrice')?.value || null,
+        entry_time: document.getElementById('journalEntryTime')?.value,
+        fees: Number(document.getElementById('journalFees')?.value || 0),
+        adhered_to_plan: Boolean(document.getElementById('journalAdhered')?.checked),
+        notes: document.getElementById('journalNotes')?.value || '',
+    };
+    try {
+        await eel.create_journal_entry(payload)();
+        await loadJournal(payload.symbol);
+        showToast('Journal saved', 'Execution result saved locally.', 'info');
+    } catch (error) {
+        showToast('Journal validation', String(error), 'info');
+    }
+}
+
+async function loadJournal(symbol) {
+    const [entries, review] = await Promise.all([
+        eel.get_journal_entries(symbol)(),
+        eel.get_weekly_journal_review(null)(),
+    ]);
+    const results = document.getElementById('journalExecutionResults');
+    const weekly = document.getElementById('journalWeeklyReview');
+    if (results) results.innerHTML = entries.length ? `<table class="analysis-table"><thead><tr><th>Entry</th><th>Scenario</th><th>Contracts</th><th>P&amp;L</th><th>Adherence</th></tr></thead><tbody>${entries.map(row => `<tr><td>${String(row.entry_time).replace('T', ' ')}</td><td>${row.scenario_type || '--'}</td><td>${row.contracts}</td><td>${row.pnl == null ? 'Open' : formatTradeDollars(row.pnl)}</td><td>${row.adhered_to_plan ? 'Followed' : 'Deviated'}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No user execution entries for this symbol.</p>';
+    if (weekly) weekly.innerHTML = review.groups.length ? review.groups.map(group => `<article class="edge-stat"><span>${group.dimension}: ${group.value}</span><strong>${formatTradeDollars(group.pnl)}</strong><em>${group.trades} user trades</em></article>`).join('') : '<article class="edge-stat"><span>Weekly review</span><strong>--</strong><em>No user trades this week</em></article>';
 }
 
 function formatTradePoints(value, decimals = 2) {
@@ -1532,20 +2398,41 @@ function renderSetupStat(label, value, className = '') {
 }
 
 function unavailableSetupCard(title, idea) {
+    const status = idea?.status || 'UNAVAILABLE';
+    const modeled = status === 'MODELED_ONLY';
     return `
         <div class="setup-card-head">
             <span>${title}</span>
-            <em>Unavailable</em>
+            <em>${status}</em>
         </div>
-        <strong class="amber-text">No Setup</strong>
-        <p>${idea?.reason || 'No eligible strike structure in the current snapshot.'}</p>
+        <strong class="amber-text">${modeled ? `Theoretical debit ${formatTradePoints(idea?.estimated_debit)}` : 'Not executable'}</strong>
+        <p>${idea?.reason || 'No eligible quoted structure in the current snapshot.'}</p>
+    `;
+}
+
+function renderExecutionQuote(idea) {
+    const quote = idea?.quote;
+    if (!quote) return '';
+    const age = Number.isFinite(Number(quote.age_seconds)) ? `${Math.round(Number(quote.age_seconds))}s old` : 'age unavailable';
+    const sizing = idea.status === 'EXECUTABLE' ? renderSetupStat('Contracts', String(idea.contracts ?? 0), 'green-text') : '';
+    return `
+        <div class="setup-stat-grid">
+            ${renderSetupStat('Bid / Mid / Ask', `${formatTradePoints(quote.bid)} / ${formatTradePoints(quote.mid)} / ${formatTradePoints(quote.ask)}`)}
+            ${renderSetupStat('Quote age', age)}
+            ${renderSetupStat('Liquidity', idea.liquidity_grade || '--', idea.liquidity_grade === 'REJECTED' ? 'red-text' : 'green-text')}
+            ${renderSetupStat('Max loss', formatTradeDollars(idea.max_loss_dollars), 'amber-text')}
+            ${renderSetupStat('Max reward', formatTradeDollars(idea.max_reward_dollars), 'green-text')}
+            ${renderSetupStat('Settlement', idea.settlement_type || '--')}
+            ${renderSetupStat('Close', idea.time_to_close || '--')}
+            ${sizing}
+        </div>
     `;
 }
 
 function renderButterflyCard(idea) {
-    const card = document.getElementById('butterflySetupCard');
+    const card = document.getElementById('butterflyCandidateCard');
     if (!card) return;
-    if (!idea || idea.status !== 'ready') {
+    if (!idea || idea.status === 'MODELED_ONLY' || idea.status === 'REJECTED') {
         card.innerHTML = unavailableSetupCard('Butterfly', idea);
         return;
     }
@@ -1554,7 +2441,7 @@ function renderButterflyCard(idea) {
     card.innerHTML = `
         <div class="setup-card-head">
             <span>Butterfly</span>
-            <em>${idea.method}</em>
+            <em>${idea.status} / ${idea.liquidity_grade}</em>
         </div>
         <strong class="${sideClass}">${idea.side} ${formatTargetPrice(idea.lower)} / ${formatTargetPrice(idea.center)} / ${formatTargetPrice(idea.upper)}</strong>
         <div class="setup-stat-grid">
@@ -1563,14 +2450,15 @@ function renderButterflyCard(idea) {
             ${renderSetupStat('Risk', formatTradeDollars(idea.estimated_debit_dollars), 'amber-text')}
             ${renderSetupStat('Tent', `${formatTargetPrice(idea.lower_breakeven)} - ${formatTargetPrice(idea.upper_breakeven)}`)}
         </div>
+        ${renderExecutionQuote(idea)}
         <p>${idea.rationale}</p>
     `;
 }
 
 function renderDebitSpreadCard(idea) {
-    const card = document.getElementById('debitSpreadSetupCard');
+    const card = document.getElementById('debitSpreadCandidateCard');
     if (!card) return;
-    if (!idea || idea.status !== 'ready') {
+    if (!idea || idea.status === 'MODELED_ONLY' || idea.status === 'REJECTED') {
         card.innerHTML = unavailableSetupCard('Debit Spread', idea);
         return;
     }
@@ -1579,7 +2467,7 @@ function renderDebitSpreadCard(idea) {
     card.innerHTML = `
         <div class="setup-card-head">
             <span>Debit Spread</span>
-            <em>${idea.method}</em>
+            <em>${idea.status} / ${idea.liquidity_grade}</em>
         </div>
         <strong class="${sideClass}">${idea.side} ${formatTargetPrice(idea.long_strike)} / ${formatTargetPrice(idea.short_strike)}</strong>
         <div class="setup-stat-grid">
@@ -1588,6 +2476,7 @@ function renderDebitSpreadCard(idea) {
             ${renderSetupStat('Breakeven', formatTargetPrice(idea.breakeven))}
             ${renderSetupStat('Pit Target', formatTargetPrice(idea.target), 'amber-text')}
         </div>
+        ${renderExecutionQuote(idea)}
         <p>${idea.rationale}</p>
     `;
 }
@@ -1660,7 +2549,7 @@ function renderSetupProfileChart(setups, model) {
         },
         yAxis: {
             type: 'value',
-            name: 'Net GEX (M)',
+            name: 'Net GEX by Strike (M)',
             min: bounds.min,
             max: bounds.max,
             nameTextStyle: chartText(12, '#b177ff'),
@@ -1669,7 +2558,7 @@ function renderSetupProfileChart(setups, model) {
             splitLine: { lineStyle: { color: CHART_GRID } }
         },
         series: [{
-            name: 'Net GEX',
+            name: 'Net GEX by Strike',
             type: 'line',
             smooth: true,
             symbol: 'circle',
@@ -1690,26 +2579,17 @@ function renderSetupProfileChart(setups, model) {
     attachClickZoom('setupProfileChart', rows.map(row => row.strike));
 }
 
-function renderTradeSetups(setups, model, symbolData) {
+function renderExecutionCandidates(setups, model, symbolData) {
     if (!setups || setups.error) {
         showToast('Setups unavailable', setups?.error || 'No setup data', 'info');
         return;
     }
 
-    const biasClass = model?.score > 0.22 ? 'green-text' : model?.score < -0.22 ? 'red-text' : 'amber-text';
-    setText('setupSymbol', setups.symbol || symbolData?.snapshot?.symbol || '--');
-    setClassText('setupCockpitBias', model?.title || 'WAIT', biasClass);
-    setText('setupConfidence', model ? `${Math.round((model.confidence || 0) * 100)}%` : '--');
-    setText('setupCockpitTarget', model?.plan?.target || '--');
-    setText('setupTimestamp', setups.timestamp ? new Date(setups.timestamp).toLocaleTimeString() : '--');
-    setText('setupPricingModel', setups.pricing_model || 'Model pricing');
-    setText('setupButterflyLens', setups.backtest_lens?.butterfly || '--');
-    setText('setupSpreadLens', setups.backtest_lens?.debit_spread || '--');
-    setText('setupSampleWarning', setups.backtest_lens?.sample_warning || '--');
+    const executable = Object.values(setups.ideas || {}).filter(idea => idea.status === 'EXECUTABLE').length;
+    setText('executionQuoteStatus', executable ? `${executable} quote-backed candidate${executable === 1 ? '' : 's'}; sizing uses conservative max loss` : 'No executable quote; modeled/rejected candidates remain visible');
 
     renderButterflyCard(setups.ideas?.butterfly);
     renderDebitSpreadCard(setups.ideas?.debit_spread);
-    renderSetupProfileChart(setups, model);
 }
 
 function renderMetricStrip(symbolData, model) {
@@ -1731,7 +2611,7 @@ function renderMetricStrip(symbolData, model) {
     setClassText('stripNetGex', formatMoneyM(symbolData.snapshot.total_net_gex, 0), symbolData.snapshot.total_net_gex >= 0 ? 'green-text' : 'red-text');
     setClassText('stripGammaExposure', localNet >= 0 ? 'Long' : 'Short', localNet >= 0 ? 'green-text' : 'red-text');
     setClassText('stripGexChange', formatMoneyM(lastHist - firstHist, 0), lastHist - firstHist >= 0 ? 'green-text' : 'red-text');
-    setText('stripZeroGamma', model.flip ? formatTargetPrice(model.flip) : '--');
+    setText('stripZeroGamma', sweepZeroLabel(symbolData.gamma_sweep, model.flip));
     setClassText('stripGammaSlope', `${formatMoneyM(symbolData.snapshot.gex_slope || 0, 2)} / pt`, symbolData.snapshot.gex_slope >= 0 ? 'green-text' : 'red-text');
 }
 
@@ -1745,7 +2625,8 @@ function renderCockpitPillars(components) {
         card.className = 'asset-card';
         const pct = Number(comp.distance_pct || 0);
         const isPos = pct >= 0;
-        const quality = comp.confidence >= 0.8 ? 'A' : comp.confidence >= 0.65 ? 'B+' : comp.confidence >= 0.45 ? 'B' : 'C';
+        const score = comp.data_quality?.score ?? comp.confidence ?? 0;
+        const quality = score >= 0.8 ? 'A' : score >= 0.65 ? 'B+' : score >= 0.45 ? 'B' : 'C';
         const accelLabel = Math.abs(comp.acceleration || 0) > 10000000 ? 'High' : Math.abs(comp.acceleration || 0) > 3000000 ? 'Rising' : 'Neutral';
         const width = Math.min(Math.abs(pct) / 3 * 50, 50);
         const barStyle = isPos
@@ -1759,7 +2640,7 @@ function renderCockpitPillars(components) {
             </div>
             <div class="asset-metrics">
                 <div><span>Flip Dist</span><strong class="${isPos ? 'green-text' : 'red-text'}">${pct.toFixed(1)}%</strong></div>
-                <div><span>Quality</span><strong class="${comp.confidence >= 0.65 ? 'green-text' : 'amber-text'}">${quality}</strong></div>
+                <div><span>Quality</span><strong class="${score >= 0.65 ? 'green-text' : 'amber-text'}">${quality}</strong></div>
                 <div><span>Accel</span><strong class="${accelLabel === 'High' ? 'red-text' : accelLabel === 'Rising' ? 'amber-text' : ''}">${accelLabel}</strong></div>
             </div>
             <div class="pressure-label">Pressure</div>
@@ -1773,7 +2654,7 @@ function renderCockpitPillars(components) {
     });
 }
 
-function renderCockpitProfileChart(profileData, spotPrice, model) {
+function renderCockpitProfileChart(profileData, spotPrice, model, gammaSweep = null) {
     const strikeMap = {};
     profileData.forEach(row => {
         if (!strikeMap[row.strike_price]) strikeMap[row.strike_price] = { call: 0, put: 0, net: 0 };
@@ -1791,7 +2672,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
     const markerLevels = [
         { label: 'Target', value: model.target, color: '#ff454f', dash: 'dot' },
         { label: 'Spot', value: spotPrice, color: '#ffffff', dash: 'solid' },
-        { label: 'Flip', value: model.flip, color: '#ff454f', dash: 'dash' },
+        ...sweepZeroMarkerLevels(gammaSweep, model.flip, spotPrice),
         { label: 'Invalidation', value: model.invalidation, color: '#f5a524', dash: 'dash' }
     ].filter(level => Number.isFinite(level.value));
     const markerLines = buildMarkerLines(markerLevels, strikes);
@@ -1827,7 +2708,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
         yAxis: [
             {
                 type: 'value',
-                name: 'Net GEX (M)',
+                name: 'Net GEX by Strike (M)',
                 min: netBounds.min,
                 max: netBounds.max,
                 nameTextStyle: chartText(12, '#b177ff'),
@@ -1868,7 +2749,7 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
                 barWidth: 12
             },
             {
-                name: 'Net GEX',
+                name: 'Net GEX by Strike',
                 type: 'line',
                 yAxisIndex: 0,
                 smooth: true,
@@ -1889,126 +2770,31 @@ function renderCockpitProfileChart(profileData, spotPrice, model) {
     attachClickZoom('cockpitProfileChart', strikes);
 }
 
-function nearestAnySignificant(rows, spot, direction) {
-    const strength = row => Math.max(Math.abs(row.netGex || 0), Math.abs(row.callGex || 0), Math.abs(row.putGex || 0));
-    const maxAbs = rows.reduce((max, row) => Math.max(max, strength(row)), 0);
-    const threshold = maxAbs * 0.18;
-    const candidates = rows
-        .filter(row => direction === 1 ? row.strike > spot : row.strike < spot)
-        .filter(row => strength(row) >= threshold)
-        .sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
-    return candidates[0] || null;
-}
-
-function fallbackTarget(spot, direction, expansion) {
-    const movePct = expansion ? 0.012 : 0.006;
-    return spot * (1 + (direction * movePct));
-}
-
-function choosePriceObjective(rows, spot, direction, expansion, flip) {
-    if (!rows.length) return fallbackTarget(spot, direction, expansion);
-
-    if (!expansion && flip > 0 && ((direction === 1 && flip > spot) || (direction === -1 && flip < spot))) {
-        return flip;
-    }
-
-    const preferredSign = expansion ? -1 : 1;
-    const preferred = nearestSignificant(rows, spot, direction === 1 ? 'above' : 'below', preferredSign);
-    const anyLevel = preferred || nearestAnySignificant(rows, spot, direction);
-    return anyLevel ? anyLevel.strike : fallbackTarget(spot, direction, expansion);
-}
-
-function chooseInvalidation(rows, spot, direction, flip) {
-    const oppositeDirection = direction === 1 ? 'below' : 'above';
-    const wall = nearestSignificant(rows, spot, oppositeDirection, 1) || nearestAnySignificant(rows, spot, -direction);
-    if (wall) return wall.strike;
-
-    if (flip > 0 && ((direction === 1 && flip < spot) || (direction === -1 && flip > spot))) {
-        return flip;
-    }
-
-    return spot * (1 - (direction * 0.006));
-}
-
-function buildTradePlan(symbolData, overviewData, component, finalScore, marketVote) {
-    if (!symbolData || symbolData.error || Math.abs(finalScore) < 0.22) {
-        return {
-            setupType: 'No Trade',
-            target: '---',
-            invalidation: '---',
-            description: 'Bias is too mixed for a price objective.'
-        };
-    }
-
-    const rows = buildStrikeProfile(symbolData.profile);
-    const spot = symbolData.snapshot.spot_price;
-    const localRows = rows.filter(row => Math.abs(row.strike - spot) / spot <= 0.02);
-    const localNet = localRows.reduce((sum, row) => sum + row.netGex, 0);
-    const fallbackFlip = estimateFlipFromProfileRows(rows);
-    const flip = component && component.flip_strike ? component.flip_strike : fallbackFlip.strike;
-    const marketVol = ((overviewData.compass_traders?.x_score || 0) + (overviewData.compass_whale?.x_score || 0)) / 2;
-    const direction = finalScore > 0 ? 1 : -1;
-    const isExpansion = localNet < 0 || marketVol < -0.15 || (Math.sign(marketVote.score) === direction && Math.abs(marketVote.score) > 0.65);
-    const side = direction === 1 ? 'Call' : 'Put';
-    const setupType = isExpansion
-        ? `Expansion ${direction === 1 ? 'Up' : 'Down'} ${side}`
-        : `Mean-Reversion ${side}`;
-    const target = choosePriceObjective(rows, spot, direction, isExpansion, flip);
-    const invalidation = chooseInvalidation(rows, spot, direction, flip);
-    const description = isExpansion
-        ? `Target follows open liquidity in the ${direction === 1 ? 'upside' : 'downside'} direction.`
-        : `Target is a reversion move toward flip or the next stabilizing gamma level.`;
-
-    return {
-        setupType,
-        target: formatTargetPrice(target),
-        invalidation: formatTargetPrice(invalidation),
-        description
-    };
-}
-
 function renderActionOverview(overviewData, symbolData) {
     const titleEl = document.getElementById('actionBiasTitle');
     const contextEl = document.getElementById('actionBiasContext');
     const scoreEl = document.getElementById('actionBiasScore');
     if (!titleEl || !contextEl || !scoreEl) return;
 
-    const selectedSymbol = symbolData && symbolData.snapshot ? symbolData.snapshot.symbol : document.getElementById('symbolSelector').value;
-    const component = findComponent(overviewData, selectedSymbol);
-    const marketVote = buildMarketVote(overviewData);
-    const dealerVote = buildDealerVote(symbolData, component);
-    const liquidityVote = buildLiquidityVote(symbolData);
-    const rawScore = clamp((marketVote.score * 0.45) + (dealerVote.score * 0.35) + (liquidityVote.score * 0.20), -1, 1);
-    const agreement = [marketVote.score, dealerVote.score, liquidityVote.score]
-        .filter(score => Math.sign(score) === Math.sign(rawScore) && Math.abs(score) > 0.20).length;
-    const confidencePenalty = component ? component.confidence || 0.5 : 0.45;
-    const finalScore = rawScore * clamp(0.65 + (agreement * 0.12), 0.65, 1) * confidencePenalty;
-    const absScore = Math.abs(finalScore);
-
-    let title = 'WAIT / NO TRADE';
-    if (absScore >= 0.55) title = finalScore > 0 ? 'STRONG CALL BIAS' : 'STRONG PUT BIAS';
-    else if (absScore >= 0.22) title = finalScore > 0 ? 'CALL BIAS' : 'PUT BIAS';
-
-    const conflictText = agreement < 2 ? 'Inputs are mixed; require price confirmation.' : 'Inputs are aligned enough for directional context.';
-    const symbolText = selectedSymbol ? `${selectedSymbol}: ` : '';
-    const actionClass = finalScore > 0.22 ? 'action-call' : finalScore < -0.22 ? 'action-put' : 'action-wait';
-    const plan = buildTradePlan(symbolData, overviewData, component, finalScore, marketVote);
-    contextEl.innerText = `${symbolText}${conflictText} ${plan.description}`;
-    titleEl.innerText = title;
+    const model = cachedWorkspace ? cockpitModelFromWorkspace(cachedWorkspace) : null;
+    if (!model) return;
+    const actionClass = model.score > 0.22 ? 'action-call' : model.score < -0.22 ? 'action-put' : 'action-wait';
+    contextEl.innerText = `${model.symbol}: ${model.context}`;
+    titleEl.innerText = model.title;
     titleEl.className = actionClass;
-    scoreEl.innerText = `${Math.round(finalScore * 100)}%`;
+    scoreEl.innerText = `${Math.round(model.score * 100)}%`;
     scoreEl.className = `action-score ${actionClass}`;
 
-    setVote('voteMarket', 'voteMarketDetail', marketVote);
-    setVote('voteDealer', 'voteDealerDetail', dealerVote);
-    setVote('voteLiquidity', 'voteLiquidityDetail', liquidityVote);
+    setVote('voteMarket', 'voteMarketDetail', model.marketVote);
+    setVote('voteDealer', 'voteDealerDetail', model.dealerVote);
+    setVote('voteLiquidity', 'voteLiquidityDetail', model.liquidityVote);
 
     const setupEl = document.getElementById('actionSetupType');
     const targetEl = document.getElementById('actionTargetPrice');
     const invalidationEl = document.getElementById('actionInvalidation');
-    if (setupEl) setupEl.innerText = plan.setupType;
-    if (targetEl) targetEl.innerText = plan.target;
-    if (invalidationEl) invalidationEl.innerText = plan.invalidation;
+    if (setupEl) setupEl.innerText = model.scenarioType;
+    if (targetEl) targetEl.innerText = model.plan.target;
+    if (invalidationEl) invalidationEl.innerText = model.plan.invalidation;
 }
 
 function renderCompass(compassData, type) {
@@ -2019,7 +2805,7 @@ function renderCompass(compassData, type) {
     // Show composition + default explanation
     const container = document.getElementById(`compass${type}`);
     if (container) {
-        const baseTooltip = "X-Axis = normalized net-vs-gross gamma imbalance. Y-Axis = spot vs estimated flip. Confidence falls when data is stale, thin, or approximate.";
+        const baseTooltip = "X-Axis = normalized net-vs-gross gamma imbalance. Y-Axis = spot vs estimated flip. Data Quality falls when data is stale, thin, or approximate.";
         container.setAttribute('data-tooltip', `${compassData.composition}. ${baseTooltip}`);
     }
 
@@ -2032,7 +2818,8 @@ function renderCompass(compassData, type) {
     const warnings = compassData.warnings && compassData.warnings.length
         ? ` | ${compassData.warnings.join(', ')}`
         : '';
-    descEl.innerText = `${compassData.strategy} Confidence: ${formatPct(compassData.confidence)} ${compassData.confidence_label || ''}${warnings}`;
+    const quality = compassData.data_quality || { score: compassData.confidence, label: compassData.confidence_label };
+    descEl.innerText = `${compassData.strategy} Data quality: ${formatPct(quality.score)} ${quality.label || ''}${warnings}`;
 
     // 2. Position the Puck
     // scores are -1 to 1. 0 is center (50%).
@@ -2110,7 +2897,7 @@ function renderPillars(components) {
         const isPos = pct >= 0;
         const colorClass = isPos ? 'val-positive' : 'val-negative';
         const rawDist = pct.toFixed(2);
-        const confidence = formatPct(comp.confidence);
+        const quality = formatPct(comp.data_quality?.score ?? comp.confidence);
         const imbalance = formatPct(comp.gex_imbalance, 0);
         const warnings = comp.warnings && comp.warnings.length ? comp.warnings.join(', ') : 'clean';
         const flipQuality = (comp.flip_quality || 'unknown').replace('_', ' ');
@@ -2139,7 +2926,7 @@ function renderPillars(components) {
                 Flip: ${parseInt(comp.flip_strike)} | Spot: ${parseInt(comp.spot)}
             </div>
             <div class="pillar-quality">
-                <span>Quality ${confidence}</span>
+                <span>Quality ${quality}</span>
                 <span>${formatAge(comp.age_seconds)}</span>
                 <span>Flip ${flipQuality}</span>
             </div>
@@ -2259,7 +3046,6 @@ eel.expose(handle_backend_event);
 function handle_backend_event(event) {
     console.log("Backend Event Received:", event);
 
-    // 1. Add to Panel
     addNotificationToPanel(event);
 
     // 2. Handle Specifics
@@ -2270,13 +3056,11 @@ function handle_backend_event(event) {
         if (event.payload.symbol === currentSymbol) {
             console.log("Refreshing data for current symbol...");
             loadSymbol(); // Reloads data from DB
-            showToast("Data Updated", `New data available for ${event.payload.symbol}`, "info");
         }
     }
     else if (event.type === 'MARKET_UPDATE') {
         updateBackendStatus();
         loadSymbol();
-        showToast("Backend Cycle Complete", "Dashboard loaded the latest local snapshot.", "info");
     }
     else if (event.type === 'magnet_change') {
         const p = event.payload;
@@ -2286,51 +3070,47 @@ function handle_backend_event(event) {
             `${p.symbol} Magnet Moved: ${p.old_magnet.toFixed(0)} -> ${p.new_magnet.toFixed(0)}`,
             "magnet"
         );
+    } else if (event.type === 'decision_alert') {
+        showToast(event.payload.alert_type || 'Decision Alert', event.payload.message, event.payload.severity === 'critical' ? 'magnet' : 'info');
     }
 }
 
 function addNotificationToPanel(event) {
-    const feed = document.getElementById('activityFeed');
-    if (!feed) return;
+    recordActivity(ActivityFeed.eventActivity(event));
+}
 
-    // Remove "Listening..." placeholder if exists
+function recordActivity(activity) {
+    const feed = document.getElementById('activityFeed');
+    if (!feed || !activity) return;
+
     if (feed.children.length === 1 && feed.children[0].innerText.includes('Listening')) {
         feed.innerHTML = '';
     }
 
-    const div = document.createElement('div');
-    const ts = new Date().toLocaleTimeString();
-
-    let title = "Event";
-    let body = "";
-    let typeClass = "type-info";
-
-    if (event.type === 'magnet_change') {
-        title = "Magnet Shift";
-        body = `${event.payload.symbol}: ${event.payload.old_magnet.toFixed(0)} -> ${event.payload.new_magnet.toFixed(0)}`;
-        typeClass = "type-magnet";
-    } else if (event.type === 'data_refresh') {
-        title = "Data Update";
-        body = `Refresh for ${event.payload.symbol}`;
-    } else if (event.type === 'MARKET_UPDATE') {
-        title = "Backend Cycle";
-        body = "Market overview and Ninja payload updated";
+    let div = null;
+    if (activity.key) {
+        div = [...feed.children].find(item => item.dataset.feedKey === activity.key) || null;
+    }
+    if (!div) {
+        div = document.createElement('div');
+        if (activity.key) div.dataset.feedKey = activity.key;
     }
 
-    div.className = `activity-item ${typeClass}`;
-    div.innerHTML = `
-        <span class="activity-time">${ts}</span>
-        <span class="activity-title">${title}</span>
-        <span class="activity-msg">${body}</span>
-    `;
-
-    // Prepend
+    div.className = `activity-item ${activity.typeClass || 'type-info'}`;
+    div.replaceChildren();
+    for (const [className, value] of [
+        ['activity-time', new Date().toLocaleTimeString()],
+        ['activity-title', activity.title || 'Event'],
+        ['activity-msg', activity.body || '']
+    ]) {
+        const span = document.createElement('span');
+        span.className = className;
+        span.textContent = value;
+        div.appendChild(span);
+    }
     feed.insertBefore(div, feed.firstChild);
 
-    // Limit history
-    if (feed.children.length > 50) {
-        feed.removeChild(feed.lastChild);
-    }
+    while (feed.children.length > 50) feed.removeChild(feed.lastChild);
 }
 
 // --- Toast Notifications ---

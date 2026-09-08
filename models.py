@@ -79,6 +79,17 @@ class RawOptionGreek(Base):
     open_interest = Column(Integer)
     underlying_price = Column(Float)
     gex_value = Column(Float)
+    bid = Column(Float, nullable=True)
+    ask = Column(Float, nullable=True)
+    mid_price = Column(Float, nullable=True)
+    last_price = Column(Float, nullable=True)
+    bid_size = Column(Integer, nullable=True)
+    ask_size = Column(Integer, nullable=True)
+    volume = Column(Integer, nullable=True)
+    implied_volatility = Column(Float, nullable=True)
+    bid_timestamp = Column(DateTime, nullable=True)
+    ask_timestamp = Column(DateTime, nullable=True)
+    last_timestamp = Column(DateTime, nullable=True)
 
     snapshot = relationship("GexSnapshot", back_populates="raw_options")
 
@@ -101,6 +112,8 @@ class SignalEvent(Base):
     bias = Column(String, index=True)
     bias_score = Column(Float)
     confidence = Column(Float)
+    data_quality = Column(Float, nullable=True)
+    edge_probability = Column(Float, nullable=True)
     target = Column(Float, nullable=True)
     invalidation = Column(Float, nullable=True)
     flip = Column(Float, nullable=True)
@@ -108,6 +121,13 @@ class SignalEvent(Base):
     dealer_state = Column(String, default="")
     liquidity_state = Column(String, default="")
     whale_state = Column(String, default="")
+    state_key = Column(String, index=True, nullable=True)
+    scenario_type = Column(String, index=True, nullable=True)
+    scenario_id = Column(String, index=True, nullable=True)
+    session_date = Column(Date, index=True, nullable=True)
+    event_tags_json = Column(Text, default="[]")
+    liquidity_grade = Column(String, index=True, nullable=True)
+    is_opportunity = Column(Boolean, default=False, index=True)
     setup_key = Column(String, index=True)
     direction_key = Column(String, index=True)
     payload_json = Column(Text, default="")
@@ -151,6 +171,67 @@ class SignalOutcome(Base):
         UniqueConstraint("signal_event_id", "horizon_minutes", name="uq_signal_outcome_horizon"),
         Index("idx_outcome_horizon_label", "horizon_minutes", "outcome_label"),
     )
+
+
+class MarketContextSnapshot(Base):
+    __tablename__ = "market_context_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    captured_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    session_date = Column(Date, index=True)
+    event_state = Column(String, default="NORMAL", nullable=False)
+    implied_move = Column(Float, nullable=True)
+    range_consumed = Column(Float, nullable=True)
+    realized_volatility_15m = Column(Float, nullable=True)
+    cross_asset_state = Column(String, nullable=True)
+    volatility_term_json = Column(Text, default="{}")
+    warnings_json = Column(Text, default="[]")
+    source_status_json = Column(Text, default="{}")
+
+
+class DecisionAlert(Base):
+    __tablename__ = "decision_alerts"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    alert_type = Column(String, nullable=False)
+    severity = Column(String, default="info", nullable=False)
+    scenario_id = Column(String, nullable=True)
+    dedupe_key = Column(String, nullable=False, unique=True)
+    state_from = Column(String, nullable=True)
+    state_to = Column(String, nullable=True)
+    message = Column(Text, nullable=False)
+    payload_json = Column(Text, default="{}")
+
+
+class TradeJournalEntry(Base):
+    __tablename__ = "trade_journal_entries"
+
+    id = Column(Integer, primary_key=True)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, nullable=False)
+    symbol = Column(String, nullable=False, index=True)
+    session_date = Column(Date, nullable=False, index=True)
+    scenario_id = Column(String, nullable=True)
+    scenario_type = Column(String, nullable=True)
+    regime = Column(String, nullable=True)
+    event_tags_json = Column(Text, default="[]")
+    liquidity_grade = Column(String, nullable=True)
+    contracts = Column(Integer, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    exit_price = Column(Float, nullable=True)
+    entry_time = Column(DateTime, nullable=False)
+    exit_time = Column(DateTime, nullable=True)
+    fees = Column(Float, default=0, nullable=False)
+    pnl = Column(Float, nullable=True)
+    slippage = Column(Float, nullable=True)
+    underlying_mfe = Column(Float, nullable=True)
+    underlying_mae = Column(Float, nullable=True)
+    exit_reason = Column(String, nullable=True)
+    adhered_to_plan = Column(Boolean, nullable=True)
+    notes = Column(Text, default="", nullable=False)
 
 
 def _configure_sqlite_connection(dbapi_connection, _connection_record):
@@ -258,6 +339,9 @@ def initialize_database(
 
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
+    from schema_migrations import run_migrations
+
+    run_migrations(db_path, create_backup=Path(db_path).resolve() == DB_PATH.resolve())
     return engine
 
 

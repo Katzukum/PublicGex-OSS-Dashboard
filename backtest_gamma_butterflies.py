@@ -7,6 +7,7 @@ from math import exp, pi
 from pathlib import Path
 from statistics import NormalDist
 from typing import Iterable, Optional
+from option_math import charm_exposure as _shared_charm_exposure, charm_per_year as _shared_charm_per_year, infer_total_vol
 
 
 DEFAULT_DB_PATH = Path("gex_data.db")
@@ -242,57 +243,16 @@ def _years_to_expiration(row: dict, timestamp: datetime, settlement_time: time) 
 
 
 def _d1_total_vol(row: dict, spot: float, side: str) -> Optional[tuple[float, float]]:
-    if spot <= 0:
-        return None
-
-    try:
-        delta = float(row.get("delta") or 0)
-        gamma = float(row.get("gamma") or 0)
-    except (TypeError, ValueError):
-        return None
-
-    if gamma <= 0:
-        return None
-
-    nd1 = delta if side == "CALL" else delta + 1
-    if not 0 < nd1 < 1:
-        return None
-
-    d1 = NORMAL.inv_cdf(nd1)
-    total_vol = _normal_pdf(d1) / (spot * gamma)
-    if total_vol <= 0:
-        return None
-    return d1, total_vol
+    implied, reason = infer_total_vol({**row, "option_type": side, "underlying_price": spot}, spot)
+    return None if reason else (implied["d1"], implied["total_vol"])
 
 
 def _charm_per_year(row: dict, spot: float, timestamp: datetime, settlement_time: time) -> Optional[float]:
-    side = _option_side(row)
-    if not side:
-        return None
-
-    implied = _d1_total_vol(row, spot, side)
-    if implied is None:
-        return None
-
-    d1, total_vol = implied
-    years = _years_to_expiration(row, timestamp, settlement_time)
-    d2 = d1 - total_vol
-
-    # Calendar-time charm, with rates/dividends ignored over intraday 0DTE horizons.
-    return _normal_pdf(d1) * d2 / (2 * years)
+    return _shared_charm_per_year(row, spot, timestamp, settlement_time)
 
 
 def _charm_exposure(row: dict, spot: float, timestamp: datetime, settlement_time: time) -> float:
-    charm = _charm_per_year(row, spot, timestamp, settlement_time)
-    if charm is None:
-        return 0.0
-
-    try:
-        open_interest = float(row.get("open_interest") or 0)
-    except (TypeError, ValueError):
-        open_interest = 0
-
-    return (charm / 365) * open_interest * 100
+    return _shared_charm_exposure(row, spot, timestamp, settlement_time) or 0.0
 
 
 def _strike_summary(

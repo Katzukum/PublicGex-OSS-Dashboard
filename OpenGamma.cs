@@ -33,7 +33,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         #region Variables
         private TcpListener tcpListener;
         private Thread listenerThread;
+        private TcpClient activeClient;
         private volatile bool isRunning;
+        private readonly ManualResetEvent stopRequested = new ManualResetEvent(false);
+        private readonly object clientLock = new object();
 
         // Regime state (protected by lockObj)
         private volatile string currentRegime = "WAITING";
@@ -60,6 +63,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double dashboardTarget = double.NaN;
         private double dashboardInvalidation = double.NaN;
         private double dashboardFlip = double.NaN;
+        private double modeledZeroGex = double.NaN;
         private string dashboardContext = "";
         private string dashboardMarket = "";
         private string dashboardDealer = "";
@@ -142,6 +146,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (listenerThread != null && listenerThread.IsAlive)
                 return;
 
+            stopRequested.Reset();
             isRunning = true;
             listenerThread = new Thread(ClientLoop)
             {
@@ -155,9 +160,20 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void StopListener()
         {
             isRunning = false;
+            stopRequested.Set();
+
+            TcpClient clientToClose = null;
+            lock (clientLock)
+            {
+                clientToClose = activeClient;
+                activeClient = null;
+            }
+            if (clientToClose != null)
+                clientToClose.Close();
 
             if (listenerThread != null && listenerThread.IsAlive)
-                listenerThread.Join(1000);
+                listenerThread.Join(3000);
+            listenerThread = null;
 
             Print("OpenGamma: TCP Client stopped");
         }
@@ -171,6 +187,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     // Attempt to connect to Python Server
                     client = new TcpClient();
+                    lock (clientLock)
+                    {
+                        activeClient = client;
+                    }
                     client.Connect(IPAddress.Loopback, ListenPort);
 
                     Print($"OpenGamma: Connected to Server on port {ListenPort}");
@@ -210,11 +230,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 finally
                 {
                     client?.Close();
+                    lock (clientLock)
+                    {
+                        if (ReferenceEquals(activeClient, client))
+                            activeClient = null;
+                    }
                 }
 
                 // Retry delay
-                if (isRunning)
-                    Thread.Sleep(5000);
+                if (isRunning && stopRequested.WaitOne(5000))
+                    break;
             }
         }
         #endregion
@@ -281,7 +306,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     dashValue = ExtractDashboardValue(json, "dashboard_liquidity");
                     if (dashValue != null)
                         dashboardLiquidity = dashValue;
-                    dashValue = ExtractDashboardValue(json, "dashboard_whale");
+                    dashValue = ExtractDashboardValue(json, "dashboard_index_basket");
+                    if (dashValue == null)
+                        dashValue = ExtractDashboardValue(json, "dashboard_whale");
                     if (dashValue != null)
                         dashboardWhale = dashValue;
                     dashValue = ExtractDashboardValue(json, "dashboard_edge_summary");
@@ -293,7 +320,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                     if (TryExtractDashboardDouble(json, "dashboard_bias_score", out double biasScore))
                         dashboardBiasScore = biasScore;
-                    if (TryExtractDashboardDouble(json, "dashboard_confidence", out double confidenceScore))
+                    if (TryExtractDashboardDouble(json, "dashboard_data_quality", out double confidenceScore)
+                        || TryExtractDashboardDouble(json, "dashboard_confidence", out confidenceScore))
                         dashboardConfidence = confidenceScore;
                     if (TryExtractDashboardDouble(json, "dashboard_target", out double target))
                         dashboardTarget = target;
@@ -301,6 +329,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         dashboardInvalidation = invalidation;
                     if (TryExtractDashboardDouble(json, "dashboard_flip", out double flip))
                         dashboardFlip = flip;
+                    if (TryExtractDashboardDouble(json, "dashboard_modeled_zero_gex", out double modeledZero))
+                        modeledZeroGex = modeledZero;
                     if (TryExtractDashboardDouble(json, "dashboard_edge_win_rate", out double edgeWinRate))
                         dashboardEdgeWinRate = edgeWinRate;
                     if (TryExtractDashboardDouble(json, "dashboard_edge_median_move", out double edgeMedianMove))
@@ -669,7 +699,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                         acceleration.ToString("R", CultureInfo.InvariantCulture),
                         currentRegime,
                         previousRegime,
-                        regimeCode.ToString(CultureInfo.InvariantCulture)));
+                        regimeCode.ToString(CultureInfo.InvariantCulture),
+                        modeledZeroGex.ToString("R", CultureInfo.InvariantCulture)));
 
                     foreach (var level in gammaLevels)
                     {
@@ -748,6 +779,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentRegime = string.IsNullOrEmpty(header[6]) ? "CACHED" : header[6];
                     previousRegime = string.IsNullOrEmpty(header[7]) ? previousRegime : header[7];
                     int.TryParse(header[8], NumberStyles.Integer, CultureInfo.InvariantCulture, out regimeCode);
+                    if (header.Length >= 10)
+                        double.TryParse(header[9], NumberStyles.Float, CultureInfo.InvariantCulture, out modeledZeroGex);
                     lastUpdate = "cached";
                     gammaLevels = cachedLevels
                         .OrderBy(l => l.FuturesPrice)
@@ -782,7 +815,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Get current state thread-safely
             string regime, prevRegime, update, idxSym, dashSymbol, dashBias, dashContext, dashMarket, dashDealer, dashLiquidity, dashWhale, dashEdgeSummary, dashEdgeSource;
             int code;
-            double idx, fut, sprd, accel, dashScore, dashConfidence, dashTarget, dashInvalidation, dashFlip, dashEdgeWinRate, dashEdgeMedianMove, dashEdgeSample;
+            double idx, fut, sprd, accel, dashScore, dashConfidence, dashTarget, dashInvalidation, dashFlip, modeledZero, dashEdgeWinRate, dashEdgeMedianMove, dashEdgeSample;
 
             lock (lockObj)
             {
@@ -802,6 +835,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 dashTarget = dashboardTarget;
                 dashInvalidation = dashboardInvalidation;
                 dashFlip = dashboardFlip;
+                modeledZero = modeledZeroGex;
                 dashContext = dashboardContext;
                 dashMarket = dashboardMarket;
                 dashDealer = dashboardDealer;
@@ -1087,6 +1121,44 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
+            if (!double.IsNaN(modeledZero) && !double.IsInfinity(modeledZero) && modeledZero > 0)
+            {
+                double modeledZeroFutures = modeledZero - sprd;
+                float y = chartScale.GetYByValue(modeledZeroFutures);
+
+                if (y >= ChartPanel.Y && y <= ChartPanel.Y + ChartPanel.H)
+                {
+                    using (SharpDX.Direct2D1.SolidColorBrush zeroBrush = new SharpDX.Direct2D1.SolidColorBrush(
+                        RenderTarget, new SharpDX.Color(255, 140, 0, 235)))
+                    using (SharpDX.Direct2D1.StrokeStyle zeroStroke = new SharpDX.Direct2D1.StrokeStyle(
+                        RenderTarget.Factory,
+                        new SharpDX.Direct2D1.StrokeStyleProperties
+                        {
+                            DashStyle = SharpDX.Direct2D1.DashStyle.Dot,
+                            DashCap = SharpDX.Direct2D1.CapStyle.Round,
+                            StartCap = SharpDX.Direct2D1.CapStyle.Round,
+                            EndCap = SharpDX.Direct2D1.CapStyle.Round
+                        }))
+                    using (SharpDX.DirectWrite.TextFormat zeroLabelFormat = new SharpDX.DirectWrite.TextFormat(
+                        Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold,
+                        SharpDX.DirectWrite.FontStyle.Normal, 11))
+                    {
+                        RenderTarget.DrawLine(
+                            new SharpDX.Vector2(ChartPanel.X, y),
+                            new SharpDX.Vector2(ChartPanel.X + ChartPanel.W, y),
+                            zeroBrush,
+                            3.0f,
+                            zeroStroke);
+
+                        RenderTarget.DrawText(
+                            $"Modeled 0 GEX {modeledZero:F0}",
+                            zeroLabelFormat,
+                            new SharpDX.RectangleF(ChartPanel.X + ChartPanel.W - 150, y - 17, 145, 16),
+                            zeroBrush);
+                    }
+                }
+            }
+
             if (string.IsNullOrEmpty(dashSymbol))
                 dashSymbol = idxSym;
 
@@ -1154,7 +1226,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     RenderTarget.DrawText(scoreText, dashboardMetricFormat,
                         new SharpDX.RectangleF(metricX, metricY, metricWidth, 18), biasBrush);
 
-                    RenderTarget.DrawText("Conf", dashboardLabelFormat,
+                    RenderTarget.DrawText("Data Q", dashboardLabelFormat,
                         new SharpDX.RectangleF(metricX + metricWidth, topY, metricWidth, 10), cyanBrush);
                     RenderTarget.DrawText($"{Math.Round(dashConfidence * 100):F0}%", dashboardMetricFormat,
                         new SharpDX.RectangleF(metricX + metricWidth, metricY, metricWidth, 18), whiteBrush);
@@ -1179,7 +1251,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     string marketValue = (string.IsNullOrEmpty(dashMarket) ? $"Market: {regime}" : dashMarket).Replace("Market: ", "");
                     string dealerValue = (string.IsNullOrEmpty(dashDealer) ? $"Dealer: {prevRegime}" : dashDealer).Replace("Dealer: ", "");
                     string liquidityValue = (string.IsNullOrEmpty(dashLiquidity) ? $"{idxSym}: {idx:F0} | Spread: {sprd:+0;-0;0}" : dashLiquidity).Replace("Liquidity: ", "");
-                    string whaleValue = (string.IsNullOrEmpty(dashWhale) ? $"Updated: {update}" : dashWhale).Replace("Whale: ", "");
+                    string whaleValue = (string.IsNullOrEmpty(dashWhale) ? $"Updated: {update}" : dashWhale).Replace("Index Basket: ", "").Replace("Whale: ", "");
                     string edgeValue = dashEdgeSummary;
                     if (string.IsNullOrEmpty(edgeValue))
                     {
@@ -1205,7 +1277,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     RenderTarget.DrawText(liquidityValue, dashboardTextFormat,
                         new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 2), tileY + 11, tileWidth, 16), biasBrush);
 
-                    RenderTarget.DrawText("Whale Flow", dashboardLabelFormat,
+                    RenderTarget.DrawText("Index Gamma Basket", dashboardLabelFormat,
                         new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 3), tileY, tileWidth, 10), cyanBrush);
                     RenderTarget.DrawText(whaleValue, dashboardTextFormat,
                         new SharpDX.RectangleF(contentX + ((tileWidth + tileGap) * 3), tileY + 11, tileWidth, 16), biasBrush);

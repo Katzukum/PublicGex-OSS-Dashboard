@@ -13,12 +13,27 @@
   "min_poll_interval_seconds": 15,
   "max_poll_interval_seconds": 120,
   "raw_retention_days": 30,
+  "maximum_risk_dollars": 500,
+  "fees_per_contract": 1.25,
+  "feature_flags": {
+    "decision_workspace": true,
+    "execution_quotes": true,
+    "edge_lab": true,
+    "decision_alerts": true,
+    "trace_replay": true,
+    "trade_journal": true
+  },
   "weights": {
     "SPY": 0.5,
     "QQQ": 0.3,
     "IWM": 0.2
   },
   "weights_whale": {
+    "SPX": 0.45,
+    "NDX": 0.35,
+    "IWM": 0.2
+  },
+  "weights_index_basket": {
     "SPX": 0.45,
     "NDX": 0.35,
     "IWM": 0.2

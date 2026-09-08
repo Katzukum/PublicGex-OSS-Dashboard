@@ -29,21 +29,17 @@
                     <span class="nav-icon">[]</span>
                     <span>Cockpit</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('setups')" data-view="setups">
+                <button class="nav-btn" onclick="switchView('edge-lab')" data-view="edge-lab">
                     <span class="nav-icon">+-</span>
-                    <span>Setups</span>
+                    <span>Edge Lab</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('dashboard')" data-view="dashboard">
-                    <span class="nav-icon">~</span>
-                    <span>Gamma</span>
-                </button>
-                <button class="nav-btn" onclick="switchView('market-signal')" data-view="market-signal">
+                <button class="nav-btn" onclick="switchView('regime')" data-view="regime">
                     <span class="nav-icon">&lt;&gt;</span>
-                    <span>Flow</span>
+                    <span>Regime</span>
                 </button>
-                <button class="nav-btn" onclick="switchView('dashboard')" data-view="volatility">
-                    <span class="nav-icon">o</span>
-                    <span>Volatility</span>
+                <button class="nav-btn" onclick="switchView('trace')" data-view="trace">
+                    <span class="nav-icon">::</span>
+                    <span>TRACE</span>
                 </button>
                 <button class="nav-btn" onclick="switchView('analysis')" data-view="analysis">
                     <span class="nav-icon">#</span>
@@ -107,7 +103,7 @@
                         <strong id="cockpitBiasScore">0%</strong>
                     </div>
                     <div class="hero-metric">
-                        <span>Confidence</span>
+                        <span>Data Quality</span>
                         <strong id="cockpitConfidence">--</strong>
                     </div>
                     <div class="hero-metric">
@@ -123,6 +119,15 @@
                         <strong id="cockpitFlip">--</strong>
                     </div>
                 </div>
+
+                <section id="marketContextRibbon" class="market-context-ribbon panel" aria-label="Market conditions">
+                    <div><span>Event risk</span><strong id="contextEventRisk">--</strong></div>
+                    <div><span>Implied move</span><strong id="contextImpliedMove">--</strong></div>
+                    <div><span>Range consumed</span><strong id="contextRangeConsumed">--</strong></div>
+                    <div><span>15m realized vol</span><strong id="contextRealizedVol">--</strong></div>
+                    <div><span>Cross-asset</span><strong id="contextCrossAsset">--</strong></div>
+                    <small id="contextWarnings">Context unavailable</small>
+                </section>
 
                 <div class="signal-grid">
                     <article class="signal-tile panel blue">
@@ -151,11 +156,11 @@
                     </article>
                     <article class="signal-tile panel teal">
                         <div class="tile-head">
-                            <span>Whale Flow</span>
+                            <span>Index Gamma Basket</span>
                             <em id="tileWhaleBadge">Neutral</em>
                         </div>
                         <strong id="tileWhaleValue">--</strong>
-                        <p id="tileWhaleDetail">No whale composite yet.</p>
+                        <p id="tileWhaleDetail">No index-basket composite yet.</p>
                     </article>
                 </div>
 
@@ -189,10 +194,15 @@
                         <div class="chart-controls">
                             <span><b class="legend-call"></b> Call GEX</span>
                             <span><b class="legend-put"></b> Put GEX</span>
-                            <span><b class="legend-net"></b> Net GEX</span>
+                            <span><b class="legend-net"></b> Net GEX by Strike</span>
                         </div>
+                        <label class="sweep-switch">
+                            <input id="cockpitGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
+                            <span>V1 Sweep Panel</span>
+                        </label>
                     </div>
                     <div id="cockpitProfileChart" class="plot-area cockpit-chart"></div>
+                    <div id="cockpitSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
                     <div class="metric-strip">
                         <div><span>Total Call GEX</span><strong id="stripCallGex">--</strong></div>
                         <div><span>Total Put GEX</span><strong id="stripPutGex">--</strong></div>
@@ -204,63 +214,66 @@
                     </div>
                 </section>
 
+                <section class="panel" aria-labelledby="scenarioExecutionTitle">
+                    <div class="panel-header">
+                        <div>
+                            <h2 id="scenarioExecutionTitle">Scenario &amp; Execution</h2>
+                            <small id="executionQuoteStatus">Modeled candidates; waiting for executable quotes</small>
+                        </div>
+                        <button type="button" class="icon-btn" onclick="prefillJournalFromCockpit()" data-tooltip="Journal this scenario">J</button>
+                    </div>
+                    <div class="setup-grid" id="executionCandidatesGrid">
+                        <article id="butterflyCandidateCard" class="setup-card panel"></article>
+                        <article id="debitSpreadCandidateCard" class="setup-card panel"></article>
+                    </div>
+                </section>
+
                 <section id="cockpitPillars" class="asset-card-grid" aria-label="Cross asset pressure cards"></section>
             </section>
 
-            <section id="view-setups" class="view-section setups-view" style="display: none;">
-                <div class="setup-hero panel">
-                    <div>
-                        <span>Selected Asset</span>
-                        <strong id="setupSymbol">--</strong>
-                    </div>
-                    <div>
-                        <span>Cockpit Bias</span>
-                        <strong id="setupCockpitBias" class="amber-text">WAIT</strong>
-                    </div>
-                    <div>
-                        <span>Confidence</span>
-                        <strong id="setupConfidence">--</strong>
-                    </div>
-                    <div>
-                        <span>Target</span>
-                        <strong id="setupCockpitTarget">--</strong>
-                    </div>
-                    <div>
-                        <span>Snapshot</span>
-                        <strong id="setupTimestamp">--</strong>
-                    </div>
-                </div>
-
-                <div class="setup-grid">
-                    <article id="butterflySetupCard" class="setup-card panel"></article>
-                    <article id="debitSpreadSetupCard" class="setup-card panel"></article>
-                </div>
-
-                <section class="chart-panel panel">
+            <section id="view-edge-lab" class="view-section edge-lab-view" style="display: none;">
+                <div class="panel">
                     <div class="panel-header">
-                        <h2>Setup Map</h2>
-                        <small id="setupPricingModel">Waiting for setup data</small>
+                        <div>
+                            <h2>Historical Edge Lab</h2>
+                            <small id="edgeLabStatus">Independent opportunities only</small>
+                        </div>
+                        <div class="chart-controls">
+                            <select id="edgeLabHorizon" onchange="loadEdgeLab()"><option value="15">15m</option><option value="30" selected>30m</option><option value="60">60m</option></select>
+                            <label><input id="edgeLabLegacy" type="checkbox" onchange="loadEdgeLab()"> Legacy diagnostics</label>
+                        </div>
                     </div>
-                    <div id="setupProfileChart" class="plot-area setup-chart"></div>
-                </section>
-
-                <div class="setup-context-grid">
-                    <article class="setup-context panel">
-                        <span>Butterfly Lens</span>
-                        <strong id="setupButterflyLens">--</strong>
-                    </article>
-                    <article class="setup-context panel">
-                        <span>Debit Spread Lens</span>
-                        <strong id="setupSpreadLens">--</strong>
-                    </article>
-                    <article class="setup-context panel">
-                        <span>Data Note</span>
-                        <strong id="setupSampleWarning">--</strong>
-                    </article>
+                    <div id="edgeLabSummary" class="edge-stats-grid" aria-live="polite"></div>
+                </div>
+                <div class="panel chart-panel">
+                    <div class="panel-header"><h2>After-cost expectancy</h2></div>
+                    <div id="edgeLabExpectancyChart" class="plot-area small-chart"></div>
+                </div>
+                <div class="panel table-container">
+                    <div class="panel-header"><h2>Independent opportunities</h2></div>
+                    <div id="edgeLabTable" class="analysis-table-wrapper"></div>
+                </div>
+                <div class="panel" aria-labelledby="journalTitle">
+                    <div class="panel-header">
+                        <div><h2 id="journalTitle">Manual Trade Journal</h2><small>User execution; separate from model outcomes</small></div>
+                    </div>
+                    <div class="settings-grid">
+                        <label>Session <input id="journalSessionDate" type="date"></label>
+                        <label>Entry time <input id="journalEntryTime" type="datetime-local"></label>
+                        <label>Contracts <input id="journalContracts" type="number" min="1" value="1"></label>
+                        <label>Entry price <input id="journalEntryPrice" type="number" min="0" step="0.01"></label>
+                        <label>Exit price <input id="journalExitPrice" type="number" min="0" step="0.01"></label>
+                        <label>Fees <input id="journalFees" type="number" min="0" step="0.01" value="0"></label>
+                        <label><input id="journalAdhered" type="checkbox"> Followed plan</label>
+                        <label>Notes <input id="journalNotes" type="text"></label>
+                    </div>
+                    <button type="button" class="primary-btn" onclick="saveJournalEntry()">Save journal entry</button>
+                    <div id="journalExecutionResults" class="analysis-table-wrapper"></div>
+                    <div id="journalWeeklyReview" class="edge-stats-grid"></div>
                 </div>
             </section>
 
-            <section id="view-market-signal" class="view-section" style="display: none;">
+            <section id="view-regime" class="view-section" style="display: none;">
                 <div class="panel signal-card">
                     <div class="compass-layout">
                         <div class="compass-wrapper">
@@ -281,7 +294,7 @@
                             </div>
                         </div>
                         <div class="compass-wrapper">
-                            <h3>Whale Market</h3>
+                            <h3>Index Gamma Basket</h3>
                             <div id="compassWhale" class="compass-container" data-tooltip="Loading...">
                                 <div class="compass-quad q-tl">Melt Up</div>
                                 <div class="compass-quad q-tr">Grind Up</div>
@@ -313,42 +326,97 @@
                 </div>
             </section>
 
-            <section id="view-dashboard" class="view-section" style="display: none;">
-                <div class="kpi-grid">
-                    <div class="panel kpi-card">
-                        <span>Spot Price</span>
-                        <strong id="kpiSpot">--</strong>
+            <section id="view-trace" class="view-section trace-view" style="display: none;">
+                <div class="trace-hero panel">
+                    <div>
+                        <span>TRACE</span>
+                        <strong id="traceSymbol">--</strong>
                     </div>
-                    <div class="panel kpi-card regime-card">
-                        <span>Volatility Regime</span>
-                        <div class="regime-bar"><div id="regimeIndicator" class="regime-marker"></div></div>
-                        <strong id="regimeText">Analyzing...</strong>
+                    <div>
+                        <span>Spot</span>
+                        <strong id="traceSpot">--</strong>
                     </div>
-                    <div class="panel kpi-card">
-                        <span>Low Volatility Point</span>
-                        <strong id="kpiLowVol">--</strong>
+                    <div>
+                        <span>Net GEX</span>
+                        <strong id="traceNetGex">--</strong>
                     </div>
-                    <div class="panel kpi-card">
-                        <span>High Volatility Point</span>
-                        <strong id="kpiHighVol">--</strong>
+                    <div>
+                        <span>Stability</span>
+                        <strong id="traceStability">--</strong>
                     </div>
-                    <div class="panel kpi-card">
-                        <span>GEX Slope</span>
-                        <strong id="kpiAcceleration">--</strong>
+                    <div>
+                        <span>Cells</span>
+                        <strong id="traceCells">--</strong>
+                    </div>
+                    <div>
+                        <span>Updated</span>
+                        <strong id="traceUpdated">--</strong>
                     </div>
                 </div>
-                <div class="panel chart-panel">
+
+                <section class="panel chart-panel trace-workbench">
+                    <div class="panel-header trace-header">
+                        <div>
+                            <h2>Gamma Trace</h2>
+                            <small id="traceStatus">Waiting for local data</small>
+                        </div>
+                        <div class="trace-controls">
+                            <div class="segmented-control" role="group" aria-label="TRACE metric">
+                                <button type="button" class="active" data-trace-mode="net_gex" onclick="setTraceMode('net_gex')">Net</button>
+                                <button type="button" data-trace-mode="call_gex" onclick="setTraceMode('call_gex')">Calls</button>
+                                <button type="button" data-trace-mode="put_gex" onclick="setTraceMode('put_gex')">Puts</button>
+                                <button type="button" data-trace-mode="modeled_delta_pressure" onclick="setTraceMode('modeled_delta_pressure')">Modeled Delta</button>
+                                <button type="button" data-trace-mode="modeled_charm_pressure" onclick="setTraceMode('modeled_charm_pressure')">Modeled Charm</button>
+                            </div>
+                            <select id="traceSessionDate" aria-label="TRACE session" onchange="loadTrace()"><option value="">Latest session</option></select>
+                            <button class="icon-btn" type="button" onclick="resetTraceCharts()" data-tooltip="Fit TRACE charts">[]</button>
+                        </div>
+                    </div>
+
+                    <div class="trace-stage">
+                        <div class="trace-profile-wrap">
+                            <div id="traceProfileChart" class="trace-profile"></div>
+                            <span>GEX by Strike</span>
+                        </div>
+                        <div class="trace-map-wrap">
+                            <div id="traceHeatmapChart" class="trace-heatmap"></div>
+                        </div>
+                        <div class="trace-scale">
+                            <div class="trace-gradient"></div>
+                            <span id="traceScaleLabel">Net GEX ($ Notional)</span>
+                        </div>
+                    </div>
+                    <small id="traceCoverageWarning" class="amber-text"></small>
+
+                    <div class="trace-timeline">
+                        <span id="traceStartTime">--:--</span>
+                        <div class="trace-track">
+                            <div id="traceTrackFill" class="trace-track-fill"></div>
+                            <div id="traceScrubber" class="trace-scrubber"><span id="traceTimelineValue">--:--</span></div>
+                            <input
+                                id="traceTimelineSlider"
+                                class="trace-timeline-slider"
+                                type="range"
+                                min="0"
+                                max="0"
+                                value="0"
+                                step="1"
+                                aria-label="Browse TRACE snapshots"
+                                oninput="scrubTraceTimeline(this.value)"
+                            >
+                        </div>
+                        <span id="traceEndTime">--:--</span>
+                    </div>
+                </section>
+                <section class="panel chart-panel">
                     <div class="panel-header">
-                        <h2>Gamma Liquidity Profile</h2>
+                        <div>
+                            <h2>Net Gamma Trend</h2>
+                            <small>Selected symbol, current session</small>
+                        </div>
                     </div>
-                    <div id="profileChart" class="plot-area"></div>
-                </div>
-                <div class="panel chart-panel">
-                    <div class="panel-header">
-                        <h2>Net Gamma Trend</h2>
-                    </div>
-                    <div id="historyChart" class="plot-area small-chart"></div>
-                </div>
+                    <div id="traceTrendChart" class="plot-area small-chart"></div>
+                </section>
             </section>
 
             <section id="view-analysis" class="view-section" style="display: none;">
@@ -421,8 +489,13 @@
                     <div class="panel-header">
                         <h2>Gamma Liquidity Profile</h2>
                         <small id="oneOffStatus">Ready</small>
+                        <label class="sweep-switch">
+                            <input id="oneOffGammaSweepToggle" type="checkbox" onchange="toggleGammaSweepOverlay(this.checked)">
+                            <span>V1 Sweep Panel</span>
+                        </label>
                     </div>
                     <div id="oneOffProfileChart" class="plot-area"></div>
+                    <div id="oneOffSweepChart" class="plot-area sweep-chart" style="display: none;"></div>
                 </section>
 
                 <div class="one-off-grid">
@@ -521,6 +594,10 @@
 
     <div id="tooltip" class="custom-tooltip"></div>
     <div id="toast-container"></div>
+    <script src="request_coordinator.js"></script>
+    <script src="trace_timeline.js"></script>
+    <script src="edge_lab.js"></script>
+    <script src="activity_feed.js"></script>
     <script src="main.js"></script>
 </body>
 

@@ -10,6 +10,7 @@ Attributes:
 import socket
 import json
 import logging
+import math
 import threading
 import time
 from datetime import datetime
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 # Default port for NinjaTrader communication
 NT_PORT = 5010
+DEFAULT_HOST = "127.0.0.1"
+CLIENT_SOCKET_TIMEOUT_SECONDS = 2.0
+MAX_CLIENTS = 32
 
 class NinjaBroadcaster:
     _instance = None
@@ -30,40 +34,103 @@ class NinjaBroadcaster:
             cls._instance = super(NinjaBroadcaster, cls).__new__(cls)
             cls._instance.clients = []
             cls._instance.lock = threading.Lock()
+            cls._instance.state_lock = threading.Lock()
             cls._instance.running = False
             cls._instance.server_socket = None
+            cls._instance.server_thread = None
         return cls._instance
 
-    def start_server(self, port=NT_PORT):
+    def start_server(self, port=NT_PORT, host=DEFAULT_HOST):
         """Starts the TCP Server in a background thread."""
-        if self.running:
-            return
-            
-        self.running = True
-        thread = threading.Thread(target=self._server_loop, args=(port,), daemon=True)
-        thread.start()
-        print(f"[NinjaBroadcaster] Server started on port {port}")
-        logger.info(f"NinjaBroadcaster Server started on port {port}")
+        with self.state_lock:
+            if self.running:
+                return True
 
-    def _server_loop(self, port):
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                server_socket.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
+                server_socket.bind((host, port))
+                server_socket.listen(MAX_CLIENTS)
+            except OSError as exc:
+                server_socket.close()
+                self.running = False
+                self.server_socket = None
+                logger.error("NinjaBroadcaster bind failed on %s:%s: %s", host, port, exc)
+                return False
+
+            self.running = True
+            self.server_socket = server_socket
+            self.server_thread = threading.Thread(
+                target=self._server_loop,
+                args=(server_socket,),
+                name="ninjatrader-broadcaster",
+                daemon=True,
+            )
+            self.server_thread.start()
+
+        print(f"[NinjaBroadcaster] Server started on {host}:{port}")
+        logger.info("NinjaBroadcaster Server started on %s:%s", host, port)
+        return True
+
+    def _server_loop(self, server_socket):
         try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.bind(('0.0.0.0', port))
-            self.server_socket.listen(10) # Backlog of 10
-            
             while self.running:
                 try:
-                    client_sock, addr = self.server_socket.accept()
+                    client_sock, addr = server_socket.accept()
+                    client_sock.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
                     print(f"[NinjaBroadcaster] Client connected: {addr}")
-                    
+
                     with self.lock:
-                        self.clients.append(client_sock)
-                except Exception as e:
+                        if len(self.clients) >= MAX_CLIENTS:
+                            accepted = False
+                        else:
+                            self.clients.append(client_sock)
+                            accepted = True
+                    if not accepted:
+                        logger.warning("Rejected NinjaTrader client: capacity %s reached", MAX_CLIENTS)
+                        client_sock.close()
+                except socket.timeout:
+                    continue
+                except OSError as e:
                     if self.running:
                         logger.error(f"Accept error: {e}")
-                        time.sleep(1)
-        except Exception as e:
-            logger.critical(f"Server loop failed: {e}")
+                    break
+        finally:
+            server_socket.close()
+            with self.state_lock:
+                if self.server_socket is server_socket:
+                    self.server_socket = None
+                self.running = False
+
+    def stop_server(self):
+        """Stop accepting clients, close active sockets, and join the server thread."""
+        with self.state_lock:
+            self.running = False
+            server_socket = self.server_socket
+            server_thread = self.server_thread
+            self.server_socket = None
+
+        if server_socket is not None:
+            try:
+                server_socket.close()
+            except OSError:
+                pass
+
+        with self.lock:
+            clients = list(self.clients)
+            self.clients.clear()
+        for client in clients:
+            try:
+                client.close()
+            except OSError:
+                pass
+
+        if server_thread and server_thread.is_alive() and server_thread is not threading.current_thread():
+            server_thread.join(timeout=CLIENT_SOCKET_TIMEOUT_SECONDS + 1)
+        with self.state_lock:
+            if self.server_thread is server_thread:
+                self.server_thread = None
 
     def broadcast(self, payload: dict) -> None:
         """Sends JSON data to all connected NinjaTrader clients.
@@ -75,39 +142,46 @@ class NinjaBroadcaster:
             payload: A dictionary containing the regime or market data to send.
         """
         with self.lock:
-            if not self.clients:
-                # No clients connected
-                return
+            clients = list(self.clients)
+        if not clients:
+            return
 
         json_msg = json.dumps(payload) + "\n"
         encoded_msg = json_msg.encode('utf-8')
         
         to_remove = []
         
-        with self.lock:
-            for client in self.clients:
-                try:
-                    client.sendall(encoded_msg)
-                except Exception as e:
-                    logger.warning(f"Client disconnected during send: {e}")
-                    to_remove.append(client)
-            
-            # Clean up disconnected clients
+        for client in clients:
+            try:
+                client.sendall(encoded_msg)
+            except (OSError, socket.timeout) as e:
+                logger.warning(f"Client disconnected during send: {e}")
+                to_remove.append(client)
+
+        if to_remove:
+            with self.lock:
+                for dead_client in to_remove:
+                    if dead_client in self.clients:
+                        self.clients.remove(dead_client)
             for dead_client in to_remove:
-                if dead_client in self.clients:
-                    self.clients.remove(dead_client)
-                    try:
-                        dead_client.close()
-                    except:
-                        pass
-                        
-        print(f"[NinjaBroadcaster] Sent update to {len(self.clients)} charts.")
+                try:
+                    dead_client.close()
+                except OSError:
+                    pass
+
+        with self.lock:
+            client_count = len(self.clients)
+        print(f"[NinjaBroadcaster] Sent update to {client_count} charts.")
 
 # Global instance
 broadcaster = NinjaBroadcaster()
 
-def start_server(port=NT_PORT):
-    broadcaster.start_server(port)
+def start_server(port=NT_PORT, host=DEFAULT_HOST):
+    return broadcaster.start_server(port, host)
+
+
+def stop_server():
+    broadcaster.stop_server()
 
 # Regime code mapping for NinjaScript integer parsing
 REGIME_CODES = {
@@ -136,6 +210,7 @@ def _clean_regime_label(label: str) -> str:
         .replace("âšª ", "")
         .replace("WEAK ", "")
         .replace("LOW CONFIDENCE ", "")
+        .replace("LOW DATA QUALITY ", "")
         .strip()
     )
 
@@ -182,6 +257,22 @@ def _ninjatrader_levels_for_symbol(overview_data: dict, symbol: str) -> List[dic
         annotated_levels.append(annotated)
 
     return annotated_levels
+
+def _modeled_zero_gex_for_symbol(overview_data: dict, symbol: str) -> Optional[float]:
+    by_symbol = overview_data.get("modeled_zero_gex", {}) or {}
+    value = by_symbol.get(symbol)
+    if value in (None, ""):
+        return None
+
+    try:
+        level = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(level) or level <= 0:
+        return None
+
+    return round(level, 4)
 
 def _component_trend_score(component: dict) -> float:
     if "trend_score" in component:
@@ -418,8 +509,8 @@ def _build_trade_plan(
 def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
     components = overview_data.get("components", [])
     component = _symbol_component(components, symbol)
-    compass = overview_data.get("compass", {})
-    whale = overview_data.get("compass_whale", compass)
+    compass = overview_data.get("compass_traders") or overview_data.get("compass") or {}
+    whale = overview_data.get("index_basket") or overview_data.get("compass_whale", compass)
     key_levels_by_symbol = overview_data.get("gamma_levels", {}) or {}
     if symbol in key_levels_by_symbol:
         levels = key_levels_by_symbol.get(symbol, []) or []
@@ -440,9 +531,9 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         score for score in [market_vote["score"], dealer_vote["score"], liquidity_vote["score"]]
         if (score > 0) == (raw_score > 0) and abs(score) > 0.20 and raw_score != 0
     ])
-    confidence_penalty = float(component.get("confidence") or 0.5)
-    final_score = raw_score * _clamp(0.65 + (agreement * 0.12), 0.65, 1) * confidence_penalty
-    confidence = confidence_penalty
+    quality = component.get("data_quality") or {}
+    data_quality_score = float(quality.get("score", component.get("confidence") or 0.5))
+    final_score = raw_score * _clamp(0.65 + (agreement * 0.12), 0.65, 1) * data_quality_score
 
     abs_score = abs(final_score)
     bias = "WAIT"
@@ -458,14 +549,17 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         "dashboard_symbol": symbol,
         "dashboard_bias": bias,
         "dashboard_bias_score": round(final_score, 4),
-        "dashboard_confidence": round(confidence, 4),
+        "dashboard_data_quality": round(data_quality_score, 4),
+        "dashboard_confidence": round(data_quality_score, 4),
         "dashboard_target": plan["target"],
         "dashboard_invalidation": plan["invalidation"],
         "dashboard_flip": round(flip, 4) if flip > 0 else None,
+        "dashboard_modeled_zero_gex": _modeled_zero_gex_for_symbol(overview_data, symbol),
         "dashboard_context": context,
         "dashboard_market": f"Market: {_vote_label(market_vote['score'])}",
         "dashboard_dealer": f"Dealer: {dealer_vote['label']}",
         "dashboard_liquidity": f"Liquidity: {liquidity_vote['label']}",
+        "dashboard_index_basket": f"Index Basket: {whale_label}",
         "dashboard_whale": f"Whale: {whale_label}",
         "dashboard_market_detail": market_vote["detail"],
         "dashboard_dealer_detail": dealer_vote["detail"],
@@ -480,7 +574,8 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
 
     Args:
         overview_data: The comprehensive market overview dictionary generated
-            by appy.py or publicData.py. Must contain 'compass' and 'components'.
+            by appy.py or publicData.py. Uses 'compass_traders' when present and
+            falls back to the legacy 'compass' key.
         port: The TCP port to broadcast to (default: 5010).
 
     Returns:
@@ -488,7 +583,7 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
               False if payload preparation failed.
     """
     try:
-        compass = overview_data.get("compass", {})
+        compass = overview_data.get("compass_traders") or overview_data.get("compass") or {}
         components = overview_data.get("components", [])
         
         # Extract data for each important symbol
@@ -497,22 +592,29 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
         ndx_data = next((c for c in components if c.get("symbol") == "NDX"), {})
         
         label = compass.get("label", "NEUTRAL")
-        confidence = compass.get("confidence_label")
-        if not confidence:
-            confidence = "LOW" if compass.get("confidence", 1) < 0.60 else "HIGH"
+        quality = compass.get("data_quality") or {}
+        data_quality_label = quality.get("label") or compass.get("confidence_label")
+        data_quality_score = quality.get("score", compass.get("confidence", 0))
+        if not data_quality_label:
+            data_quality_label = "LOW" if data_quality_score < 0.60 else "HIGH"
 
         ndx_dashboard = _dashboard_payload_for_symbol("NDX", overview_data)
         spx_dashboard = _dashboard_payload_for_symbol("SPX", overview_data)
         generic_dashboard = ndx_dashboard if ndx_data else spx_dashboard
+        modeled_zero_ndx = _modeled_zero_gex_for_symbol(overview_data, "NDX")
+        modeled_zero_spx = _modeled_zero_gex_for_symbol(overview_data, "SPX")
         
         # Build payload with all index prices
         payload = {
+            "schema_version": 2,
             "type": "REGIME_UPDATE",
             "timestamp": datetime.now().isoformat(),
             "regime": label.replace("🟢 ", "").replace("🟡 ", "").replace("🔴 ", "").replace("⚪ ", "").replace("WEAK ", "").strip(),
             "regime_code": extract_regime_code(label),
-            "confidence": confidence,
-            "confidence_score": round(compass.get("confidence", 0), 4),
+            "data_quality_label": data_quality_label,
+            "data_quality_score": round(data_quality_score, 4),
+            "confidence": data_quality_label,
+            "confidence_score": round(data_quality_score, 4),
             "x_score": round(compass.get("x_score", 0), 4),
             "y_score": round(compass.get("y_score", 0), 4),
             "strategy": compass.get("strategy", ""),
@@ -526,12 +628,18 @@ def send_regime_update(overview_data: dict, port: int = NT_PORT) -> bool:
             # NDX data (for NQ charts)
             "spot_ndx": ndx_data.get("spot", 0),
             "flip_ndx": ndx_data.get("flip_strike", 0),
+            "modeled_zero_gex_ndx": modeled_zero_ndx,
             "accel_ndx": round(ndx_data.get("acceleration", 0), 2),
             "accel_spx": round(spx_data.get("acceleration", 0), 2),
+            "modeled_zero_gex_spx": modeled_zero_spx,
             # NinjaTrader gets every level, with the existing filter marked as key.
             "gamma_levels_ndx": _ninjatrader_levels_for_symbol(overview_data, "NDX"),
             "gamma_levels_spx": _ninjatrader_levels_for_symbol(overview_data, "SPX"),
+            "decision_alerts": overview_data.get("alerts", []),
         }
+        if payload["decision_alerts"]:
+            payload["alert_id"] = payload["decision_alerts"][0].get("alert_id")
+            payload["scenario_id"] = payload["decision_alerts"][0].get("scenario_id")
         payload["regime"] = payload["regime"].replace("LOW CONFIDENCE ", "").strip()
         payload["regime"] = _clean_regime_label(label)
         payload.update(generic_dashboard)
