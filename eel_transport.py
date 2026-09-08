@@ -6,7 +6,24 @@ Keep this small compatibility adapter covered by a real WebSocket test.
 """
 
 import logging
+import json
+import math
 from gevent.lock import Semaphore
+
+
+def _finite_values(value):
+    """Pandas represents missing quotes as NaN; browser JSON requires null."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _finite_values(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_finite_values(item) for item in value]
+    return value
+
+
+def browser_json(value):
+    return json.dumps(_finite_values(value), allow_nan=False, default=lambda _value: None)
 
 
 def install_serialized_transport(eel_module):
@@ -29,4 +46,5 @@ def install_serialized_transport(eel_module):
                     pass
 
     eel_module._repeated_send = serialized_send
+    eel_module._safe_json = browser_json
     eel_module._opengamma_serialized_transport = True

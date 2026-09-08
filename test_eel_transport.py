@@ -1,4 +1,5 @@
 import os
+import math
 from pathlib import Path
 import shutil
 import socket
@@ -10,7 +11,16 @@ from types import SimpleNamespace
 import gevent
 import pytest
 
-from eel_transport import install_serialized_transport
+from eel_transport import install_serialized_transport, browser_json
+
+
+def test_missing_quotes_are_null_in_strict_browser_json():
+    import json
+    payload = {'profile': [{'bid': float('nan'), 'ask': float('inf'), 'mid': -float('inf'), 'strike': 100.0}], 'label': 'NaN is text'}
+    encoded = browser_json(payload)
+    decoded = json.loads(encoded, parse_constant=lambda value: pytest.fail(f'Invalid JSON constant {value}'))
+    assert decoded == {'profile': [{'bid': None, 'ask': None, 'mid': None, 'strike': 100.0}], 'label': 'NaN is text'}
+    assert math.isnan(payload['profile'][0]['bid'])
 
 
 def test_cooperative_writes_never_interleave_and_installation_is_idempotent():
@@ -68,7 +78,7 @@ install_serialized_transport(eel)
 @eel.expose
 def bulk(): return 'x' * 7000000
 @eel.expose
-def ping(): return 'pong'
+def ping(): return {'bid': float('nan'), 'ask': float('inf')}
 eel.start('index.html', mode=None, host='127.0.0.1', port=int(sys.argv[1]), close_callback=lambda *args: None)
 """
     process = subprocess.Popen([sys.executable, '-u', '-c', server_code, str(port)], cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -91,7 +101,8 @@ ws.onmessage = event => {
   const reply = JSON.parse(event.data);
   assert.equal(reply.status, 'ok');
   assert.ok(pending.delete(reply.return));
-  assert.equal(reply.value.length, reply.return % 2 ? 7000000 : 4);
+  if (reply.return % 2) assert.equal(reply.value.length, 7000000);
+  else assert.deepEqual(reply.value, {bid:null, ask:null});
   if (!pending.size) { ws.close(); process.exit(0); }
 };
 ws.onerror = () => process.exit(2);

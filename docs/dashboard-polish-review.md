@@ -48,3 +48,10 @@ These are local backend timings, not end-to-end browser latency. Cold replay was
 Screenshots are in [ui-review](ui-review/). Files marked `final` show the concluding review; other files document dark theme, historical replay, compact layout, and backend failure.
 
 Validation used existing historical market data. New live option-chain pulls and broker order execution were not exercised. The browser preview was restored at 1920 x 1080 with the original light-theme settings. Its backend serves saved data; normal collection starts through the application's usual launcher.
+
+
+## Live polling follow-up
+
+On September 8 at approximately 05:20 ET, started the collector and confirmed successive successful cycles for SPY, QQQ, IWM, SPX, and NDX. Each cycle made 32 requests and scheduled the next poll after 15 seconds (in addition to the roughly 25-second collection duration).
+
+This exposed a separate live-data issue: missing quote fields became Pandas NaN values, which Eel serialized as invalid browser JSON. The transport now converts non-finite numbers to null without changing valid values or source payloads. Regression coverage includes strict JSON parsing and real WebSocket replies containing missing quotes. All 91 Python tests pass. The browser now renders current snapshots and shows FRESH; polling remains running. The user's dark-theme preference is saved locally.
