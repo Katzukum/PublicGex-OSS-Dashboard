@@ -31,6 +31,7 @@ Detailed documentation is available in the `docs/` directory:
 
 *   [**📖 Project Overview**](docs/index.md): System architecture and data flow.
 *   [**⚙️ Setup Guide**](docs/setup.md): Installation, API keys, and NinjaTrader configuration.
+*   [**Futures Forecasts**](docs/predictions.md): Independent GARCH/Markov shadow service and NinjaTrader forecast bands.
 *   [**🔧 API Reference**](docs/api_reference.md): Technical deep dive into the Python modules and C# indicator.
 *   [**🛠 Developer Guide**](docs/how_to_add_strategy.md): How to add custom strategies and weighted symbols.
 

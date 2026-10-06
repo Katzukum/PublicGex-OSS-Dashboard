@@ -26,6 +26,13 @@
 4.  Press **F5** to compile. You should see "compilation successful" at the bottom.
 5.  Add the indicator **OpenGamma** to any chart (e.g., ES or NQ).
 
+### Optional: Futures Forecasts
+
+For GARCH and Markov 15/30-minute shadow bands inside NinjaTrader, follow the
+[forecast setup guide](predictions.md). The independent Python service uses
+port 5011, while the existing gamma bridge remains on 5010. It supports your
+existing merged or backfilled chart history and records each feed/history revision separately.
+
 ## Configuration
 
 ### 1. Environment Variables (`.env`)

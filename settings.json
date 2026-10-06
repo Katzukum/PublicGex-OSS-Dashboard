@@ -1,6 +1,6 @@
 {
   "refresh_interval": 10,
-  "theme": "light",
+  "theme": "dark",
   "symbols": [
     "SPY",
     "QQQ",

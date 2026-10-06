@@ -1,0 +1,62 @@
+{
+  "version": 2,
+  "symbols": [
+    "SPX",
+    "NDX"
+  ],
+  "grid_minutes": 5,
+  "forecast_steps": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "headline_horizons_minutes": [
+    15,
+    30
+  ],
+  "warmup_observations": 6,
+  "fold_test_sessions": 7,
+  "primary": {
+    "name": "modern",
+    "initial_training_sessions": 14,
+    "sources": "active + July-August pre-migration backup"
+  },
+  "sensitivity": {
+    "name": "all_history",
+    "initial_training_sessions": 20,
+    "sources": "primary + one deduplicated legacy backup"
+  },
+  "interval_probability": 0.8,
+  "bootstrap_resamples": 2000,
+  "bootstrap_unit": "whole trading date, paired model losses, equal date weight",
+  "seed": 20260930,
+  "selection": "Fixed model specifications; no hyperparameter selection using held-out dates.",
+  "training": "Expanding window. Entire test sessions are later than all training sessions.",
+  "forecast_covariates": "Freeze GEX and OU level anchors at forecast origin; Kalman freezes current wall-distance feature too. Never use realized future GEX.",
+  "scoring": "Log-return basis points. Equal-weight daily losses; overlapping origins are not independent.",
+  "intervals": "Uncalibrated Gaussian moment intervals, including Markov mixture moment approximation.",
+  "claim_scope": "Exploratory forecasts, not trading profits or validated full-path coverage.",
+  "posthoc_quality_sensitivity": "After discovering a one-origin partial date, also report frozen forecasts on dates with >=10 origins. This does not replace the primary results and does not refit/tune models.",
+  "command": [
+    "C:\\Users\\desk\\Desktop\\Javascript Projects\\PublicGex OSS Dashboard\\research\\price_models\\experiment.py",
+    "--output",
+    "research/results/price_models_20260930"
+  ],
+  "python": "3.12.6 (tags/v3.12.6:a4a2d2b, Sep  6 2024, 20:11:23) [MSC v.1940 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "exploratory_subset": false,
+  "code_sha256": {
+    "__init__.py": "b49ea4abb71a60248a96b399639bcb37f744ad923f8454837461d5f6dcc3bf0b",
+    "baselines.py": "ba64a6cb4c94a6ab64c2801e4722b5509e530d067587d634ff02435685c9c712",
+    "data.py": "f736931fb44f442be2fb7423cdb73da19e67a440b801748e93a69106775d7c68",
+    "experiment.py": "dd313568069bb285f61c417edbf9900a6b44cd7aea12c45996a1f04ac57b3386",
+    "garch.py": "34f39ef953e5546340f24409b46c70f6063620ea90becc061fa62ad599f36ad2",
+    "kalman.py": "a40ae9db72a5d811ba7154d1e2053dedd9e2bd2fdc1ea31a762abb1f4a2fb9b6",
+    "markov.py": "f893f66cd18a2a64476c44cc1143f3196df3aaae5200d0de5a5b78a6ed1aec0c",
+    "ou.py": "93c71322258758994572c27d348760a97756facb7639bd3ad56cdbd891b89ed9",
+    "report.py": "513b675fbba9c55baa465ca8be72b7ec63255510b5b5badb31f799177d5c8f17"
+  }
+}

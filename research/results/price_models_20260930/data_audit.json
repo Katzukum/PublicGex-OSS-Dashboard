@@ -1,0 +1,1052 @@
+{
+  "symbols": [
+    "SPX",
+    "NDX"
+  ],
+  "grid_minutes": 5,
+  "min_block_points": 10,
+  "price_anchor_window": 6,
+  "timestamp_assumption": "Naive historical collector timestamps are America/New_York local wall time; upstream quote time is not recovered.",
+  "calendar": "Explicit NYSE cash-session holidays/early closes for 2025\u20132026; other years rejected; unscheduled intraday halts are not independently identified.",
+  "calendar_sources": [
+    "https://ir.theice.com/press/news-details/2024/NYSE-Group-Announces-2025-2026-and-2027-Holiday-and-Early-Closings-Calendar/default.aspx",
+    "https://ir.theice.com/press/news-details/2024/The-New-York-Stock-Exchange-Will-Close-Markets-on-January-9-to-Honor-the-Passing-of-Former-President-Jimmy-Carter-on-National-Day-of-Mourning/default.aspx",
+    "https://www.nyse.com/trade/hours-calendars"
+  ],
+  "feature_availability": "Features use the immediately previous snapshot, strictly earlier than the current observed spot snapshot; a conservative one-poll lag approximates collection completion.",
+  "price_availability_limitation": "Current spot is timestamped at collection start, before the API response. It is an as-of proxy, not proof of quote availability at the exact grid instant.",
+  "anchor_definition": "Log of total-side-absolute-GEX-weighted call/put contract-wall average, multiplied by 10000; a wall proxy, not the full-chain gamma center.",
+  "price_anchor_definition": "Trailing mean of six available five-minute log prices by default, including current price; resets at every gap/session/source boundary.",
+  "sources": [
+    {
+      "path": "C:\\Users\\desk\\Desktop\\Javascript Projects\\PublicGex OSS Dashboard\\gex_data.db",
+      "source": "gex_data.db",
+      "legacy": false,
+      "snapshot_rows": 20266,
+      "snapshot_sha256": "3a1abec200064667c7c871a9681478737720cba5752dc05396638c1a76e71dad",
+      "semantics": {
+        "compatible": true,
+        "samples": [
+          {
+            "symbol": "SPX",
+            "snapshot_id": 158579,
+            "timestamp": "2026-09-01 09:49:28.538368",
+            "raw_rows": 181,
+            "summary_ratio": -0.47228952204545804,
+            "raw_gex_ratio": -0.47228952204545804,
+            "raw_gamma_oi_ratio": -0.47228952204545804,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "SPX",
+            "snapshot_id": 183920,
+            "timestamp": "2026-09-18 09:42:55.451932",
+            "raw_rows": 184,
+            "summary_ratio": -0.0012098460804187308,
+            "raw_gex_ratio": -0.0012098460804184357,
+            "raw_gamma_oi_ratio": -0.0012098460804184446,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "SPX",
+            "snapshot_id": 209257,
+            "timestamp": "2026-09-29 17:41:47.379939",
+            "raw_rows": 180,
+            "summary_ratio": -0.5639226143444193,
+            "raw_gex_ratio": -0.5639226143444195,
+            "raw_gamma_oi_ratio": -0.5639226143444196,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 158580,
+            "timestamp": "2026-09-01 09:49:34.605803",
+            "raw_rows": 258,
+            "summary_ratio": -0.476663751292041,
+            "raw_gex_ratio": -0.47666375129204097,
+            "raw_gamma_oi_ratio": -0.47666375129204097,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 183916,
+            "timestamp": "2026-09-18 09:42:18.930691",
+            "raw_rows": 309,
+            "summary_ratio": 0.4635577624223066,
+            "raw_gex_ratio": 0.4635577624223064,
+            "raw_gamma_oi_ratio": 0.4635577624223063,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 209258,
+            "timestamp": "2026-09-29 17:41:53.059811",
+            "raw_rows": 299,
+            "summary_ratio": 0.3195493300852617,
+            "raw_gex_ratio": 0.31954933008526193,
+            "raw_gamma_oi_ratio": 0.31954933008526193,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          }
+        ],
+        "limitation": "Sample checks support common ratio/wall definitions; they do not establish identical chain coverage or provider quality across versions."
+      },
+      "counts": {
+        "input_rows": 20266,
+        "regular_session_rows": 15885,
+        "outside_cash_session_rows": 4381,
+        "candidate_grid_points": 2686,
+        "grid_without_price": 184,
+        "grid_without_prior_feature": 6,
+        "valid_grid_points_before_warmup": 2217,
+        "stale_price_grid_points": 273,
+        "price_anchor_warmup_points": 243,
+        "stale_feature_grid_points": 6,
+        "short_block_points": 10,
+        "short_blocks": 7,
+        "retained_blocks": 42,
+        "retained_grid_points": 1964,
+        "sessions_with_rows": 34,
+        "sessions_retained": 34
+      },
+      "sessions": [
+        {
+          "symbol": "NDX",
+          "session": "2026-09-01",
+          "raw_rows": 447,
+          "retained_grid_points": 57
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-04",
+          "raw_rows": 398,
+          "retained_grid_points": 40
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-08",
+          "raw_rows": 510,
+          "retained_grid_points": 61
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-09",
+          "raw_rows": 232,
+          "retained_grid_points": 27
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-10",
+          "raw_rows": 465,
+          "retained_grid_points": 58
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-11",
+          "raw_rows": 545,
+          "retained_grid_points": 58
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-14",
+          "raw_rows": 572,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-15",
+          "raw_rows": 331,
+          "retained_grid_points": 35
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-16",
+          "raw_rows": 548,
+          "retained_grid_points": 72
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-18",
+          "raw_rows": 539,
+          "retained_grid_points": 72
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-21",
+          "raw_rows": 196,
+          "retained_grid_points": 13
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-22",
+          "raw_rows": 562,
+          "retained_grid_points": 69
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-23",
+          "raw_rows": 434,
+          "retained_grid_points": 57
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-24",
+          "raw_rows": 548,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-25",
+          "raw_rows": 550,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-28",
+          "raw_rows": 527,
+          "retained_grid_points": 69
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-09-29",
+          "raw_rows": 538,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-01",
+          "raw_rows": 448,
+          "retained_grid_points": 57
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-04",
+          "raw_rows": 397,
+          "retained_grid_points": 40
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-08",
+          "raw_rows": 510,
+          "retained_grid_points": 61
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-09",
+          "raw_rows": 232,
+          "retained_grid_points": 27
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-10",
+          "raw_rows": 465,
+          "retained_grid_points": 58
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-11",
+          "raw_rows": 546,
+          "retained_grid_points": 58
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-14",
+          "raw_rows": 572,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-15",
+          "raw_rows": 332,
+          "retained_grid_points": 35
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-16",
+          "raw_rows": 548,
+          "retained_grid_points": 72
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-18",
+          "raw_rows": 539,
+          "retained_grid_points": 72
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-21",
+          "raw_rows": 196,
+          "retained_grid_points": 13
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-22",
+          "raw_rows": 562,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-23",
+          "raw_rows": 434,
+          "retained_grid_points": 57
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-24",
+          "raw_rows": 548,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-25",
+          "raw_rows": 549,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-28",
+          "raw_rows": 527,
+          "retained_grid_points": 69
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-09-29",
+          "raw_rows": 538,
+          "retained_grid_points": 73
+        }
+      ],
+      "max_price_age_seconds": 90.0,
+      "max_feature_age_seconds": 150.0,
+      "retained_price_age": {
+        "count": 1964,
+        "median_seconds": 20.883088,
+        "p95_seconds": 39.842719,
+        "max_seconds": 74.624671
+      },
+      "retained_feature_age": {
+        "count": 1964,
+        "median_seconds": 62.6000545,
+        "p95_seconds": 82.0632972,
+        "max_seconds": 148.350391
+      },
+      "cross_source_duplicate_rows": 0
+    },
+    {
+      "path": "C:\\Users\\desk\\Desktop\\Javascript Projects\\PublicGex OSS Dashboard\\gex_data_pre_migration_20260814_195927.db",
+      "source": "gex_data_pre_migration_20260814_195927.db",
+      "legacy": false,
+      "snapshot_rows": 21829,
+      "snapshot_sha256": "fd9758fcf43ae55d841e36fce1d47770091182262c9ce35d7f98d0df3027895e",
+      "semantics": {
+        "compatible": true,
+        "samples": [
+          {
+            "symbol": "SPX",
+            "snapshot_id": 78344,
+            "timestamp": "2026-07-16 09:20:45.522297",
+            "raw_rows": 168,
+            "summary_ratio": 0.061507503683950554,
+            "raw_gex_ratio": 0.06150750368395045,
+            "raw_gamma_oi_ratio": 0.06150750368395044,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "SPX",
+            "snapshot_id": 105646,
+            "timestamp": "2026-07-22 14:13:54.740645",
+            "raw_rows": 176,
+            "summary_ratio": 0.024423517745831572,
+            "raw_gex_ratio": 0.024423517745831416,
+            "raw_gamma_oi_ratio": 0.024423517745831316,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "SPX",
+            "snapshot_id": 132941,
+            "timestamp": "2026-08-14 18:55:54.249058",
+            "raw_rows": 165,
+            "summary_ratio": 0.2044127628087811,
+            "raw_gex_ratio": 0.20441276280878087,
+            "raw_gamma_oi_ratio": 0.20441276280878085,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 78345,
+            "timestamp": "2026-07-16 09:20:48.829854",
+            "raw_rows": 303,
+            "summary_ratio": 0.1756018190162293,
+            "raw_gex_ratio": 0.1756018190162292,
+            "raw_gamma_oi_ratio": 0.17560181901622932,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 105482,
+            "timestamp": "2026-07-22 13:57:38.981899",
+            "raw_rows": 317,
+            "summary_ratio": -0.19821080817916237,
+            "raw_gex_ratio": -0.19821080817916265,
+            "raw_gamma_oi_ratio": -0.19821080817916262,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 132942,
+            "timestamp": "2026-08-14 18:55:56.784794",
+            "raw_rows": 184,
+            "summary_ratio": 0.5750350631136047,
+            "raw_gex_ratio": 0.5750350631136045,
+            "raw_gamma_oi_ratio": 0.5750350631136045,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          }
+        ],
+        "limitation": "Sample checks support common ratio/wall definitions; they do not establish identical chain coverage or provider quality across versions."
+      },
+      "counts": {
+        "input_rows": 21829,
+        "outside_cash_session_rows": 5707,
+        "regular_session_rows": 16122,
+        "invalid_core_rows": 4,
+        "candidate_grid_points": 2686,
+        "grid_without_price": 258,
+        "valid_grid_points_before_warmup": 1583,
+        "stale_price_grid_points": 838,
+        "price_anchor_warmup_points": 226,
+        "short_block_points": 52,
+        "short_blocks": 20,
+        "grid_without_prior_feature": 3,
+        "stale_feature_grid_points": 4,
+        "retained_blocks": 28,
+        "retained_grid_points": 1305,
+        "sessions_with_rows": 34,
+        "sessions_retained": 28
+      },
+      "sessions": [
+        {
+          "symbol": "NDX",
+          "session": "2026-07-16",
+          "raw_rows": 607,
+          "retained_grid_points": 54
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-17",
+          "raw_rows": 786,
+          "retained_grid_points": 64
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-20",
+          "raw_rows": 796,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-21",
+          "raw_rows": 797,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-22",
+          "raw_rows": 386,
+          "retained_grid_points": 33
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-23",
+          "raw_rows": 801,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-24",
+          "raw_rows": 621,
+          "retained_grid_points": 56
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-28",
+          "raw_rows": 145,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-29",
+          "raw_rows": 289,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-30",
+          "raw_rows": 366,
+          "retained_grid_points": 24
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-07-31",
+          "raw_rows": 687,
+          "retained_grid_points": 52
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-08-03",
+          "raw_rows": 362,
+          "retained_grid_points": 29
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-08-07",
+          "raw_rows": 38,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-08-11",
+          "raw_rows": 321,
+          "retained_grid_points": 26
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-08-12",
+          "raw_rows": 498,
+          "retained_grid_points": 43
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-08-13",
+          "raw_rows": 350,
+          "retained_grid_points": 36
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-08-14",
+          "raw_rows": 208,
+          "retained_grid_points": 16
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-16",
+          "raw_rows": 608,
+          "retained_grid_points": 54
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-17",
+          "raw_rows": 787,
+          "retained_grid_points": 64
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-20",
+          "raw_rows": 796,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-21",
+          "raw_rows": 797,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-22",
+          "raw_rows": 386,
+          "retained_grid_points": 33
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-23",
+          "raw_rows": 800,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-24",
+          "raw_rows": 622,
+          "retained_grid_points": 56
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-28",
+          "raw_rows": 145,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-29",
+          "raw_rows": 290,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-30",
+          "raw_rows": 368,
+          "retained_grid_points": 24
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-07-31",
+          "raw_rows": 688,
+          "retained_grid_points": 52
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-08-03",
+          "raw_rows": 362,
+          "retained_grid_points": 29
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-08-07",
+          "raw_rows": 39,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-08-11",
+          "raw_rows": 321,
+          "retained_grid_points": 27
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-08-12",
+          "raw_rows": 497,
+          "retained_grid_points": 43
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-08-13",
+          "raw_rows": 349,
+          "retained_grid_points": 36
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-08-14",
+          "raw_rows": 209,
+          "retained_grid_points": 16
+        }
+      ],
+      "max_price_age_seconds": 90.0,
+      "max_feature_age_seconds": 150.0,
+      "retained_price_age": {
+        "count": 1305,
+        "median_seconds": 14.940213,
+        "p95_seconds": 27.997370599999996,
+        "max_seconds": 83.704412
+      },
+      "retained_feature_age": {
+        "count": 1305,
+        "median_seconds": 44.394314,
+        "p95_seconds": 57.6645186,
+        "max_seconds": 111.060534
+      },
+      "cross_source_duplicate_rows": 0
+    },
+    {
+      "path": "C:\\Users\\desk\\Desktop\\Javascript Projects\\PublicGex OSS Dashboard\\gex_data_legacy_20260608_205401.db",
+      "source": "gex_data_legacy_20260608_205401.db",
+      "legacy": true,
+      "snapshot_rows": 3699,
+      "snapshot_sha256": "3860321c203cc70460733862ee09def883948c4b4986f9e7e353c270e9b75008",
+      "semantics": {
+        "compatible": true,
+        "samples": [
+          {
+            "symbol": "SPX",
+            "snapshot_id": 31,
+            "timestamp": "2025-12-10 15:03:43.080049",
+            "raw_rows": 153,
+            "summary_ratio": 0.21806058549480783,
+            "raw_gex_ratio": 0.21806058549480778,
+            "raw_gamma_oi_ratio": 0.2180605854948077,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "SPX",
+            "snapshot_id": 4467,
+            "timestamp": "2026-02-03 10:53:09.652909",
+            "raw_rows": 165,
+            "summary_ratio": 0.024327605795159826,
+            "raw_gex_ratio": 0.02432760579515977,
+            "raw_gamma_oi_ratio": 0.024327605795159715,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "SPX",
+            "snapshot_id": 9087,
+            "timestamp": "2026-06-08 20:19:35.595015",
+            "raw_rows": 176,
+            "summary_ratio": -0.35722877573092654,
+            "raw_gex_ratio": -0.3572287757309263,
+            "raw_gamma_oi_ratio": -0.3572287757309262,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 32,
+            "timestamp": "2025-12-10 15:03:48.199718",
+            "raw_rows": 194,
+            "summary_ratio": 0.14922563992256382,
+            "raw_gex_ratio": 0.14922563992256405,
+            "raw_gamma_oi_ratio": 0.14922563992256394,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 4468,
+            "timestamp": "2026-02-03 10:53:14.764096",
+            "raw_rows": 122,
+            "summary_ratio": -0.014293669946166909,
+            "raw_gex_ratio": -0.014293669946166664,
+            "raw_gamma_oi_ratio": -0.014293669946166704,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          },
+          {
+            "symbol": "NDX",
+            "snapshot_id": 9088,
+            "timestamp": "2026-06-08 20:19:42.315392",
+            "raw_rows": 61,
+            "summary_ratio": -0.17962781586679732,
+            "raw_gex_ratio": -0.17962781586679727,
+            "raw_gamma_oi_ratio": -0.1796278158667972,
+            "ratio_match": true,
+            "contract_walls_match": true,
+            "compatible": true
+          }
+        ],
+        "limitation": "Sample checks support common ratio/wall definitions; they do not establish identical chain coverage or provider quality across versions."
+      },
+      "counts": {
+        "input_rows": 3699,
+        "regular_session_rows": 3184,
+        "outside_cash_session_rows": 515,
+        "candidate_grid_points": 3318,
+        "grid_without_price": 272,
+        "valid_grid_points_before_warmup": 1887,
+        "stale_feature_grid_points": 8,
+        "stale_price_grid_points": 1124,
+        "price_anchor_warmup_points": 250,
+        "short_block_points": 43,
+        "short_blocks": 18,
+        "grid_without_prior_feature": 27,
+        "retained_blocks": 38,
+        "retained_grid_points": 1594,
+        "sessions_with_rows": 42,
+        "sessions_retained": 34
+      },
+      "sessions": [
+        {
+          "symbol": "NDX",
+          "session": "2025-12-10",
+          "raw_rows": 14,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2025-12-11",
+          "raw_rows": 19,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2025-12-17",
+          "raw_rows": 66,
+          "retained_grid_points": 34
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-01-23",
+          "raw_rows": 28,
+          "retained_grid_points": 12
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-01-26",
+          "raw_rows": 128,
+          "retained_grid_points": 72
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-01-27",
+          "raw_rows": 116,
+          "retained_grid_points": 51
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-01-28",
+          "raw_rows": 127,
+          "retained_grid_points": 65
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-01-29",
+          "raw_rows": 29,
+          "retained_grid_points": 11
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-02",
+          "raw_rows": 128,
+          "retained_grid_points": 71
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-03",
+          "raw_rows": 129,
+          "retained_grid_points": 71
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-04",
+          "raw_rows": 130,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-05",
+          "raw_rows": 77,
+          "retained_grid_points": 36
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-06",
+          "raw_rows": 43,
+          "retained_grid_points": 21
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-09",
+          "raw_rows": 113,
+          "retained_grid_points": 63
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-10",
+          "raw_rows": 13,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-11",
+          "raw_rows": 27,
+          "retained_grid_points": 11
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-12",
+          "raw_rows": 24,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-26",
+          "raw_rows": 125,
+          "retained_grid_points": 70
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-02-27",
+          "raw_rows": 78,
+          "retained_grid_points": 41
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-03-02",
+          "raw_rows": 91,
+          "retained_grid_points": 49
+        },
+        {
+          "symbol": "NDX",
+          "session": "2026-03-20",
+          "raw_rows": 87,
+          "retained_grid_points": 47
+        },
+        {
+          "symbol": "SPX",
+          "session": "2025-12-10",
+          "raw_rows": 14,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2025-12-11",
+          "raw_rows": 19,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2025-12-17",
+          "raw_rows": 66,
+          "retained_grid_points": 34
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-01-23",
+          "raw_rows": 28,
+          "retained_grid_points": 12
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-01-26",
+          "raw_rows": 128,
+          "retained_grid_points": 71
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-01-27",
+          "raw_rows": 116,
+          "retained_grid_points": 51
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-01-28",
+          "raw_rows": 128,
+          "retained_grid_points": 64
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-01-29",
+          "raw_rows": 29,
+          "retained_grid_points": 11
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-02",
+          "raw_rows": 128,
+          "retained_grid_points": 71
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-03",
+          "raw_rows": 129,
+          "retained_grid_points": 71
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-04",
+          "raw_rows": 130,
+          "retained_grid_points": 73
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-05",
+          "raw_rows": 77,
+          "retained_grid_points": 36
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-06",
+          "raw_rows": 43,
+          "retained_grid_points": 21
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-09",
+          "raw_rows": 113,
+          "retained_grid_points": 63
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-10",
+          "raw_rows": 13,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-11",
+          "raw_rows": 27,
+          "retained_grid_points": 11
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-12",
+          "raw_rows": 23,
+          "retained_grid_points": 0
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-26",
+          "raw_rows": 125,
+          "retained_grid_points": 70
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-02-27",
+          "raw_rows": 78,
+          "retained_grid_points": 41
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-03-02",
+          "raw_rows": 91,
+          "retained_grid_points": 49
+        },
+        {
+          "symbol": "SPX",
+          "session": "2026-03-20",
+          "raw_rows": 87,
+          "retained_grid_points": 47
+        }
+      ],
+      "max_price_age_seconds": 210.0,
+      "max_feature_age_seconds": 420.0,
+      "retained_price_age": {
+        "count": 1594,
+        "median_seconds": 89.1132865,
+        "p95_seconds": 164.21388059999998,
+        "max_seconds": 209.910968
+      },
+      "retained_feature_age": {
+        "count": 1594,
+        "median_seconds": 269.017899,
+        "p95_seconds": 344.94833619999997,
+        "max_seconds": 390.068771
+      },
+      "cross_source_duplicate_rows": 0
+    }
+  ],
+  "retained_blocks": 108,
+  "retained_points": 4863,
+  "retained_sessions": 48,
+  "retained_symbol_sessions": 96,
+  "warnings": [
+    "Rows and overlapping horizons are dependent; evaluate by chronological held-out sessions.",
+    "No interpolation or forward fill crosses a missing grid point or session boundary.",
+    "Sampled raw checks cannot establish all historical data-provider semantics."
+  ]
+}

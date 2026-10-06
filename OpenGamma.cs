@@ -86,6 +86,61 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private readonly object lockObj = new object();
 
+        // Independent chart-feed forecast channel. No forecasting or socket
+        // work runs on the NinjaScript data/UI callbacks; only completed bars
+        // are copied to these bounded in-memory buffers.
+        private const int PredictionSeriesIndex = 2;
+        private const int PredictionHistoryLimit = 20000;
+        private readonly object predictionLock = new object();
+        private readonly SortedDictionary<DateTime, PredictionBar> predictionHistory = new SortedDictionary<DateTime, PredictionBar>();
+        private readonly Queue<PredictionBar> predictionLiveQueue = new Queue<PredictionBar>();
+        private readonly ManualResetEvent predictionStop = new ManualResetEvent(false);
+        private Thread predictionThread;
+        private TcpClient predictionClient;
+        private volatile bool predictionRunning;
+        private volatile bool predictionRealtime;
+        private volatile bool predictionHistoryPolicyValid;
+        private string predictionHistoryPolicy = "";
+        private string predictionFeedLabel = "ChartFeed";
+        private string predictionSeriesId = "";
+        private string predictionInstrument = "";
+        private string predictionSymbol = "";
+        private TimeZoneInfo predictionTimeZone;
+        private DateTime predictionLastLiveEnd = DateTime.MinValue;
+        private string predictionStatus = "WAITING_FOR_HISTORY";
+        private string predictionMessage = "Load available chart history; waiting for a current five-minute bar.";
+        private PredictionFrame predictionFrame;
+
+        private sealed class PredictionBar
+        {
+            public DateTime EndUtc;
+            public double Close;
+        }
+
+        // Published once under predictionLock and never mutated afterwards.
+        private sealed class PredictionFrame
+        {
+            public string Instrument;
+            public string ModelId;
+            public string SeriesId;
+            public string HistoryPolicy;
+            public string FeedLabel;
+            public string SessionKind;
+            public bool Provisional;
+            public string ModeReason;
+            public int TrainingReturns = -1;
+            public int TrainingSessions = -1;
+            public DateTime OriginUtc;
+            public DateTime GeneratedUtc;
+            public DateTime ValidUntilUtc;
+            public double OriginPrice;
+            public double Coverage;
+            public double HighVolProbability;
+            public double[] Lower = new double[4];
+            public double[] Center = new double[4];
+            public double[] Upper = new double[4];
+        }
+
         private struct GammaLevel
         {
             public double Strike;
@@ -109,6 +164,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 IsSuspendedWhileInactive = false;
 
                 ListenPort = 5010;
+                EnablePredictions = true;
+                PredictionPort = 5011;
+                PredictionFeedLabel = "ChartFeed";
                 GammaBarsOnRight = false;
                 JmaTimeSeriesMinutes = 2;
                 JmaLength = 13;
@@ -119,6 +177,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             else if (State == State.Configure)
             {
                 AddDataSeries(BarsPeriodType.Minute, JmaTimeSeriesMinutes);
+                AddDataSeries(BarsPeriodType.Minute, 5); // Dedicated forecast input, index 2.
             }
             else if (State == State.DataLoaded)
             {
@@ -133,12 +192,622 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 LoadCachedGammaLevels();
                 StartListener();
+                predictionInstrument = Instrument.FullName;
+                predictionSymbol = Instrument.MasterInstrument.Name;
+                predictionTimeZone = Core.Globals.GeneralOptions.TimeZoneInfo;
+                predictionHistoryPolicy = GetPredictionHistoryPolicy();
+                predictionHistoryPolicyValid = true;
+                predictionFeedLabel = string.IsNullOrWhiteSpace(PredictionFeedLabel) ? "ChartFeed" : PredictionFeedLabel.Trim();
+                lock (predictionLock)
+                {
+                    predictionHistory.Clear();
+                    predictionLiveQueue.Clear();
+                    predictionLastLiveEnd = DateTime.MinValue;
+                    predictionSeriesId = "";
+                    predictionFrame = null;
+                }
+            }
+            else if (State == State.Realtime)
+            {
+                predictionRealtime = true;
+                if (EnablePredictions)
+                    StartPredictionClient();
             }
             else if (State == State.Terminated)
             {
+                predictionRealtime = false;
+                StopPredictionClient();
                 StopListener();
             }
         }
+
+        #region Chart-feed prediction client
+        private bool PredictionPlaybackActive()
+        {
+            // Playback also enters State.Realtime: State alone is insufficient.
+            return NinjaTrader.Cbi.Connection.PlaybackConnection != null;
+        }
+
+        private string GetPredictionHistoryPolicy()
+        {
+            MergePolicy policy = Instrument.MasterInstrument.MergePolicy;
+            if (policy == MergePolicy.UseGlobalSettings || policy == MergePolicy.UseDefault)
+                policy = Core.Globals.MarketDataOptions.GlobalMergePolicy;
+            return policy.ToString();
+        }
+
+        private void CapturePredictionBar(DateTime now)
+        {
+            if (!EnablePredictions || CurrentBars[PredictionSeriesIndex] < 0)
+                return;
+            if (!predictionHistoryPolicyValid || !string.Equals(GetPredictionHistoryPolicy(), predictionHistoryPolicy, StringComparison.Ordinal))
+            {
+                // This latch can only reset on a fresh data load. Changing the
+                // setting alone must not relabel history from another policy.
+                predictionHistoryPolicyValid = false;
+                return;
+            }
+            if (PredictionPlaybackActive())
+                return;
+            int barsAgo;
+            bool live = State == State.Realtime;
+            if ((live || State == State.Historical) && Calculate == Calculate.OnBarClose
+                || State == State.Historical && !BarsArray[PredictionSeriesIndex].IsTickReplay)
+                barsAgo = 0; // Bar-close callbacks expose the completed current bar.
+            else if ((live || State == State.Historical) && CurrentBars[PredictionSeriesIndex] >= 1)
+                // Intrabar callbacks always expose a completed prior bar. A
+                // later tick can recover a missed first-tick callback; the
+                // timestamp and last-live-end checks below prevent duplicates.
+                barsAgo = 1;
+            else
+                return;
+
+            DateTime endUtc;
+            try
+            {
+                DateTime applicationTime = DateTime.SpecifyKind(Times[PredictionSeriesIndex][barsAgo], DateTimeKind.Unspecified);
+                endUtc = TimeZoneInfo.ConvertTimeToUtc(applicationTime, predictionTimeZone);
+            }
+            catch (ArgumentException)
+            {
+                return; // Invalid local wall-clock time must not become a guessed timestamp.
+            }
+            double close = Closes[PredictionSeriesIndex][barsAgo];
+            if (endUtc > now || endUtc < now.AddDays(-60) || double.IsNaN(close)
+                || double.IsInfinity(close) || close <= 0 || endUtc.Minute % 5 != 0
+                || endUtc.Second != 0 || endUtc.Millisecond != 0)
+                return;
+            var bar = new PredictionBar { EndUtc = endUtc, Close = close };
+            lock (predictionLock)
+            {
+                predictionHistory[endUtc] = bar;
+                while (predictionHistory.Count > PredictionHistoryLimit
+                    || (predictionHistory.Count > 0 && predictionHistory.First().Key < now.AddDays(-60)))
+                    predictionHistory.Remove(predictionHistory.First().Key);
+                if (live && !PredictionPlaybackActive() && (now - endUtc).TotalSeconds <= 90
+                    && endUtc > predictionLastLiveEnd)
+                {
+                    predictionLastLiveEnd = endUtc;
+                    predictionLiveQueue.Enqueue(bar);
+                    while (predictionLiveQueue.Count > 256)
+                        predictionLiveQueue.Dequeue();
+                }
+            }
+        }
+
+        private void StartPredictionClient()
+        {
+            if (predictionThread != null && predictionThread.IsAlive)
+                return;
+            predictionStop.Reset();
+            predictionRunning = true;
+            predictionThread = new Thread(PredictionClientLoop)
+            {
+                IsBackground = true,
+                Name = "OpenGamma_PredictionClient"
+            };
+            predictionThread.Start();
+        }
+
+        private void StopPredictionClient()
+        {
+            predictionRunning = false;
+            predictionStop.Set();
+            TcpClient client;
+            lock (predictionLock)
+            {
+                client = predictionClient;
+                predictionClient = null;
+                predictionFrame = null;
+                predictionLiveQueue.Clear();
+            }
+            if (client != null)
+                client.Close();
+            if (predictionThread != null && predictionThread.IsAlive)
+                predictionThread.Join(1500);
+            predictionThread = null;
+        }
+
+        private bool PredictionClockIsLive()
+        {
+            if (!predictionRealtime || !EnablePredictions || PredictionPlaybackActive())
+                return false;
+            if (!string.Equals(GetPredictionHistoryPolicy(), predictionHistoryPolicy, StringComparison.Ordinal))
+                predictionHistoryPolicyValid = false;
+            if (!predictionHistoryPolicyValid) return false;
+            DateTime latest;
+            lock (predictionLock)
+                latest = predictionHistory.Count == 0 ? DateTime.MinValue : predictionHistory.Last().Key;
+            double age = (DateTime.UtcNow - latest).TotalSeconds;
+            return age >= 0 && age <= 390;
+        }
+
+        private void SetPredictionStatus(string status, string message, bool hide)
+        {
+            lock (predictionLock)
+            {
+                predictionStatus = status;
+                predictionMessage = message ?? "";
+                if (hide)
+                    predictionFrame = null;
+            }
+            RefreshPredictionChart();
+        }
+
+        private void RefreshPredictionChart()
+        {
+            if (predictionRealtime && ChartControl != null)
+                ChartControl.Dispatcher.InvokeAsync(() =>
+                {
+                    if (predictionRealtime && ChartControl != null)
+                        ForceRefresh();
+                });
+        }
+
+        private static string PredictionJsonString(string value)
+        {
+            return "\"" + (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"")
+                .Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t") + "\"";
+        }
+
+        private string PredictionBatchJson(List<PredictionBar> bars, string source)
+        {
+            var json = new StringBuilder("{\"schema_version\":2,\"type\":\"BAR_BATCH\",\"source\":");
+            json.Append(PredictionJsonString(source)).Append(",\"bars\":[");
+            for (int i = 0; i < bars.Count; i++)
+            {
+                if (i > 0) json.Append(',');
+                json.Append("{\"end_utc\":").Append(PredictionJsonString(bars[i].EndUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)))
+                    .Append(",\"close\":").Append(bars[i].Close.ToString("R", CultureInfo.InvariantCulture)).Append('}');
+            }
+            return json.Append("]}").ToString();
+        }
+
+        private void PredictionRequest(StreamWriter writer, StreamReader reader, string request, bool establishSeries = false, bool helloReply = false)
+        {
+            if (!predictionRunning || !PredictionClockIsLive())
+                throw new IOException("Waiting for a live wall-clock-aligned five-minute bar.");
+            writer.WriteLine(request);
+            string reply = reader.ReadLine();
+            if (reply == null || reply.Length > 32768)
+                throw new IOException("Prediction server closed the connection or sent an invalid reply.");
+            ParsePredictionReply(reply, establishSeries, helloReply);
+            if (establishSeries && string.IsNullOrWhiteSpace(predictionSeriesId))
+                throw new IOException("HISTORY_END did not establish a forecast history series.");
+        }
+
+        private void PredictionClientLoop()
+        {
+            while (predictionRunning)
+            {
+                if (!PredictionClockIsLive())
+                {
+                    SetPredictionStatus(!predictionHistoryPolicyValid ? "ERROR" : "STALE", !predictionHistoryPolicyValid
+                        ? "Merge policy changed; reload historical data."
+                        : PredictionPlaybackActive()
+                        ? "Predictions are disabled during Playback."
+                        : "Load available chart history; waiting for a current five-minute bar.", true);
+                    if (predictionStop.WaitOne(2000)) break;
+                    continue;
+                }
+                TcpClient client = null;
+                try
+                {
+                    client = new TcpClient { ReceiveTimeout = 5000, SendTimeout = 3000, NoDelay = true };
+                    lock (predictionLock)
+                    {
+                        predictionClient = client;
+                        predictionSeriesId = "";
+                        predictionFrame = null;
+                    }
+                    IAsyncResult connect = client.BeginConnect(IPAddress.Loopback, PredictionPort, null, null);
+                    using (WaitHandle connected = connect.AsyncWaitHandle)
+                    {
+                        int result = WaitHandle.WaitAny(new WaitHandle[] { connected, predictionStop }, 3000);
+                        if (result != 0) throw new IOException("Prediction connection timed out or was cancelled.");
+                        client.EndConnect(connect);
+                    }
+                    using (NetworkStream stream = client.GetStream())
+                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                    using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" })
+                    {
+                        PredictionRequest(writer, reader, "{\"schema_version\":2,\"type\":\"HELLO\",\"instrument\":"
+                            + PredictionJsonString(predictionInstrument) + ",\"symbol\":" + PredictionJsonString(predictionSymbol)
+                            + ",\"bar_minutes\":5,\"mode\":\"live\",\"history_policy\":" + PredictionJsonString(predictionHistoryPolicy)
+                            + ",\"feed_label\":" + PredictionJsonString(predictionFeedLabel) + "}", helloReply: true);
+                        List<PredictionBar> history;
+                        lock (predictionLock)
+                            history = predictionHistory.Values.Where(bar => bar.EndUtc <= DateTime.UtcNow).ToList();
+                        for (int offset = 0; offset < history.Count && predictionRunning; offset += 256)
+                            PredictionRequest(writer, reader, PredictionBatchJson(history.GetRange(offset, Math.Min(256, history.Count - offset)), "history"));
+                        PredictionRequest(writer, reader, "{\"schema_version\":2,\"type\":\"HISTORY_END\"}", true);
+                        while (predictionRunning)
+                        {
+                            List<PredictionBar> live;
+                            lock (predictionLock)
+                            {
+                                live = predictionLiveQueue.Where(bar => (DateTime.UtcNow - bar.EndUtc).TotalSeconds <= 90).ToList();
+                                while (predictionLiveQueue.Count > 0 && (DateTime.UtcNow - predictionLiveQueue.Peek().EndUtc).TotalSeconds > 90)
+                                    predictionLiveQueue.Dequeue();
+                            }
+                            PredictionRequest(writer, reader, live.Count > 0
+                                ? PredictionBatchJson(live, "live")
+                                : "{\"schema_version\":2,\"type\":\"PING\"}");
+                            if (live.Count > 0)
+                            {
+                                // Keep an unacknowledged bar queued across a
+                                // reconnect, provided it is still genuinely live.
+                                DateTime acknowledged = live[live.Count - 1].EndUtc;
+                                lock (predictionLock)
+                                    while (predictionLiveQueue.Count > 0 && predictionLiveQueue.Peek().EndUtc <= acknowledged)
+                                        predictionLiveQueue.Dequeue();
+                            }
+                            RefreshPredictionChart(); // Expiry also hides during an idle market.
+                            if (predictionStop.WaitOne(2000)) break;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (predictionRunning)
+                        SetPredictionStatus("ERROR", "Forecast service unavailable: " + ex.Message, true);
+                }
+                finally
+                {
+                    lock (predictionLock)
+                    {
+                        if (ReferenceEquals(predictionClient, client)) predictionClient = null;
+                    }
+                    if (client != null) client.Close();
+                }
+                if (predictionStop.WaitOne(5000)) break;
+            }
+        }
+
+        private bool PredictionDouble(string json, string key, out double value)
+        {
+            return double.TryParse(ExtractJsonValue(json, key), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+                && !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private bool PredictionDate(string json, string key, out DateTime value)
+        {
+            return DateTime.TryParse(ExtractJsonValue(json, key), CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out value);
+        }
+
+        private string PredictionString(string json, string key)
+        {
+            // Flat v2 metadata can contain JSON escapes (for example a feed
+            // label with a quote). Decode it without adding a JSON dependency.
+            string marker = "\"" + key + "\":";
+            int index = json.IndexOf(marker, StringComparison.Ordinal);
+            if (index < 0) return null;
+            index += marker.Length;
+            while (index < json.Length && char.IsWhiteSpace(json[index])) index++;
+            if (index >= json.Length || json[index++] != '"') return null;
+            var value = new StringBuilder();
+            while (index < json.Length)
+            {
+                char character = json[index++];
+                if (character == '"') return value.ToString();
+                if (character != '\\') { value.Append(character); continue; }
+                if (index >= json.Length) break;
+                char escaped = json[index++];
+                switch (escaped)
+                {
+                    case '"': value.Append('"'); break;
+                    case '\\': value.Append('\\'); break;
+                    case '/': value.Append('/'); break;
+                    case 'b': value.Append('\b'); break;
+                    case 'f': value.Append('\f'); break;
+                    case 'n': value.Append('\n'); break;
+                    case 'r': value.Append('\r'); break;
+                    case 't': value.Append('\t'); break;
+                    case 'u':
+                        ushort code;
+                        if (index + 4 > json.Length || !ushort.TryParse(json.Substring(index, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out code))
+                            throw new IOException("Invalid escaped forecast metadata.");
+                        value.Append((char)code);
+                        index += 4;
+                        break;
+                    default: throw new IOException("Invalid escaped forecast metadata.");
+                }
+            }
+            throw new IOException("Unterminated forecast metadata string.");
+        }
+
+        private bool PredictionModelsMatch(string json, bool provisional)
+        {
+            // Model identifiers are a small fixed protocol vocabulary. This
+            // array must describe exactly the model-specific bounds we parse.
+            int keyIndex = json.IndexOf("\"available_models\":", StringComparison.Ordinal);
+            if (keyIndex < 0) return false;
+            int start = keyIndex + "\"available_models\":".Length;
+            while (start < json.Length && char.IsWhiteSpace(json[start])) start++;
+            if (start >= json.Length || json[start] != '[') return false;
+            int end = json.IndexOf(']', start + 1);
+            if (end < 0) return false;
+            string[] entries = json.Substring(start + 1, end - start - 1).Split(',')
+                .Select(item => item.Trim()).ToArray();
+            return provisional
+                ? entries.Length == 1 && entries[0] == "\"ewma\""
+                : entries.Length == 2 && entries.Contains("\"garch\"") && entries.Contains("\"markov\"");
+        }
+
+        private void ParsePredictionReply(string json, bool establishSeries, bool helloReply)
+        {
+            if (ExtractJsonValue(json, "schema_version") != "2")
+                throw new IOException("Unsupported prediction protocol version.");
+            string type = PredictionString(json, "type");
+            string instrument = PredictionString(json, "instrument");
+            // A rejected HELLO has no validated contract/series yet. Surface
+            // that rejection only in the explicit HELLO phase, without ever
+            // accepting its metadata or publishing a forecast.
+            if (helloReply && !establishSeries && predictionSeriesId.Length == 0
+                && type == "STATUS" && PredictionString(json, "status") == "ERROR"
+                && ExtractJsonValue(json, "instrument") == "null"
+                && string.IsNullOrEmpty(PredictionString(json, "series_id")))
+                throw new IOException("Forecast server rejected HELLO: "
+                    + (PredictionString(json, "message") ?? "Unknown validation error."));
+            if (!string.Equals(instrument, predictionInstrument, StringComparison.Ordinal))
+                throw new IOException("Prediction contract mismatch: chart expects '" + predictionInstrument
+                    + "', server returned '" + (instrument ?? "<missing>") + "'.");
+            string policy = PredictionString(json, "history_policy");
+            string feedLabel = PredictionString(json, "feed_label");
+            string seriesId = PredictionString(json, "series_id") ?? "";
+            if (!string.Equals(policy, predictionHistoryPolicy, StringComparison.Ordinal)
+                || !string.Equals(feedLabel, predictionFeedLabel, StringComparison.Ordinal))
+                throw new IOException("Prediction history policy or feed label does not match this chart.");
+            if (!establishSeries && predictionSeriesId.Length > 0
+                && !string.Equals(seriesId, predictionSeriesId, StringComparison.Ordinal))
+                throw new IOException("Prediction history series changed; reconnect and reload history.");
+            if (type == "ACK" && !establishSeries) return;
+            if (type == "STATUS")
+            {
+                string status = PredictionString(json, "status") ?? "ERROR";
+                DateTime serverTime;
+                if (Array.IndexOf(new string[] { "WAITING_FOR_HISTORY", "TRAINING", "WARMING_UP", "STALE", "OUTSIDE_SESSION", "ERROR" }, status) < 0)
+                    throw new IOException("Unsupported forecast status.");
+                if (!PredictionDate(json, "server_time_utc", out serverTime)
+                    || Math.Abs((serverTime - DateTime.UtcNow).TotalSeconds) > 30)
+                {
+                    SetPredictionStatus("STALE", "Forecast server and chart wall clocks do not match.", true);
+                    return;
+                }
+                SetPredictionStatus(status, PredictionString(json, "message"),
+                    status == "STALE" || status == "OUTSIDE_SESSION" || status == "ERROR");
+                if (status == "ERROR")
+                    throw new IOException(PredictionString(json, "message") ?? "Forecast server rejected the request.");
+                if (establishSeries)
+                {
+                    if (string.IsNullOrWhiteSpace(seriesId))
+                        throw new IOException("HISTORY_END did not establish a forecast history series.");
+                    lock (predictionLock)
+                    {
+                        predictionSeriesId = seriesId;
+                        predictionFrame = null;
+                    }
+                }
+                return; // TRAINING preserves an already-fresh frame until its own expiry.
+            }
+            if (helloReply || establishSeries || type != "FORECAST" || PredictionString(json, "status") != "SHADOW"
+                || string.IsNullOrWhiteSpace(seriesId) || predictionSeriesId.Length == 0)
+                throw new IOException("Invalid prediction message type/status.");
+            var frame = new PredictionFrame
+            {
+                Instrument = instrument, ModelId = PredictionString(json, "model_id") ?? "",
+                SeriesId = seriesId, HistoryPolicy = policy, FeedLabel = feedLabel
+            };
+            frame.SessionKind = PredictionString(json, "session_kind");
+            if (frame.SessionKind == null && json.IndexOf("\"session_kind\":", StringComparison.Ordinal) < 0)
+                frame.SessionKind = "CASH"; // Older schema-2 forecasts only covered cash hours.
+            if (frame.SessionKind != "CASH" && frame.SessionKind != "EXTENDED")
+                throw new IOException("Unsupported forecast session kind.");
+            string forecastMode = PredictionString(json, "forecast_mode");
+            bool legacyFitted = forecastMode == null;
+            if (legacyFitted) forecastMode = "FITTED";
+            if (forecastMode != "PROVISIONAL" && forecastMode != "FITTED")
+                throw new IOException("Unsupported forecast mode.");
+            frame.Provisional = forecastMode == "PROVISIONAL";
+            frame.ModeReason = PredictionString(json, "mode_reason") ?? (frame.Provisional
+                ? "GARCH/Markov fitting as more chart history arrives." : "");
+            if (frame.Provisional && string.IsNullOrWhiteSpace(frame.ModeReason))
+                frame.ModeReason = "GARCH/Markov fitting as more chart history arrives.";
+            if (!legacyFitted)
+            {
+                string expectedFamily = frame.Provisional ? "EWMA" : "GARCH_MARKOV";
+                if (PredictionString(json, "model_family") != expectedFamily
+                    || !PredictionModelsMatch(json, frame.Provisional)
+                    || !int.TryParse(ExtractJsonValue(json, "training_returns"), NumberStyles.Integer, CultureInfo.InvariantCulture, out frame.TrainingReturns)
+                    || !int.TryParse(ExtractJsonValue(json, "training_sessions"), NumberStyles.Integer, CultureInfo.InvariantCulture, out frame.TrainingSessions)
+                    || frame.TrainingReturns < 0 || frame.TrainingSessions < 0)
+                    throw new IOException("Invalid forecast model or training-sample metadata.");
+            }
+            DateTime now = DateTime.UtcNow;
+            if (!PredictionDate(json, "origin_utc", out frame.OriginUtc)
+                || !PredictionDate(json, "generated_at_utc", out frame.GeneratedUtc)
+                || !PredictionDate(json, "valid_until_utc", out frame.ValidUntilUtc)
+                || frame.OriginUtc > now || frame.GeneratedUtc > now.AddSeconds(30)
+                || frame.GeneratedUtc < frame.OriginUtc || frame.ValidUntilUtc <= now
+                || frame.ValidUntilUtc > frame.OriginUtc.AddSeconds(390)
+                || !PredictionDouble(json, "origin_price", out frame.OriginPrice) || frame.OriginPrice <= 0
+                || !PredictionDouble(json, "nominal_coverage", out frame.Coverage) || Math.Abs(frame.Coverage - 0.8) > 0.0001
+                || frame.ModelId.Length == 0)
+            {
+                SetPredictionStatus("STALE", "Forecast is expired or has invalid timing/values.", true);
+                return;
+            }
+            frame.HighVolProbability = double.NaN;
+            if (!frame.Provisional && (!PredictionDouble(json, "high_vol_probability", out frame.HighVolProbability)
+                || frame.HighVolProbability < 0 || frame.HighVolProbability > 1))
+                throw new IOException("Invalid fitted-model high-volatility probability.");
+            string[] prefixes = frame.Provisional
+                ? new string[] { "ewma_15", "ewma_30" }
+                : new string[] { "garch_15", "garch_30", "markov_15", "markov_30" };
+            frame.Lower = new double[prefixes.Length];
+            frame.Center = new double[prefixes.Length];
+            frame.Upper = new double[prefixes.Length];
+            for (int i = 0; i < prefixes.Length; i++)
+                if (!PredictionDouble(json, prefixes[i] + "_lower", out frame.Lower[i])
+                    || !PredictionDouble(json, prefixes[i] + "_center", out frame.Center[i])
+                    || !PredictionDouble(json, prefixes[i] + "_upper", out frame.Upper[i])
+                    || frame.Lower[i] <= 0 || frame.Lower[i] > frame.Center[i] || frame.Center[i] > frame.Upper[i])
+                    throw new IOException("Invalid forecast endpoint bounds.");
+            lock (predictionLock)
+            {
+                // Completing a fit cannot repaint an already published origin.
+                // A later origin may upgrade from provisional to fitted normally.
+                if (predictionFrame != null && predictionFrame.SeriesId == frame.SeriesId
+                    && frame.OriginUtc <= predictionFrame.OriginUtc)
+                    return;
+                predictionFrame = frame;
+                predictionStatus = "SHADOW";
+                predictionMessage = "";
+            }
+            RefreshPredictionChart();
+        }
+
+        private void RenderPredictions(ChartScale chartScale)
+        {
+            if (!EnablePredictions || ChartPanel == null || RenderTarget == null)
+                return;
+            PredictionFrame frame;
+            string status, message, currentSeriesId;
+            lock (predictionLock)
+            {
+                frame = predictionFrame;
+                status = predictionStatus;
+                message = predictionMessage;
+                currentSeriesId = predictionSeriesId;
+            }
+            DateTime now = DateTime.UtcNow;
+            bool usable = predictionRealtime && predictionHistoryPolicyValid && State == State.Realtime && !PredictionPlaybackActive()
+                && frame != null && frame.Instrument == predictionInstrument
+                && frame.HistoryPolicy == predictionHistoryPolicy && frame.FeedLabel == predictionFeedLabel
+                && frame.SeriesId.Length > 0 && frame.SeriesId == currentSeriesId
+                && frame.OriginUtc <= now && now < frame.ValidUntilUtc;
+            if (!usable && frame != null) { status = "STALE"; message = "Waiting for the next live five-minute close."; }
+            if (PredictionPlaybackActive()) { status = "PLAYBACK DISABLED"; message = "Forecasts require a live market feed."; usable = false; }
+            if (!predictionRealtime) { status = "LIVE ONLY"; message = "Load available chart history; waiting for a current five-minute bar."; }
+            if (!predictionHistoryPolicyValid)
+            {
+                status = "HISTORY POLICY";
+                message = "Merge policy changed; reload historical data.";
+                usable = false;
+            }
+            float x = ChartPanel.X + 10, y = ChartPanel.Y + 32;
+            float width = Math.Min(380, ChartPanel.W - 20);
+            if (width < 150) return;
+            using (var format = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 11))
+            using (var heading = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", SharpDX.DirectWrite.FontWeight.Bold, SharpDX.DirectWrite.FontStyle.Normal, 12))
+            using (var background = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color(16, 23, 32, 226)))
+            using (var text = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color(226, 233, 243, 255)))
+            using (var dim = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color(170, 187, 203, 255)))
+            {
+                // Both modes have a session row; the provisional explanation
+                // has three lines of space below its two endpoint rows.
+                float panelHeight = usable ? (frame.Provisional ? 204 : 190) : 78;
+                RenderTarget.FillRectangle(new SharpDX.RectangleF(x - 5, y - 5, width, panelHeight), background);
+                string panelTitle = usable && frame.Provisional ? "PROVISIONAL | limited history"
+                    : usable ? "FITTED SHADOW | nominal 80% endpoints" : "FORECAST SHADOW";
+                RenderTarget.DrawText(panelTitle, heading, new SharpDX.RectangleF(x, y, width - 10, 18), text);
+                y += 20;
+                if (!usable)
+                {
+                    RenderTarget.DrawText(status, format, new SharpDX.RectangleF(x, y, width - 10, 16), text);
+                    RenderTarget.DrawText(message, format, new SharpDX.RectangleF(x, y + 17, width - 10, 27), dim);
+                    return;
+                }
+                string sessionLabel = frame.SessionKind == "EXTENDED"
+                    ? "EXTENDED HOURS | experimental" : "CASH SESSION";
+                RenderTarget.DrawText(sessionLabel, format, new SharpDX.RectangleF(x, y, width - 10, 16), text);
+                y += 18;
+                RenderTarget.DrawText(frame.Instrument + " | origin " + frame.OriginPrice.ToString("0.00", CultureInfo.InvariantCulture)
+                    + " | age " + Math.Max(0, (int)(now - frame.OriginUtc).TotalSeconds) + "s | " + status,
+                    format, new SharpDX.RectangleF(x, y, width - 10, 16), dim);
+                y += 18;
+                string historyLabel = predictionHistoryPolicy == "MergeBackAdjusted" ? "Merged chart history (back adjusted)"
+                    : predictionHistoryPolicy == "MergeNonBackAdjusted" ? "Merged chart history (not adjusted)"
+                    : "Chart history | " + predictionHistoryPolicy;
+                RenderTarget.DrawText(predictionFeedLabel + " | " + historyLabel,
+                    format, new SharpDX.RectangleF(x, y, width - 10, 16), dim);
+                y += 18;
+                string sampleText = frame.TrainingReturns >= 0
+                    ? frame.TrainingReturns + " returns | " + frame.TrainingSessions + " sessions | " + (frame.Provisional ? "PROVISIONAL" : "FITTED")
+                    : "FITTED | lower / center / upper";
+                RenderTarget.DrawText(sampleText, format, new SharpDX.RectangleF(x, y, width - 10, 16), dim);
+                y += 18;
+                string[] names = frame.Provisional
+                    ? new string[] { "EWMA 15m", "EWMA 30m" }
+                    : new string[] { "GARCH 15m", "GARCH 30m", "Markov 15m", "Markov 30m" };
+                for (int i = 0; i < names.Length; i++)
+                {
+                    string line = string.Format(CultureInfo.InvariantCulture, "{0,-11} {1:0.00} / {2:0.00} / {3:0.00}", names[i], frame.Lower[i], frame.Center[i], frame.Upper[i]);
+                    RenderTarget.DrawText(line, format, new SharpDX.RectangleF(x, y, width - 10, 16), text);
+                    y += 17;
+                }
+                if (frame.Provisional)
+                {
+                    RenderTarget.DrawText("SHADOW | nominal 80% endpoints | lower / center / upper",
+                        format, new SharpDX.RectangleF(x, y + 1, width - 10, 18), dim);
+                    RenderTarget.DrawText(frame.ModeReason, format, new SharpDX.RectangleF(x, y + 20, width - 10, 48), dim);
+                }
+                else
+                    RenderTarget.DrawText("Next 5m high-vol: " + frame.HighVolProbability.ToString("P0", CultureInfo.InvariantCulture)
+                        + " | lower / center / upper", format, new SharpDX.RectangleF(x, y + 1, width - 10, 18), dim);
+
+                // Fixed-price endpoint lanes for only the available models.
+                // These do not imply a continuous path or a calibrated path band.
+                // In particular, never apply the GEX/index-to-futures spread here.
+                string[] laneNames = frame.Provisional ? new string[] { "E15", "E30" }
+                    : new string[] { "G15", "G30", "M15", "M30" };
+                float laneWidth = Math.Min(69, (ChartPanel.W - 25) / laneNames.Length);
+                float startX = ChartPanel.X + ChartPanel.W - laneNames.Length * (laneWidth + 4) - 6;
+                for (int i = 0; i < laneNames.Length; i++)
+                {
+                    float upperY = chartScale.GetYByValue(frame.Upper[i]);
+                    float lowerY = chartScale.GetYByValue(frame.Lower[i]);
+                    float centerY = chartScale.GetYByValue(frame.Center[i]);
+                    float top = Math.Max(ChartPanel.Y, upperY);
+                    float bottom = Math.Min(ChartPanel.Y + ChartPanel.H, lowerY);
+                    float laneX = startX + i * (laneWidth + 4);
+                    if (bottom <= top) continue;
+                    SharpDX.Color color = i < 2 ? new SharpDX.Color(99, 190, 246, 185) : new SharpDX.Color(237, 183, 87, 185);
+                    SharpDX.Color fillColor = i < 2 ? new SharpDX.Color(99, 190, 246, 23) : new SharpDX.Color(237, 183, 87, 23);
+                    using (var fill = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, fillColor))
+                    using (var stroke = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, color))
+                    {
+                        RenderTarget.FillRectangle(new SharpDX.RectangleF(laneX, top, laneWidth, bottom - top), fill);
+                        RenderTarget.DrawRectangle(new SharpDX.RectangleF(laneX, top, laneWidth, bottom - top), stroke, 1);
+                        if (centerY >= ChartPanel.Y && centerY <= ChartPanel.Y + ChartPanel.H)
+                            RenderTarget.DrawLine(new SharpDX.Vector2(laneX, centerY), new SharpDX.Vector2(laneX + laneWidth, centerY), stroke, 1.5f);
+                        RenderTarget.DrawText(laneNames[i], format, new SharpDX.RectangleF(laneX + 2, top + 2, laneWidth - 4, 16), stroke);
+                    }
+                }
+            }
+        }
+        #endregion
 
         #region TCP Client
         private void StartListener()
@@ -797,6 +1466,11 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         protected override void OnBarUpdate()
         {
+            if (BarsInProgress == PredictionSeriesIndex)
+            {
+                CapturePredictionBar(DateTime.UtcNow);
+                return;
+            }
             lock (lockObj)
             {
                 if (BarsInProgress == 0 && CurrentBars[0] >= 0)
@@ -1289,9 +1963,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                         new SharpDX.RectangleF(contentX, edgeY + 12, dashboardWidth - 20, 18), whiteBrush);
                 }
             }
+            RenderPredictions(chartScale);
         }
 
         #region Properties
+        [Display(Name = "Enable Predictions", Order = 1, GroupName = "Predictions")]
+        public bool EnablePredictions { get; set; }
+
+        [Range(1024, 65535)]
+        [Display(Name = "Prediction Port", Order = 2, GroupName = "Predictions")]
+        public int PredictionPort { get; set; }
+
+        [Display(Name = "Prediction Feed Label", Description = "Label this chart's data source to keep separate providers' forecast history apart.", Order = 3, GroupName = "Predictions")]
+        public string PredictionFeedLabel { get; set; }
+
         [NinjaScriptProperty]
         [Range(1024, 65535)]
         [Display(Name = "Listen Port", Order = 1, GroupName = "Connection")]

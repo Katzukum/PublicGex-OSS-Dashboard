@@ -1,0 +1,7 @@
+# Offline price-model experiments only; the dashboard does not import these.
+numpy>=1.26,<3
+scipy>=1.11,<2
+pandas>=2.2,<3
+numba>=0.61,<0.62
+matplotlib>=3.8,<4
+pytest>=8,<9
