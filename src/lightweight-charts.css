@@ -1,0 +1,91 @@
+.lwc-chart-shell {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+.lwc-chart-frame {
+  position: relative;
+  min-width: 0;
+}
+.lwc-chart-host {
+  min-width: 0;
+  overflow: hidden;
+}
+.lwc-chart-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 2px;
+  flex-wrap: wrap;
+}
+.lwc-axis-title,
+.lwc-x-title {
+  color: var(--muted);
+  font-size: 10px;
+}
+.lwc-x-title {
+  text-align: center;
+  padding: 5px 12px 10px;
+}
+.lwc-chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+.lwc-chart-actions button {
+  font-size: 9px;
+  padding: 4px 7px;
+  min-height: 25px;
+}
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 16px;
+  min-height: 26px;
+  padding: 4px 12px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.chart-legend i {
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+.chart-tooltip {
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  max-width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px #0004;
+  color: var(--text);
+  font:
+    10px/1.6 'Segoe UI',
+    sans-serif;
+}
+.chart-tooltip > :first-child {
+  font-weight: 600;
+}
+.workspace-footer {
+  flex-wrap: wrap;
+}
+.lwc-attribution {
+  flex-basis: 100%;
+  font-size: 9px;
+  color: var(--muted);
+}
+.lwc-attribution a {
+  color: var(--accent);
+}

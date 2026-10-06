@@ -1,0 +1,4 @@
+pandas>=2.3.0,<3
+SQLAlchemy>=2.0.0,<3
+python-dotenv>=1.0.0,<2
+publicdotcom-py>=0.1.22,<1

@@ -1,0 +1,27 @@
+[package]
+name = "publicgex-dashboard"
+version = "0.1.4"
+description = "PublicGex market workspace"
+edition = "2021"
+
+[lib]
+name = "publicgex_dashboard_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 1

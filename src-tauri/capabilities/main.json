@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The local dashboard window can use its application RPC command. No shell, file system, or arbitrary HTTP plugin access.",
+  "windows": ["main"],
+  "permissions": []
+}

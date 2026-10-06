@@ -1,0 +1,181 @@
+.parity-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(125px, 1fr));
+  gap: 18px;
+  padding: 18px 22px;
+  border-top: 1px solid var(--border);
+}
+.parity-metric-grid .metric > strong {
+  font-size: 19px;
+}
+.parity-metric-grid .metric > span {
+  font-size: 9px;
+}
+.parity-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 15px;
+}
+.parity-signal-card {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.parity-signal-card .split > span {
+  font-size: 10px;
+  color: var(--muted);
+}
+.parity-signal-card > strong {
+  font-size: 18px;
+  font-weight: 550;
+}
+.parity-signal-card > p {
+  font-size: 10px;
+  color: var(--muted);
+}
+.parity-pressure-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  padding: 3px 21px 21px;
+}
+.parity-pressure-card {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 16px;
+  background: var(--surface-2);
+}
+.parity-pressure-card .metric > strong {
+  font-size: 16px;
+}
+.parity-pressure-card .metric > span {
+  font-size: 9px;
+}
+.parity-pressure-card .mini-metrics {
+  gap: 10px;
+}
+.parity-pressure-track {
+  height: 8px;
+  background: var(--input);
+  position: relative;
+  margin: 13px 0 8px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.parity-pressure-track:before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  height: 100%;
+  width: 1px;
+  background: var(--subtle);
+  z-index: 1;
+}
+.parity-pressure-track > i {
+  position: absolute;
+  height: 100%;
+  border-radius: 2px;
+}
+.parity-pressure-scale {
+  display: flex;
+  justify-content: space-between;
+  color: var(--subtle);
+  font-size: 8px;
+}
+.parity-pressure-card .source-note {
+  padding: 10px 0 0;
+  font-size: 9px;
+}
+.parity-chart-tools {
+  display: flex;
+  align-items: end;
+  gap: 9px;
+  flex-wrap: wrap;
+  padding: 0 20px 10px;
+}
+.parity-chart-tools .field {
+  min-width: 115px;
+  max-width: 190px;
+}
+.parity-chart-tools button {
+  font-size: 10px;
+  padding: 8px 10px;
+}
+.parity-chart-tools > .muted {
+  font-size: 9px;
+  margin-left: auto;
+  align-self: center;
+}
+.parity-state-detail {
+  display: block;
+  font-size: 9px;
+  color: var(--muted);
+  margin-top: 5px;
+}
+.parity-side-bar {
+  display: inline-block;
+  width: 52px;
+  height: 4px;
+  margin-left: 8px;
+  background: var(--surface-2);
+  vertical-align: middle;
+  text-align: left;
+  border-radius: 2px;
+}
+.parity-side-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+.parity-timeline-bound {
+  font-size: 9px;
+  color: var(--subtle);
+  font-variant-numeric: tabular-nums;
+}
+.parity-latest-level {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 8px 22px;
+}
+.parity-matrix-options {
+  align-self: center;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+@media (max-width: 1100px) {
+  .parity-signal-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 650px) {
+  .parity-signal-grid {
+    gap: 10px;
+  }
+  .parity-signal-card {
+    padding: 14px;
+  }
+  .parity-signal-card > strong {
+    font-size: 15px;
+  }
+  .parity-signal-card .split {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .parity-metric-grid {
+    grid-template-columns: 1fr 1fr;
+    padding: 15px 17px;
+    gap: 16px;
+  }
+  .parity-pressure-grid {
+    padding: 3px 16px 16px;
+    grid-template-columns: 1fr;
+  }
+  .parity-chart-tools {
+    padding: 0 15px 10px;
+  }
+  .parity-timeline-bound {
+    display: none;
+  }
+}

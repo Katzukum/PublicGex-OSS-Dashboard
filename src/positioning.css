@@ -1,0 +1,72 @@
+.positioning-panel > .source-note,
+.positioning-meta,
+.positioning-controls,
+.positioning-coverage {
+  margin: 14px 20px;
+}
+.positioning-meta,
+.positioning-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+.positioning-controls {
+  align-items: end;
+}
+.positioning-controls .field {
+  min-width: 180px;
+}
+.positioning-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 20px;
+  padding: 0 20px 18px;
+}
+.positioning-content > div {
+  min-width: 0;
+}
+.positioning-levels h3 {
+  margin: 6px 0;
+  font-size: 14px;
+}
+.positioning-levels table {
+  font-size: 11px;
+}
+.positioning-levels th {
+  white-space: normal;
+}
+.positioning-coverage {
+  font-size: 12px;
+  color: var(--muted);
+}
+.positioning-coverage summary {
+  cursor: pointer;
+}
+.profile-level-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 8px 16px;
+  font-size: 11px;
+}
+.profile-range-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 16px;
+}
+.trace-profile-row {
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+}
+@media (max-width: 1050px) {
+  .positioning-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 800px) {
+  .trace-profile-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

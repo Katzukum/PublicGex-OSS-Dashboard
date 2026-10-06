@@ -1,4 +1,0 @@
-# Independent futures forecast service; optional alongside the dashboard.
-numpy>=1.26,<3
-scipy>=1.11,<2
-tzdata>=2025.2

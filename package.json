@@ -1,0 +1,47 @@
+{
+  "name": "publicgex-dashboard",
+  "version": "0.1.4",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "dev:demo": "node scripts/dev-demo.mjs",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:backend": ".venv\\Scripts\\python.exe -m pytest backend/tests -q -p no:cacheprovider",
+    "tauri": "tauri",
+    "desktop": "npm run native:dev",
+    "build:sidecar": ".venv\\Scripts\\python.exe scripts/build-sidecar.py",
+    "build:desktop": "npm run native:build",
+    "setup:python": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-python.ps1",
+    "native:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-run.ps1 -Action dev",
+    "native:demo": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-run.ps1 -Action dev -Demo",
+    "native:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-run.ps1 -Action build",
+    "native:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-run.ps1 -Action check",
+    "native:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/native-run.ps1 -Action test",
+    "preview": "vite preview --host 127.0.0.1",
+    "verify:original": "python scripts/verify-original.py",
+    "format": "prettier --write src tests *.ts scripts/*.mjs",
+    "format:check": "prettier --check src tests *.ts scripts/*.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.0",
+    "lightweight-charts": "^5.2.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@tauri-apps/cli": "^2.12.0",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "prettier": "^3.9.9",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^4.1.11"
+  }
+}
