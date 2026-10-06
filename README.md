@@ -6,7 +6,7 @@ The main Windows desktop version of PublicGex: Rust/Tauri hosts a React + TypeSc
 
 As of October 6, 2026, `main` contains this Rust/Tauri version. The latest original dashboard, including its prediction and research work, is preserved on [`codex/original-backup-2026-10-06`](https://github.com/Katzukum/PublicGex-OSS-Dashboard/tree/codex/original-backup-2026-10-06) at commit `b75e1e01bcc0ae1e5fcfd3e5ee12e31f50ecdee9`. The migration continues that history; earlier branches remain available.
 
-Use the `PublicGexDashboard` folder for ongoing local development. The original `PublicGex OSS Dashboard` folder remains a separate legacy checkout. Git preserves source and included research artifacts; credentials, local databases, virtual environments, and generated builds remain outside version control. This repository migration does not transfer runtime data or credentials between the two apps.
+Use the `PublicGexDashboard` folder for ongoing local development. The original source is retained on the backup branch; a second local checkout is no longer required. Before removing a legacy checkout, preserve its local credentials, databases, prediction data, and other untracked files in a private backup outside the repository. Git preserves source and included research artifacts; credentials, local databases, virtual environments, and generated builds remain outside version control. This repository migration does not transfer runtime data or credentials between the two apps.
 
 ## Open the app
 
