@@ -94,6 +94,238 @@ function positioning(value: unknown): void {
     'positioning levels',
   );
 }
+const status = (value: unknown) => ['ready', 'partial', 'unavailable'].includes(String(value));
+const nullableNumeric = (value: unknown) => value === null || numeric(value);
+const unsigned = (value: unknown) => numeric(value) && value >= 0;
+const ratio = (value: unknown) => value === null || (numeric(value) && value >= 0 && value <= 1);
+const strings = (value: unknown) =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+function envelope(value: unknown, path = 'option envelope'): void {
+  object(value, path);
+  contract(
+    value.model === 'publicgex_envelopes_v1' &&
+      ['volume_gamma', 'oi_gamma'].includes(String(value.source)) &&
+      status(value.status) &&
+      (value.as_of === null || typeof value.as_of === 'string'),
+    `${path} model`,
+  );
+  contract(
+    ['zero_gamma', 'major_gamma', 'minor_gamma', 'major_strength', 'minor_strength'].every((key) =>
+      nullableNumeric(value[key]),
+    ),
+    `${path} levels`,
+  );
+  object(value.coverage, `${path} coverage`);
+  const coverage = value.coverage;
+  const optionalRange = (item: unknown) => {
+    if (item === null) return true;
+    if (!isRecord(item)) return false;
+    return (
+      numeric(item.min) && numeric(item.max) && (item.step === undefined || numeric(item.step))
+    );
+  };
+  object(coverage.excluded_by_reason, `${path} excluded reasons`);
+  object(coverage.boundary_flags, `${path} boundary flags`);
+  const boundaryFlags = coverage.boundary_flags;
+  contract(
+    unsigned(coverage.contracts) &&
+      Number.isInteger(coverage.contracts) &&
+      unsigned(coverage.usable_contracts) &&
+      Number.isInteger(coverage.usable_contracts) &&
+      Number(coverage.usable_contracts) <= Number(coverage.contracts) &&
+      unsigned(coverage.excluded_contracts) &&
+      Number.isInteger(coverage.excluded_contracts) &&
+      unsigned(coverage.sweep_usable_contracts) &&
+      Number.isInteger(coverage.sweep_usable_contracts) &&
+      nullableNumeric(coverage.min_strike) &&
+      nullableNumeric(coverage.max_strike) &&
+      optionalRange(coverage.collected_range) &&
+      optionalRange(coverage.modeled_range) &&
+      Object.values(coverage.excluded_by_reason).every(
+        (count) => unsigned(count) && Number.isInteger(count),
+      ) &&
+      ['major_gamma', 'minor_gamma', 'zero_gamma'].every(
+        (key) => typeof boundaryFlags[key] === 'boolean',
+      ),
+    `${path} coverage`,
+  );
+  contract(strings(value.warnings), `${path} warnings`);
+}
+function envelopes(value: unknown, path = 'option envelopes'): void {
+  object(value, path);
+  envelope(value.flow, `${path} flow`);
+  envelope(value.structural, `${path} structural`);
+  object(value.flow, `${path} flow`);
+  object(value.structural, `${path} structural`);
+  contract(value.flow.source === 'volume_gamma', `${path} flow source`);
+  contract(value.structural.source === 'oi_gamma', `${path} structural source`);
+}
+function pressurePoint(value: unknown, path: string, provisional = false): void {
+  object(value, path);
+  contract(
+    typeof value.timestamp === 'string' &&
+      typeof value.available_at === 'string' &&
+      (status(value.status) || value.status === 'provisional') &&
+      typeof value.usable === 'boolean' &&
+      nullableNumeric(value.impulse_shares) &&
+      nullableNumeric(value.impulse_dollars) &&
+      nullableNumeric(value.cumulative_shares) &&
+      nullableNumeric(value.cumulative_dollars) &&
+      (provisional || (nullableNumeric(value.ema_fast) && nullableNumeric(value.ema_slow))) &&
+      (value.ema_15 === undefined || nullableNumeric(value.ema_15)) &&
+      (value.ema_30 === undefined || nullableNumeric(value.ema_30)) &&
+      ratio(value.classification_ratio) &&
+      (provisional ||
+        (nullableNumeric(value.impulse_5m) &&
+          nullableNumeric(value.slope_5m) &&
+          ['rising', 'falling', 'flat', 'unavailable'].includes(String(value.trend)))),
+    path,
+  );
+  if (value.buckets != null) {
+    object(value.buckets, `${path} buckets`);
+    for (const bucket of Object.values(value.buckets)) {
+      object(bucket, `${path} bucket`);
+      contract(
+        unsigned(bucket.classified_volume) &&
+          numeric(bucket.delta_shares) &&
+          numeric(bucket.delta_dollars) &&
+          nullableNumeric(bucket.gamma_activity),
+        `${path} bucket`,
+      );
+    }
+  }
+}
+function estimatedPressure(value: unknown, path = 'estimated pressure'): void {
+  if (value === null) return;
+  object(value, path);
+  contract(
+    value.model === 'estimated_hedge_pressure_v1' &&
+      status(value.status) &&
+      (value.session_date === null || typeof value.session_date === 'string') &&
+      strings(value.warnings),
+    `${path} model`,
+  );
+  contract(Array.isArray(value.points), `${path} points`);
+  object(value.config, `${path} config`);
+  contract(
+    Array.isArray(value.config.ema_periods) &&
+      value.config.ema_periods.length === 2 &&
+      value.config.ema_periods.every((period) => unsigned(period) && Number.isInteger(period)),
+    `${path} EMA periods`,
+  );
+  value.points.forEach((point, index) => pressurePoint(point, `${path} point ${index}`));
+  if (value.provisional != null)
+    pressurePoint(value.provisional, `${path} provisional point`, true);
+  if (value.current != null) {
+    object(value.current, `${path} current`);
+    const current = value.current;
+    contract(
+      ['cumulative_dollars', 'slope_5m', 'relative_to_ema_fast', 'relative_to_ema_slow'].every(
+        (key) => nullableNumeric(current[key]),
+      ),
+      `${path} current`,
+    );
+  }
+  object(value.coverage, `${path} coverage`);
+  contract(
+    unsigned(value.coverage.classified_contract_volume) &&
+      unsigned(value.coverage.neutral_contract_volume) &&
+      unsigned(value.coverage.unclassified_contract_volume) &&
+      ratio(value.coverage.classification_ratio) &&
+      unsigned(value.coverage.observed_minutes) &&
+      unsigned(value.coverage.usable_minutes) &&
+      unsigned(value.coverage.valid_intervals) &&
+      unsigned(value.coverage.discarded_intervals) &&
+      nullableNumeric(value.coverage.max_gap_seconds) &&
+      unsigned(value.coverage.missing_clock_count),
+    `${path} coverage`,
+  );
+}
+function exhaustionEvent(value: unknown, path: string): void {
+  object(value, path);
+  contract(
+    value.model === 'estimated_option_exhaustion_v1' &&
+      typeof value.id === 'string' &&
+      typeof value.symbol === 'string' &&
+      typeof value.session === 'string' &&
+      typeof value.timestamp === 'string' &&
+      typeof value.available_at === 'string' &&
+      ['CALL', 'PUT'].includes(String(value.side)) &&
+      ['BUY', 'SELL'].includes(String(value.action)) &&
+      typeof value.label === 'string' &&
+      value.estimated === true &&
+      numeric(value.price) &&
+      unsigned(value.flow_dollars) &&
+      ratio(value.flow_percentile) &&
+      ratio(value.price_position) &&
+      ratio(value.score) &&
+      ratio(value.classification_ratio) &&
+      (value.hedge_direction === -1 || value.hedge_direction === 1) &&
+      value.bar_source === 'collector_spot_observations' &&
+      typeof value.config_fingerprint === 'string' &&
+      strings(value.evidence) &&
+      (value.evidence_flags === undefined ||
+        (isRecord(value.evidence_flags) &&
+          Object.values(value.evidence_flags).every((flag) => typeof flag === 'boolean'))),
+    path,
+  );
+  object(value.components, `${path} components`);
+  const components = value.components;
+  contract(
+    ['flow_extremity', 'weakening', 'location', 'divergence', 'proximity'].every((key) =>
+      ratio(components[key]),
+    ),
+    `${path} components`,
+  );
+}
+function exhaustion(value: unknown, path = 'exhaustion'): void {
+  if (value === null) return;
+  object(value, path);
+  contract(
+    value.model === 'estimated_option_exhaustion_v1' &&
+      status(value.status) &&
+      strings(value.warnings),
+    `${path} model`,
+  );
+  object(value.coverage, `${path} coverage`);
+  if (value.current != null) exhaustionEvent(value.current, `${path} current`);
+  if (value.events !== undefined) {
+    contract(Array.isArray(value.events), `${path} events`);
+    value.events.forEach((event, index) => exhaustionEvent(event, `${path} event ${index}`));
+  }
+}
+function researchConfig(value: unknown, path: string): void {
+  object(value, path);
+  contract(
+    ['volume_gamma', 'oi_gamma'].includes(String(value.envelope_source)) &&
+      unsigned(value.pressure_ema_1) &&
+      Number.isInteger(value.pressure_ema_1) &&
+      unsigned(value.pressure_ema_2) &&
+      Number.isInteger(value.pressure_ema_2) &&
+      Number(value.pressure_ema_1) < Number(value.pressure_ema_2) &&
+      ['low', 'medium', 'high', 'strong'].includes(String(value.exhaustion_sensitivity)) &&
+      typeof value.exhaustion_price_filter_enabled === 'boolean' &&
+      unsigned(value.exhaustion_period_bars) &&
+      Number.isInteger(value.exhaustion_period_bars) &&
+      ratio(value.exhaustion_call_above) &&
+      ratio(value.exhaustion_put_below) &&
+      Number(value.exhaustion_put_below) < Number(value.exhaustion_call_above) &&
+      typeof value.observation_timezone === 'string' &&
+      value.observation_timezone.length > 0,
+    path,
+  );
+}
+function research(value: Record<string, unknown>, path: string): void {
+  if ('envelopes' in value && value.envelopes !== undefined)
+    envelopes(value.envelopes, `${path} envelopes`);
+  if ('estimated_pressure' in value && value.estimated_pressure !== undefined)
+    estimatedPressure(value.estimated_pressure, `${path} estimated pressure`);
+  if ('exhaustion' in value && value.exhaustion !== undefined)
+    exhaustion(value.exhaustion, `${path} exhaustion`);
+  if ('research_config' in value && value.research_config !== undefined)
+    researchConfig(value.research_config, `${path} research config`);
+}
 function dashboard(value: unknown): void {
   object(value, 'dashboard');
   object(value.snapshot, 'snapshot');
@@ -110,6 +342,7 @@ function dashboard(value: unknown): void {
   );
   contract(Array.isArray(value.history), 'history');
   positioning(value.positioning);
+  research(value, 'dashboard');
 }
 
 /** Runtime checks guard data entering the typed application, including Python/JSON boundaries. */
@@ -149,6 +382,8 @@ export function validateResult<K extends keyof ApiMap>(
             numeric(value.refresh_interval),
           'settings',
         );
+        if (value.option_research !== undefined)
+          researchConfig(value.option_research, 'option research settings');
         break;
       case 'get_backend_status':
         contract(typeof value.ok === 'boolean', 'backend status');
@@ -188,6 +423,26 @@ export function validateResult<K extends keyof ApiMap>(
           (r) => typeof r.timestamp === 'string' && numeric(r.strike) && numeric(r.net_gex),
         );
         positioning(value.positioning);
+        research(value, 'TRACE');
+        if (value.envelope_history !== undefined) {
+          contract(Array.isArray(value.envelope_history), 'TRACE envelope history');
+          value.envelope_history.forEach((item, index) => {
+            object(item, `TRACE envelope history ${index}`);
+            contract(
+              numeric(item.snapshot_id) &&
+                typeof item.as_of === 'string' &&
+                typeof item.available_at === 'string',
+              `TRACE envelope history ${index}`,
+            );
+            envelopes(item, `TRACE envelope history ${index}`);
+          });
+        }
+        if (value.exhaustion_events !== undefined) {
+          contract(Array.isArray(value.exhaustion_events), 'TRACE exhaustion events');
+          value.exhaustion_events.forEach((event, index) =>
+            exhaustionEvent(event, `TRACE exhaustion event ${index}`),
+          );
+        }
         break;
       case 'get_edge_lab':
         object(value.stats, 'evidence statistics');
@@ -213,6 +468,11 @@ export function validateResult<K extends keyof ApiMap>(
         if (value.ok === false)
           throw new ApiError(String(value.message || 'The operation was rejected.'));
         if (method === 'build_one_off_profile' && value.data) dashboard(value.data);
+        if (method === 'save_settings' && value.settings) {
+          object(value.settings, 'saved settings');
+          if (value.settings.option_research !== undefined)
+            researchConfig(value.settings.option_research, 'saved option research settings');
+        }
     }
   }
   return value as ApiMap[K]['result'];

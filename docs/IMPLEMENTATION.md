@@ -1,5 +1,19 @@
 # Implementation context
 
+## Observational option research, October 2026
+
+Option Envelopes, Estimated Hedge Pressure, and Option Exhaustion are implemented as versioned, observational models. `backend/research_observations.py` reads a causal session prefix with two batched queries and explicit `(timestamp, snapshot_id)` bounds. `backend/observation_intervals.py` owns duplicate identities, adjacent snapshot continuity, cumulative-volume validation, and 120-second gaps. Pure calculations live in `option_envelopes.py`, `flow_pressure.py`, and `exhaustion.py`; `research_service.py` assembles existing dashboard, TRACE, and One-Off payload fields without entering the scenario engine or broadcaster.
+
+Collection wall clocks retain their existing naive local storage and are localized with the configured IANA timezone. Provider quote clocks use explicit UTC normalization. The wire contract carries local display timestamps and canonical UTC availability timestamps. TRACE compares replay state in its local wall-clock chart domain while backend cutoff and causality tests use UTC availability.
+
+Cockpit calculates current research. TRACE additionally calculates one historical Envelope state per display minute, which bounds repeated Gamma Sweep work under adaptive sub-minute polling. Session caches are keyed by engine/workspace, symbol, snapshot, configuration, and history mode, expire after 30 seconds, and are capped at four entries. One-Off remains engine-isolated. No derived table or schema migration was introduced.
+
+Frontend charts and markers use TradingView Lightweight Charts through the existing host, viewport retention, custom overlay, tooltip, theme, and PNG-export paths. Strict API validation permits absent research fields from older services and rejects malformed fields when present. Synthetic demo rows exercise evolving volume, bid/ask classification, EMA warmup, pressure rollover, and deterministic exhaustion events without enabling live integrations.
+
+`backend/positioning_validation.py --families ...` extends the read-only chronological evaluator with JSON/CSV output. Research thresholds remain fixed engineering hypotheses; neither evaluator status nor sample count modifies live decisions.
+
+Release verification on an AMD Ryzen 7 2700X Windows host (16 logical processors, 23.9 GB RAM, Node 25.8.2, Python 3.12.6) measured the deterministic SPX dashboard at 587.3 ms cold / 63.8 ms warm with a 129,132-byte payload, and TRACE at 1,311.6 ms cold / 78.5 ms warm with a 603,205-byte payload. These are RPC calculation and serialization measurements after sidecar startup. The completed automated gates are 202 Python tests, 85 frontend tests, 17 Edge browser workflows, the TypeScript/Vite production build, and four native Rust tests. No packaged installer, live provider account, or installed NinjaTrader chart session was used for this observational research verification.
+
 User requested a completely separate recreation on September 30, 2026. Original directory is read-only reference. New architecture: React/TypeScript + Plotly frontend, Rust/Tauri host, retained Python analytics behind authenticated loopback RPC.
 
 Subagent ownership: frontend_review src/index.html; backend_performance backend; migration_risk src-tauri/native packaging/integrations. Root owns Vite development bridge, dependency setup, integration verification, documentation and isolation audit.

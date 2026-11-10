@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { api } from './api';
 import { Badge, Empty, Field, Metric, Notice, Panel, RequestState, Toggle } from './components';
 import { ProfileChart, SweepChart } from './charts';
+import { EnvelopePanel } from './EnvelopePanel';
 import { StrikeMatrix } from './ResearchViews';
 import { useAction, useRemote } from './hooks';
 import { aggregateStrikes, localDateTime, millions, number } from './models';
@@ -132,6 +133,7 @@ export function OneOff({
                 <Metric label="Expiration" value={data.snapshot.expiration_date || '—'} />
               </div>
               <ProfileChart dashboard={data} theme={theme} />
+              <EnvelopePanel envelopes={data.envelopes} source="oi_gamma" compact />
               <p className="source-note">
                 Saved at {savedTime(data.snapshot.timestamp)}. This independent pull does not
                 replace the live instrument snapshot.
@@ -200,6 +202,26 @@ export function SettingsView({
   }, [settings]);
   const update = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setDraft((previous) => (previous ? { ...previous, [key]: value } : previous));
+  const research = draft?.option_research ?? {
+    envelope_source: 'volume_gamma' as const,
+    pressure_ema_1: 9,
+    pressure_ema_2: 21,
+    exhaustion_sensitivity: 'high' as const,
+    exhaustion_price_filter_enabled: true,
+    exhaustion_period_bars: 5,
+    exhaustion_call_above: 0.7,
+    exhaustion_put_below: 0.3,
+    observation_timezone: 'America/New_York',
+  };
+  const updateResearch = (key: string, value: unknown) =>
+    setDraft((previous) =>
+      previous
+        ? {
+            ...previous,
+            option_research: { ...research, ...previous.option_research, [key]: value },
+          }
+        : previous,
+    );
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (!draft) return;
@@ -449,6 +471,105 @@ export function SettingsView({
                 />
               </Field>
             </div>
+            <details className="management-advanced">
+              <summary>Option research settings</summary>
+              <p className="source-note">
+                These controls change observational Envelopes, Estimated Hedge Pressure, and Option
+                Exhaustion. They do not change scenario scoring or order integration.
+              </p>
+              <div className="form-grid">
+                <Field label="Default envelope source">
+                  <select
+                    value={research.envelope_source ?? 'volume_gamma'}
+                    onChange={(event) => updateResearch('envelope_source', event.target.value)}
+                  >
+                    <option value="volume_gamma">Flow · volume proxy</option>
+                    <option value="oi_gamma">Structural · OI proxy</option>
+                  </select>
+                </Field>
+                <Field label="Exhaustion sensitivity">
+                  <select
+                    value={research.exhaustion_sensitivity ?? 'high'}
+                    onChange={(event) =>
+                      updateResearch('exhaustion_sensitivity', event.target.value)
+                    }
+                  >
+                    <option value="low">Low · 70th percentile</option>
+                    <option value="medium">Medium · 80th percentile</option>
+                    <option value="high">High · 90th percentile</option>
+                    <option value="strong">Strong · 95th percentile</option>
+                  </select>
+                </Field>
+                <Toggle
+                  label="Require 5-bar price location"
+                  checked={research.exhaustion_price_filter_enabled ?? true}
+                  onChange={(value) => updateResearch('exhaustion_price_filter_enabled', value)}
+                />
+                <Field label="Fast pressure EMA" hint="Completed one-minute observations">
+                  <input
+                    type="number"
+                    min="2"
+                    max="120"
+                    value={research.pressure_ema_1 ?? 9}
+                    onChange={(event) =>
+                      updateResearch('pressure_ema_1', Number(event.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="Slow pressure EMA" hint="Must exceed the fast period">
+                  <input
+                    type="number"
+                    min="2"
+                    max="120"
+                    value={research.pressure_ema_2 ?? 21}
+                    onChange={(event) =>
+                      updateResearch('pressure_ema_2', Number(event.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="Price filter period (bars)">
+                  <input
+                    type="number"
+                    min="2"
+                    max="30"
+                    value={research.exhaustion_period_bars ?? 5}
+                    onChange={(event) =>
+                      updateResearch('exhaustion_period_bars', Number(event.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="Call range threshold" hint="Fraction from 0 to 1">
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={research.exhaustion_call_above ?? 0.7}
+                    onChange={(event) =>
+                      updateResearch('exhaustion_call_above', Number(event.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="Put range threshold" hint="Must remain below call threshold">
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={research.exhaustion_put_below ?? 0.3}
+                    onChange={(event) =>
+                      updateResearch('exhaustion_put_below', Number(event.target.value))
+                    }
+                  />
+                </Field>
+                <Field label="Observation timezone" hint="IANA timezone for stored local clocks">
+                  <input
+                    value={research.observation_timezone ?? 'America/New_York'}
+                    onChange={(event) => updateResearch('observation_timezone', event.target.value)}
+                  />
+                </Field>
+              </div>
+            </details>
             <details className="management-advanced">
               <summary>Execution &amp; regime settings</summary>
               <div className="form-grid">

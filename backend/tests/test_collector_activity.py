@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +6,85 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from models import Base, CollectionRun, GexSnapshot, RawOptionGreek
+
+
+def test_slow_collection_uses_response_time_for_pressure_and_replay(monkeypatch):
+    import publicData as collector
+    from flow_pressure import build_estimated_pressure
+    from research_observations import load_session_observations
+
+    class Clock(datetime):
+        current = datetime(2026, 10, 7, 10, 0, 55)
+
+        @classmethod
+        def now(cls):
+            return cls.current
+
+    monkeypatch.setattr(collector, "datetime", Clock)
+    monkeypatch.setattr(collector, "get_instrument_type", lambda _: "INDEX")
+    monkeypatch.setattr(collector, "OrderInstrument", SimpleNamespace)
+    monkeypatch.setattr(collector, "OptionChainRequest", SimpleNamespace)
+    monkeypatch.setattr(collector, "get_0dte_expiration", lambda *_: "2026-10-07")
+    monkeypatch.setattr(collector, "get_option_greeks_batch", lambda *_: {
+        "NDX-call": {"gamma": .02, "delta": .5, "theta": -.1},
+    })
+    volume = 0
+
+    def delayed_quotes(*_):
+        # Reproduce NDX quotes arriving >5 seconds after request start,
+        # across a minute boundary. Provider clocks are serialized as UTC.
+        Clock.current += timedelta(seconds=12)
+        quote_time = Clock.current + timedelta(hours=4, seconds=-1)
+        return {"NDX-call": {"volume": volume, "bid": 1., "ask": 2., "last": 2.,
+                             "bid_timestamp": quote_time, "ask_timestamp": quote_time,
+                             "last_timestamp": quote_time}}
+
+    monkeypatch.setattr(collector, "get_option_quotes_batch", delayed_quotes)
+    client = SimpleNamespace(
+        get_quotes=lambda _: [{"last": 100}],
+        get_option_chain=lambda _: [{"instrument": {
+            "symbol": "NDX-call", "strike_price": 100, "option_type": "CALL",
+        }, "open_interest": 10}],
+    )
+    events = []
+    import event_utils
+    monkeypatch.setattr(event_utils, "send_event", lambda name, payload: events.append((name, payload)))
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        run = CollectionRun(status="running")
+        session.add(run)
+        session.flush()
+        for minute in range(7):
+            Clock.current = datetime(2026, 10, 7, 10, minute, 55)
+            volume = minute * 10
+            result = collector.process_symbol(client, session, run, "NDX", {"account_id": "fixture"},
+                                              SimpleNamespace(wait=lambda: None))
+            assert result["status"] == "saved", result
+            snapshot = session.get(GexSnapshot, result["snapshot_id"])
+            assert snapshot.timestamp == Clock.current
+            rows = list(session.scalars(select(RawOptionGreek).where(RawOptionGreek.snapshot_id == snapshot.id)))
+            assert all(row.timestamp == snapshot.timestamp for row in rows)
+            assert events[-1][1]["timestamp"] == str(snapshot.timestamp)
+
+        conn = session.connection()
+        early = load_session_observations(conn, symbol="NDX", as_of="2026-10-07 10:01:00", snapshot_id=snapshot.id)
+        assert early["snapshots"] == []  # First response is not available until 10:01:07.
+        observed = load_session_observations(conn, symbol="NDX", as_of=snapshot.timestamp, snapshot_id=snapshot.id)
+        pressure = build_estimated_pressure(observed["rows"], symbol="NDX", as_of=observed["available_at"])
+        assert pressure["status"] == "ready"
+        assert pressure["coverage"]["classification_ratio"] == 1.
+        assert pressure["coverage"]["discarded_by_reason"].get("future_quote", 0) == 0
+        assert pressure["points"][0]["timestamp"] == "2026-10-07T10:03:00"
+        assert pressure["points"][0]["cumulative_dollars"] == 50_000
+
+        # A truly future quote is still rejected: do not widen the skew guard.
+        for row in observed["rows"]:
+            row["bid_timestamp_utc"] = "2026-10-07T15:00:00Z"
+        rejected = build_estimated_pressure(observed["rows"], symbol="NDX", as_of=observed["available_at"])
+        assert rejected["status"] == "unavailable"
+        assert rejected["coverage"]["discarded_by_reason"]["future_quote"] == 6
+    engine.dispose()
 
 
 def test_collector_preserves_zero_oi_activity_without_inventing_positioning(monkeypatch):

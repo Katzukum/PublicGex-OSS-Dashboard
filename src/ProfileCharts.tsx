@@ -27,7 +27,7 @@ import {
   type ChartLevel,
   type CompassPoint,
 } from './profilePrimitives';
-import type { Compass, Dashboard, Theme } from './types';
+import type { Compass, Dashboard, EnvelopeSource, Theme } from './types';
 
 const NET_COLOR = '#b692ff';
 const plainSeries = {
@@ -51,11 +51,13 @@ export function ProfileChart({
   theme,
   target,
   invalidation,
+  envelopeSource = 'oi_gamma',
 }: {
   dashboard: Dashboard;
   theme: Theme;
   target?: number | null;
   invalidation?: number | null;
+  envelopeSource?: EnvelopeSource;
 }) {
   const rows = useMemo(
     () =>
@@ -82,19 +84,32 @@ export function ProfileChart({
     strikeViewport.current = null;
     clickedStrike.current = undefined;
   }, [symbol]);
-  const levels = useMemo<ChartLevel[]>(
-    () =>
-      [
-        { value: spot, label: 'Spot', color: COLORS.accent },
-        ...zeroGammaLevels(dashboard.gamma_sweep, dashboard.snapshot.flip_strike).map((level) => ({
-          ...level,
-          color: COLORS.amber,
-        })),
-        { value: target, label: 'Target', color: COLORS.positive },
-        { value: invalidation, label: 'Invalidation', color: COLORS.negative },
-      ].filter((level): level is ChartLevel => finite(level.value)),
-    [spot, dashboard.gamma_sweep, dashboard.snapshot.flip_strike, target, invalidation],
-  );
+  const levels = useMemo<ChartLevel[]>(() => {
+    const envelope =
+      envelopeSource === 'volume_gamma'
+        ? dashboard.envelopes?.flow
+        : dashboard.envelopes?.structural;
+    return [
+      { value: spot, label: 'Spot', color: COLORS.accent },
+      ...zeroGammaLevels(dashboard.gamma_sweep, dashboard.snapshot.flip_strike).map((level) => ({
+        ...level,
+        color: COLORS.amber,
+      })),
+      { value: target, label: 'Target', color: COLORS.positive },
+      { value: invalidation, label: 'Invalidation', color: COLORS.negative },
+      { value: envelope?.zero_gamma, label: 'Envelope Zero', color: COLORS.amber },
+      { value: envelope?.major_gamma, label: 'Envelope Major', color: '#b692ff' },
+      { value: envelope?.minor_gamma, label: 'Envelope Minor', color: '#8d76c2' },
+    ].filter((level): level is ChartLevel => finite(level.value));
+  }, [
+    spot,
+    dashboard.gamma_sweep,
+    dashboard.snapshot.flip_strike,
+    target,
+    invalidation,
+    dashboard.envelopes,
+    envelopeSource,
+  ]);
   const defaultRange = useMemo(
     () =>
       focusedProfileRange(

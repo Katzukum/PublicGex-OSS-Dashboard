@@ -136,10 +136,22 @@ def test_demo_serves_all_analytical_views_and_blocks_live_outputs(tmp_path):
                                   ("get_edge_lab", [{"symbol": "SPX"}]), ("get_trade_setups", ["SPX"])):
             result = client.call(method, arguments)
             assert "error" not in result, method
+        dashboard = client.call("get_dashboard_data", ["SPX"])
+        assert dashboard["envelopes"]["structural"]["model"] == "publicgex_envelopes_v1"
+        assert dashboard["estimated_pressure"]["model"] == "estimated_hedge_pressure_v1"
+        assert dashboard["estimated_pressure"]["status"] == "ready"
+        assert dashboard["estimated_pressure"]["coverage"]["classification_ratio"] == 1
+        assert dashboard["exhaustion"]["model"] == "estimated_option_exhaustion_v1"
+        trace = client.call("get_trace_data", ["SPX"])
+        assert trace["envelope_history"]
+        assert trace["exhaustion_events"]
+        assert trace["research_config"]["fingerprint"]
         assert client.call("get_decision_workspace", ["SPX"])["schema_version"] == 2
         assert len(client.call("get_edge_lab", [{"symbol": "SPX"}])["opportunities"]) > 20
         profile = client.call("get_one_off_profiles")[0]
-        assert client.call("get_one_off_profile", [profile["snapshot_id"]])["profile"]
+        one_off = client.call("get_one_off_profile", [profile["snapshot_id"]])
+        assert one_off["profile"]
+        assert one_off["envelopes"]["structural"]["model"] == "publicgex_envelopes_v1"
         assert client.call("get_journal_entries")
         assert client.call("get_weekly_journal_review")["entries"]
         assert client.request("start_collector")[0] == 400

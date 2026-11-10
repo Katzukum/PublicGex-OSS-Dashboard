@@ -20,6 +20,7 @@ export interface Settings {
   auto_start_collector?: boolean;
   auto_start_ninjatrader?: boolean;
   ninjatrader_port?: number;
+  option_research?: ResearchConfig;
 }
 export interface Snapshot {
   id: number;
@@ -64,6 +65,194 @@ export interface Dashboard {
   history: HistoryRow[];
   gamma_sweep?: GammaSweep;
   positioning?: Positioning | null;
+  envelopes?: EnvelopePair;
+  estimated_pressure?: EstimatedPressure | null;
+  exhaustion?: ExhaustionSummary | null;
+}
+export type ResearchStatus = 'ready' | 'partial' | 'unavailable';
+export type EnvelopeSource = 'volume_gamma' | 'oi_gamma';
+export interface EnvelopeCoverage {
+  contracts: number;
+  usable_contracts: number;
+  excluded_contracts?: number;
+  sweep_usable_contracts?: number;
+  min_strike: NullableNumber;
+  max_strike: NullableNumber;
+  modeled_min?: NullableNumber;
+  modeled_max?: NullableNumber;
+  excluded_by_reason?: Record<string, number>;
+  collected_range?: { min: number; max: number } | null;
+  modeled_range?: { min: number; max: number; step?: number } | null;
+  boundary_flags?: {
+    major_gamma: boolean;
+    minor_gamma: boolean;
+    zero_gamma: boolean;
+  };
+}
+export interface OptionEnvelopes {
+  model: 'publicgex_envelopes_v1';
+  source: EnvelopeSource;
+  status: ResearchStatus;
+  symbol?: string;
+  as_of: string | null;
+  available_at?: string | null;
+  zero_gamma: NullableNumber;
+  major_gamma: NullableNumber;
+  minor_gamma: NullableNumber;
+  major_strength: NullableNumber;
+  minor_strength: NullableNumber;
+  coverage: EnvelopeCoverage;
+  warnings: string[];
+}
+export interface EnvelopePair {
+  flow: OptionEnvelopes;
+  structural: OptionEnvelopes;
+}
+export interface EnvelopeHistoryPoint extends EnvelopePair {
+  snapshot_id: number;
+  as_of: string;
+  available_at: string;
+}
+export interface PressureBucket {
+  delta_dollars: NullableNumber;
+  classified_volume?: number;
+  delta_shares?: NullableNumber;
+  gamma_activity?: NullableNumber;
+}
+export interface PressurePoint {
+  timestamp: string;
+  available_at: string;
+  status: ResearchStatus | 'provisional';
+  usable?: boolean;
+  impulse_shares?: NullableNumber;
+  impulse_dollars: NullableNumber;
+  cumulative_dollars: NullableNumber;
+  ema_fast?: NullableNumber;
+  ema_slow?: NullableNumber;
+  ema_15?: NullableNumber;
+  ema_30?: NullableNumber;
+  classification_ratio: NullableNumber;
+  classified_volume?: number;
+  neutral_volume?: number;
+  unclassified_volume?: number;
+  cumulative_shares?: NullableNumber;
+  trend?: 'rising' | 'falling' | 'flat' | 'unavailable';
+  emas?: Record<string, NullableNumber>;
+  slope_5m?: NullableNumber;
+  impulse_5m?: NullableNumber;
+  buckets?: Partial<Record<'call_buy' | 'call_sell' | 'put_buy' | 'put_sell', PressureBucket>>;
+}
+export interface PressureCurrent {
+  timestamp?: string;
+  cumulative_dollars: NullableNumber;
+  slope_5m: NullableNumber;
+  impulse_5m?: NullableNumber;
+  relative_to_ema_fast: NullableNumber;
+  relative_to_ema_slow: NullableNumber;
+  relative_to_ema15?: NullableNumber;
+  relative_to_ema30?: NullableNumber;
+  direction?: 'rising' | 'falling' | 'flat' | 'unavailable';
+  trend?: 'rising' | 'falling' | 'flat' | 'unavailable';
+}
+export interface PressureCoverage {
+  classified_contract_volume: number;
+  neutral_contract_volume?: number;
+  unclassified_contract_volume: number;
+  classification_ratio: NullableNumber;
+  valid_intervals?: number;
+  discarded_intervals?: number;
+  observed_minutes?: number;
+  usable_minutes?: number;
+  max_gap_seconds?: NullableNumber;
+  missing_clock_count?: number;
+  discarded_by_reason?: Record<string, number>;
+  classified_volume?: number;
+  neutral_volume?: number;
+  unclassified_volume?: number;
+  missing_clock_intervals?: number;
+}
+export interface EstimatedPressure {
+  model: 'estimated_hedge_pressure_v1';
+  status: ResearchStatus;
+  symbol?: string;
+  session_date: string | null;
+  as_of?: string | null;
+  available_at?: string | null;
+  config?: { ema_periods: [number, number]; observation_timezone?: string; [key: string]: unknown };
+  config_fingerprint?: string;
+  points: PressurePoint[];
+  provisional?: PressurePoint | null;
+  current: PressureCurrent | null;
+  coverage: PressureCoverage;
+  warnings: string[];
+}
+export interface ExhaustionScoreComponents {
+  flow_extremity: number;
+  weakening: number;
+  location: number;
+  divergence: number;
+  proximity: number;
+}
+export interface ExhaustionEnvelopeContext {
+  source?: EnvelopeSource;
+  available_at?: string;
+  major_level?: NullableNumber;
+  minor_level?: NullableNumber;
+  nearest_kind?: 'major' | 'minor' | null;
+  nearest_level?: NullableNumber;
+  distance_percent?: NullableNumber;
+}
+export interface ExhaustionEvent {
+  id: string;
+  model: 'estimated_option_exhaustion_v1';
+  symbol?: string;
+  session?: string;
+  bucket?: 'call_buy' | 'call_sell' | 'put_buy' | 'put_sell';
+  timestamp: string;
+  available_at: string;
+  side: 'CALL' | 'PUT';
+  action: 'BUY' | 'SELL';
+  label: string;
+  estimated?: true;
+  price: number;
+  flow_dollars?: number;
+  flow_percentile: number;
+  price_position: NullableNumber;
+  score: number;
+  components: ExhaustionScoreComponents;
+  evidence: string[];
+  evidence_flags?: Record<string, boolean>;
+  availability?: Record<string, boolean>;
+  classification_ratio: NullableNumber;
+  envelope?: ExhaustionEnvelopeContext | null;
+  hedge_direction: -1 | 1;
+  bar_source?: 'collector_spot_observations';
+  config_fingerprint?: string;
+}
+export interface ExhaustionSummary {
+  model: 'estimated_option_exhaustion_v1';
+  status: ResearchStatus;
+  current: ExhaustionEvent | null;
+  events?: ExhaustionEvent[];
+  coverage: Record<string, number | string | boolean | null>;
+  warnings: string[];
+  as_of?: string | null;
+  available_at?: string | null;
+  bar_source?: 'collector_spot_observations';
+  config?: Record<string, unknown>;
+  config_fingerprint?: string;
+}
+export interface ResearchConfig {
+  envelope_source?: EnvelopeSource;
+  pressure_ema_1?: number;
+  pressure_ema_2?: number;
+  exhaustion_sensitivity?: 'low' | 'medium' | 'high' | 'strong';
+  exhaustion_price_filter_enabled?: boolean;
+  exhaustion_period_bars?: number;
+  exhaustion_call_above?: number;
+  exhaustion_put_below?: number;
+  observation_timezone?: string;
+  fingerprint?: string;
 }
 export interface PositioningStrike {
   strike: number;
@@ -257,6 +446,12 @@ export interface TraceData {
   history?: HistoryRow[];
   latest_profile?: Omit<HeatmapRow, 'timestamp'>[];
   positioning?: Positioning | null;
+  envelopes?: EnvelopePair;
+  envelope_history?: EnvelopeHistoryPoint[];
+  estimated_pressure?: EstimatedPressure | null;
+  exhaustion_events?: ExhaustionEvent[];
+  exhaustion?: ExhaustionSummary | null;
+  research_config?: ResearchConfig;
   overlays?: {
     timestamp: string;
     overlay_type: string;

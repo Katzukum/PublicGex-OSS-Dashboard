@@ -104,6 +104,19 @@ try {
   ).toBeVisible();
   if (mode === 'demo') {
     await expect(page.getByTestId('demo-banner')).toBeVisible();
+    const cockpit = page.locator('[data-view-panel="cockpit"]');
+    for (const name of ['Option Envelopes', 'Estimated Hedge Pressure', 'Option Exhaustion']) {
+      await expect(cockpit.getByRole('heading', { name, exact: true })).toBeVisible();
+    }
+    const research = await page.evaluate(() =>
+      window.__TAURI_INTERNALS__.invoke('backend_request', {
+        method: 'get_dashboard_data',
+        args: ['SPX'],
+      }),
+    );
+    expect(research.envelopes.flow.model).toBe('publicgex_envelopes_v1');
+    expect(research.estimated_pressure.model).toBe('estimated_hedge_pressure_v1');
+    expect(research.exhaustion.model).toBe('estimated_option_exhaustion_v1');
     await expect(page.getByLabel('Selected instrument').locator('option')).toHaveText([
       'SPY',
       'QQQ',
@@ -153,6 +166,13 @@ try {
       exact: true,
     });
     await renderedChart(heatmap);
+    const trace = page.locator('[data-view-panel="trace"]');
+    await expect(
+      trace.getByRole('heading', { name: 'TRACE Option Envelopes', exact: true }),
+    ).toBeVisible();
+    await expect(
+      trace.getByRole('heading', { name: 'TRACE Estimated Hedge Pressure', exact: true }),
+    ).toBeVisible();
     await page.getByLabel('Decision overlays', { exact: true }).check();
     await renderedChart(heatmap);
     await page.screenshot({ path: resolve(root, 'docs/screenshots/native-trace.png') });

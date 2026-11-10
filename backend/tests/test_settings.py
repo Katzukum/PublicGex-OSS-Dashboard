@@ -82,6 +82,52 @@ def test_partial_settings_preserve_context_and_feature_flags(settings_directory)
     assert second["symbols"] == DEFAULT_SYMBOLS
 
 
+def test_option_research_defaults_partial_merge_and_validation(settings_directory):
+    initialize_settings()
+    defaults = read_settings()["option_research"]
+    assert defaults == {
+        "envelope_source": "volume_gamma",
+        "pressure_ema_1": 9,
+        "pressure_ema_2": 21,
+        "exhaustion_sensitivity": "high",
+        "exhaustion_price_filter_enabled": True,
+        "exhaustion_period_bars": 5,
+        "exhaustion_call_above": .7,
+        "exhaustion_put_below": .3,
+        "observation_timezone": "America/New_York",
+    }
+    saved = save_settings_patch({"option_research": {
+        "envelope_source": "oi_gamma",
+        "exhaustion_sensitivity": "strong",
+    }})
+    assert saved["option_research"] == defaults | {
+        "envelope_source": "oi_gamma",
+        "exhaustion_sensitivity": "strong",
+    }
+    assert save_settings_patch({"fees_per_contract": 2})["option_research"] == saved["option_research"]
+
+
+@pytest.mark.parametrize("research", [
+    {"envelope_source": "dealer_gamma"},
+    {"pressure_ema_1": 30, "pressure_ema_2": 15},
+    {"pressure_ema_1": 1},
+    {"pressure_ema_2": 121},
+    {"exhaustion_sensitivity": "maximum"},
+    {"exhaustion_price_filter_enabled": 1},
+    {"exhaustion_period_bars": 31},
+    {"exhaustion_put_below": .8, "exhaustion_call_above": .7},
+    {"exhaustion_call_above": 1.1},
+    {"observation_timezone": "Mars/Olympus"},
+])
+def test_invalid_option_research_settings_leave_disk_unchanged(settings_directory, research):
+    initialize_settings()
+    path = settings_directory / "settings.json"
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="option_research"):
+        save_settings_patch({"option_research": research})
+    assert path.read_bytes() == before
+
+
 def test_either_basket_alias_updates_both_without_masking_custom_weights(settings_directory):
     initialize_settings()
     expected = {"SPX": .8, "NDX": .2}

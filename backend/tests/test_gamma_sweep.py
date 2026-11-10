@@ -99,3 +99,22 @@ def test_gamma_sweep_current_spot_matches_static_gex_units():
     assert result["status"] == "ok"
     assert abs(result["current"]["net_gex"] - expected) < 1e-6
     assert abs(result["current"]["hedge_shares"]) < 1e-6
+
+
+def test_gamma_sweep_volume_weight_accepts_zero_open_interest():
+    rows = [
+        option_row(99, "CALL", open_interest=0) | {"volume": 10},
+        option_row(101, "PUT", delta=-.5, open_interest=0) | {"volume": 20},
+    ]
+    result = build_gamma_sweep(rows, 100, "SPY", weight_field="volume")
+    assert result["status"] == "ok"
+    assert result["current"]["net_gex"] < 0
+
+
+def test_gamma_sweep_rejects_unknown_weight_selector():
+    try:
+        build_gamma_sweep([option_row(99), option_row(101)], 100, "SPY", weight_field="trades")
+    except ValueError as error:
+        assert "weight_field" in str(error)
+    else:
+        raise AssertionError("unknown selectors must be rejected")

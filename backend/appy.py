@@ -28,6 +28,7 @@ from backtest_gamma_butterflies import (
 from gamma_sweep import build_gamma_sweep
 from gex_levels import aggregate_gamma_levels
 from positioning import load_positioning, unavailable_positioning
+from research_service import build_option_research, unavailable_research
 from models import get_engine, initialize_database, schema_is_current
 
 # --- Configuration ---
@@ -51,6 +52,8 @@ _decision_workspace_cache = {}
 _decision_workspace_cache_lock = threading.RLock()
 _trace_cache = {}
 _trace_cache_lock = threading.RLock()
+_research_cache = {}
+_research_cache_lock = threading.RLock()
 _event_health_lock = threading.RLock()
 _last_event_at = None
 _last_event_type = None
@@ -323,6 +326,46 @@ def _clear_overview_cache() -> None:
         _overview_cache_value = None
     with _decision_workspace_cache_lock:
         _decision_workspace_cache.clear()
+    with _trace_cache_lock:
+        _trace_cache.clear()
+    with _research_cache_lock:
+        _research_cache.clear()
+
+
+def _option_research_for_snapshot(
+    conn, db_engine, snapshot, schema_current=True, *, include_history=False,
+):
+    """Return bounded research separately from every legacy decision input."""
+    settings = _load_settings()
+    config = settings.get("option_research") or {}
+    key = (
+        str(db_engine.url),
+        str(getattr(snapshot, "symbol", "")),
+        int(getattr(snapshot, "id", 0) or 0),
+        str(getattr(snapshot, "timestamp", "")),
+        bool(include_history),
+        json.dumps(config, sort_keys=True, separators=(",", ":")),
+    )
+    with _research_cache_lock:
+        cached = _research_cache.get(key)
+    if cached and time.monotonic() - cached[0] < 30:
+        return copy.deepcopy(cached[1])
+    if schema_current:
+        value = build_option_research(
+            conn, snapshot, settings, include_history=include_history,
+        )
+    else:
+        value = unavailable_research(
+            symbol=getattr(snapshot, "symbol", ""),
+            as_of=getattr(snapshot, "timestamp", None),
+            config=config,
+            warning="The stored schema does not contain current research observations.",
+        )
+    with _research_cache_lock:
+        _research_cache[key] = (time.monotonic(), copy.deepcopy(value))
+        while len(_research_cache) > 4:
+            del _research_cache[next(iter(_research_cache))]
+    return value
 
 def _validate_settings(settings: dict) -> dict:
     return validate_settings(settings)
@@ -530,12 +573,20 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
             if "timestamp" in df_hist:
                 df_hist['timestamp'] = df_hist['timestamp'].apply(lambda x: str(x))
 
+            research = _option_research_for_snapshot(
+                conn, db_engine, snap_row, schema_current=schema_current,
+            )
             return {
                 "snapshot": snapshot,
                 "profile": df_profile.to_dict(orient='records'),
                 "history": df_hist.to_dict(orient='records'),
                 "gamma_sweep": build_gamma_sweep(df_profile.to_dict(orient='records'), spot, symbol),
                 "positioning": load_positioning(conn, snap_row.id) if schema_current else unavailable_positioning(latest_time),
+                "envelopes": research["envelopes"],
+                "estimated_pressure": research["estimated_pressure"],
+                "exhaustion": research["exhaustion"],
+                "research_config": research["research_config"],
+                "research_coverage": research["research_coverage"],
             }
 
     except Exception as e:
@@ -725,7 +776,14 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
             if not latest:
                 return {"error": f"No data found for {symbol}.", "symbol": symbol}
 
-            trace_key = (str(engine.url), symbol, latest.id, lookback_minutes)
+            research_config_key = json.dumps(
+                (_load_settings().get("option_research") or {}),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            trace_key = (
+                str(engine.url), symbol, latest.id, lookback_minutes, research_config_key,
+            )
             with _trace_cache_lock:
                 cached_trace = _trace_cache.get(trace_key)
             if cached_trace and time.monotonic() - cached_trace[0] < 30:
@@ -837,6 +895,9 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
             ).fetchall() if DB_SCHEMA_CURRENT else []
 
             positioning = load_positioning(conn, latest.id) if DB_SCHEMA_CURRENT else unavailable_positioning(latest.timestamp)
+            research = _option_research_for_snapshot(
+                conn, engine, latest, schema_current=DB_SCHEMA_CURRENT, include_history=True,
+            )
 
             overlay_rows = conn.execute(
                 text("""
@@ -946,6 +1007,13 @@ def get_trace_data(symbol: str = "SPX", minutes: int = 390, session_date: str | 
             "history": [{"timestamp": str(row.timestamp), "total_net_gex": float(row.total_net_gex or 0)} for row in spot_tick_rows],
             "latest_profile": latest_profile,
             "positioning": positioning,
+            "envelopes": research["envelopes"],
+            "envelope_history": research["envelope_history"],
+            "estimated_pressure": research["estimated_pressure"],
+            "exhaustion": research["exhaustion"],
+            "exhaustion_events": research["exhaustion_events"],
+            "research_config": research["research_config"],
+            "research_coverage": research["research_coverage"],
             "overlays": [dict(row._mapping) | {"timestamp": str(row.timestamp)} for row in overlay_rows],
             "modeled_pressure_coverage": {
                 "matched_contracts": matched_charm,

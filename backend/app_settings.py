@@ -11,10 +11,22 @@ import math
 import os
 from pathlib import Path
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from runtime_paths import data_path, require_data_path
 
 DEFAULT_SYMBOLS = ["SPY", "QQQ", "IWM", "SPX", "NDX"]
+DEFAULT_OPTION_RESEARCH = {
+    "envelope_source": "volume_gamma",
+    "pressure_ema_1": 9,
+    "pressure_ema_2": 21,
+    "exhaustion_sensitivity": "high",
+    "exhaustion_price_filter_enabled": True,
+    "exhaustion_period_bars": 5,
+    "exhaustion_call_above": 0.70,
+    "exhaustion_put_below": 0.30,
+    "observation_timezone": "America/New_York",
+}
 DEFAULT_SETTINGS = {
     "refresh_interval": 10,
     "theme": "dark",
@@ -36,6 +48,7 @@ DEFAULT_SETTINGS = {
     "auto_start_collector": True,
     "auto_start_ninjatrader": True,
     "ninjatrader_port": 5010,
+    "option_research": DEFAULT_OPTION_RESEARCH,
 }
 LEGACY_STARTER_SETTINGS = copy.deepcopy(DEFAULT_SETTINGS)
 LEGACY_STARTER_SETTINGS.update({"symbols": ["SPY"], "weights": {"SPY": 1.0}})
@@ -68,6 +81,10 @@ def merge_settings(raw: dict) -> dict:
         if not isinstance(raw["feature_flags"], dict):
             raise ValueError("feature_flags must be an object")
         merged["feature_flags"] = DEFAULT_SETTINGS["feature_flags"] | raw["feature_flags"]
+    if "option_research" in raw:
+        if not isinstance(raw["option_research"], dict):
+            raise ValueError("option_research must be an object")
+        merged["option_research"] = DEFAULT_OPTION_RESEARCH | copy.deepcopy(raw["option_research"])
     return merged
 
 
@@ -147,6 +164,36 @@ def validate_settings(settings: dict) -> dict:
     result["ninjatrader_port"] = int(port)
     if any(not isinstance(value, bool) for value in result["feature_flags"].values()):
         raise ValueError("Feature flags must be boolean values")
+    research = result["option_research"]
+    if research["envelope_source"] not in {"volume_gamma", "oi_gamma"}:
+        raise ValueError("option_research.envelope_source must be volume_gamma or oi_gamma")
+    if research["exhaustion_sensitivity"] not in {"low", "medium", "high", "strong"}:
+        raise ValueError("option_research.exhaustion_sensitivity must be low, medium, high, or strong")
+    if not isinstance(research["exhaustion_price_filter_enabled"], bool):
+        raise ValueError("option_research.exhaustion_price_filter_enabled must be a boolean")
+    for name, lower, upper in (
+        ("pressure_ema_1", 2, 120),
+        ("pressure_ema_2", 2, 120),
+        ("exhaustion_period_bars", 2, 30),
+    ):
+        number = _number(research[name], f"option_research.{name}", minimum=lower)
+        if not number.is_integer() or number > upper:
+            raise ValueError(f"option_research.{name} must be a whole number from {lower} to {upper}")
+        research[name] = int(number)
+    if research["pressure_ema_1"] >= research["pressure_ema_2"]:
+        raise ValueError("option_research pressure_ema_1 must be less than pressure_ema_2")
+    put_below = _number(research["exhaustion_put_below"], "option_research.exhaustion_put_below")
+    call_above = _number(research["exhaustion_call_above"], "option_research.exhaustion_call_above")
+    if not 0 <= put_below < call_above <= 1:
+        raise ValueError("option_research thresholds require 0 <= put_below < call_above <= 1")
+    research["exhaustion_put_below"] = put_below
+    research["exhaustion_call_above"] = call_above
+    timezone_name = str(research["observation_timezone"] or "").strip()
+    try:
+        ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError("option_research.observation_timezone must be a valid IANA timezone") from None
+    research["observation_timezone"] = timezone_name
     return result
 
 
@@ -233,6 +280,10 @@ def save_settings_patch(patch: dict) -> dict:
         if not isinstance(patch["feature_flags"], dict):
             raise ValueError("feature_flags must be an object")
         patch["feature_flags"] = current["feature_flags"] | patch["feature_flags"]
+    if "option_research" in patch:
+        if not isinstance(patch["option_research"], dict):
+            raise ValueError("option_research must be an object")
+        patch["option_research"] = current["option_research"] | patch["option_research"]
     result = validate_settings(current | patch)
     _write_object(data_path("settings.json"), result)
     preferences_path = data_path(PREFERENCES_NAME)

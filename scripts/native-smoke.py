@@ -72,12 +72,19 @@ def exercise_mode(binary: Path, test_root: Path, *, demo: bool) -> None:
                 workspace = rpc("get_decision_workspace", ["SPX"])
                 assert workspace.get("schema_version") == 2
                 positioning = workspace["dashboard"]["positioning"]
+                research = workspace["dashboard"]
+                assert research["envelopes"]["flow"]["model"] == "publicgex_envelopes_v1"
+                assert research["estimated_pressure"]["model"] == "estimated_hedge_pressure_v1"
+                assert research["exhaustion"]["model"] == "estimated_option_exhaustion_v1"
                 assert positioning["model"] == "oi_activity_v1"
                 assert positioning["dealer_direction"] == "unknown"
                 assert positioning["strikes"]
                 assert positioning["coverage"]["valid_activity_contracts"] > 0
                 assert all(row["gross_oi_gex"] >= 0 for row in positioning["strikes"])
                 trace = rpc("get_trace_data", ["SPX"])
+                assert trace["envelope_history"]
+                assert trace["estimated_pressure"]["points"]
+                assert trace["exhaustion_events"]
                 assert trace["positioning"]["as_of"] == trace["timestamp"]
                 assert rpc("get_trace_dates", ["SPX"])
             else:

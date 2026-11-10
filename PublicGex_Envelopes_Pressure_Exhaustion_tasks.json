@@ -1,0 +1,268 @@
+{
+  "project": {
+    "name": "PublicGex observational envelopes, pressure, and exhaustion",
+    "source_root": "C:/Users/desk/Desktop/Javascript Projects/PublicGexDashboard",
+    "target_path": "C:/Users/desk/Desktop/Javascript Projects/PublicGexDashboard",
+    "plan_file": "PublicGex_Envelopes_Pressure_Exhaustion_IMPLEMENTATION_PLAN.md",
+    "created_for": "Planning and execution handoff",
+    "source_proposal": "PublicGex_Envelopes_Pressure_Exhaustion_Plan.md",
+    "inspected_revision": "a7bba1bd5c20ae47e1dbf8a1513c6f4214b7213e",
+    "planned_on": "2026-10-06",
+    "scope": "Observational research release only; no decision scoring or NinjaTrader payload changes. The linked plan defines formulas, edge cases, configuration, and release gates."
+  },
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "Freeze legacy outputs and define research contracts",
+      "status": "done",
+      "goal": "Establish testable compatibility boundaries and shared feature contracts before analytical changes.",
+      "subgoals": [
+        "Read AGENTS.md, the implementation plan, and the source proposal; preserve the independent workspace, Lightweight Charts requirement, read-only broker behavior, Tauri lifecycle, port 5010, and demo isolation.",
+        "Capture deterministic fixtures for scenario/regime/bias/target/invalidation, execution candidates, NinjaTrader schema-v2 numerical fields, default Gamma Sweep, and oi_activity_v1 positioning using existing backend tests.",
+        "Define versioned envelope, pressure, exhaustion, coverage, configuration, availability-time, and nullable-field fixture contracts in backend/tests and src/api.test.ts; accept absent new frontend fields but reject malformed present fields.",
+        "Document the plan's option_research defaults, clock policy, observed-minute semantics, causal cutoff rules, and no-signal-integration boundary in fixture expectations.",
+        "Run the existing baseline build, TypeScript, Python, and browser checks; record pre-existing failures without rewriting expected analytical results."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Identical legacy fixtures have explicit saved expected outputs that subsequent tasks can compare.",
+        "Research fixture examples distinguish absent, unavailable, partial, measured zero, warmup, and usable values.",
+        "Baseline check results and any existing failures are recorded; no application behavior or original-app runtime resources are changed."
+      ],
+      "depends_on": []
+    },
+    {
+      "id": "T02",
+      "title": "Extract interval mechanics and load causal session observations",
+      "status": "done",
+      "goal": "Provide a reusable read-only observation layer without changing existing positioning values.",
+      "subgoals": [
+        "Add backend/observation_intervals.py for identity, finite values, ordered snapshot adjacency, duplicate exclusion, bounded gaps, and cumulative-volume validation; refactor backend/positioning.py without changing current-universe/current-gamma semantics.",
+        "Add backend/research_observations.py with batched symbol/session reads through explicit timestamp and snapshot-ID cutoffs, including empty snapshot headers, every poll, all observed expirations, zero-OI contracts, quote fields, and spot samples.",
+        "Keep legacy positive-OI and minute-selected TRACE queries intact; do not repurpose load_positioning's 15-minute/current-expiry reader as full-session pressure history.",
+        "Implement the plan's observation_timezone and quote-clock normalization; verify provider-to-storage serialization with collector fixtures. Treat unestablished timestamp provenance, DST ambiguity, and invalid times as unavailable with reason counts.",
+        "Add backend/tests/test_observation_intervals.py and test_research_observations.py; extend test_positioning.py and collector fixtures for adjacent missing observations, duplicates, volume resets, equal times, 120-second limits, session changes, and future cutoff exclusions."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "All existing positioning fixture values and default status/coverage semantics remain unchanged.",
+        "A disappearing contract contributes only during valid adjacent observations and cannot be bridged or removed retroactively based on a later universe.",
+        "Reader supports sqlite3 and application SQLAlchemy connections without writes, ORM initialization, collector imports, or per-contract queries.",
+        "Local collection clocks and UTC/offset quote clocks compare correctly in known fixtures; uncertain clocks produce explicit exclusions."
+      ],
+      "depends_on": ["T01"]
+    },
+    {
+      "id": "T03",
+      "title": "Implement envelopes and backend payloads",
+      "status": "done",
+      "goal": "Return deterministic Flow and Structural levels using the existing modeled zero-crossing engine.",
+      "subgoals": [
+        "Add backend/option_envelopes.py with call-positive/put-negative weighted gamma, absolute net-strike ranking, deterministic tie breaks, nullable levels, strengths, coverage, and boundary warnings as defined in the plan.",
+        "Extend backend/gamma_sweep.py with keyword-only weight_field defaulting to open_interest; support volume without requiring positive OI, preserve existing default output, and adapt nearest modeled crossings without extrapolation.",
+        "Integrate both modes into backend/appy.py dashboard and TRACE results and Structural mode into One-Off; keep Flow unavailable where same-session volume provenance is absent.",
+        "Return per-snapshot historical envelopes with availability bounds and separate collected/modeled ranges; exclude degenerate all-zero sweep curves from envelope zero selection.",
+        "Add backend/tests/test_option_envelopes.py and extend test_gamma_sweep.py/test_service.py for missing/zero weights, zero-OI volume, cancellation, ranking ties, multiple/no crossings, boundary flags, old data, One-Off separation, and unchanged decisions."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Hand-calculated signed weights, ranked levels, strength values, and nearest-crossing selections match fixtures for both modes.",
+        "Default Gamma Sweep and all legacy fixture outputs remain unchanged.",
+        "Historical levels use only their selected snapshot and retain nulls; RPC results never fabricate levels from the legacy flip.",
+        "No collector range, database schema, broker request, or NinjaTrader payload is changed."
+      ],
+      "depends_on": ["T02"]
+    },
+    {
+      "id": "T04",
+      "title": "Render envelopes across Cockpit, TRACE, and One-Off",
+      "status": "done",
+      "goal": "Expose source selection, historical levels, strengths, and coverage through existing chart infrastructure.",
+      "subgoals": [
+        "Extend src/types.ts and src/api.ts with strict envelope contracts and absent-field compatibility; add malformed-payload coverage in src/api.test.ts.",
+        "Add src/EnvelopePanel.tsx and integrate it near Gamma Sweep in src/Cockpit.tsx and with One-Off profile rendering in src/ResearchViews.tsx/src/ProfileCharts.tsx.",
+        "Extend src/TraceCharts.tsx and appropriate existing primitives with timestamped solid Zero and broken Major/Minor levels; choose historical state by available_at rather than latest state.",
+        "Reuse src/LightweightChart.tsx and chartViewport.ts for theme, export, tooltip, resize, and retained-view behavior; represent unavailable levels as gaps.",
+        "Add src/optionResearch.test.tsx coverage for source labels, strength display, warnings, null levels, old payloads, and cursor-selected envelope state."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Source toggling changes only the research display and shows the correct volume/OI proxy label.",
+        "A historical TRACE cursor cannot display a future level or draw the latest level backward across the session.",
+        "One-Off displays Structural Envelopes with an honest Flow-unavailable state when appropriate.",
+        "Build and relevant frontend/API tests pass using only TradingView Lightweight Charts."
+      ],
+      "depends_on": ["T03"]
+    },
+    {
+      "id": "T05",
+      "title": "Calculate pressure, coverage, and session minute history",
+      "status": "done",
+      "goal": "Produce estimated hedge impulses and causal cumulative/EMA series with explicit missing-data semantics.",
+      "subgoals": [
+        "Add backend/flow_pressure.py implementing the plan's quote freshness, last-trade interval, signed delta, spot, and aggressor checks; retain midpoint-neutral and unclassified known volume separately.",
+        "Aggregate delta shares/dollars plus four side/action buckets and optional gamma activity from every valid observation interval at its right endpoint.",
+        "Build completed one-minute points, separate provisional current-minute diagnostics, observed cumulative totals, gap-aware EMA15/EMA30, five-minute impulse/slope, and versioned coverage/status metadata.",
+        "Integrate full-session pressure into existing dashboard and TRACE RPCs without reusing or renaming existing modeled delta/charm pressure.",
+        "Add backend/tests/test_flow_pressure.py for four signs, neutral and zero flow, resets, duplicates, stale/future quotes, missing clocks/greeks, right-end bucketing, session resets, gaps, EMA warmup, classification thresholds, and append-future invariance."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Known-volume unknown classification stays unclassified; unknown-volume intervals are counted separately instead of assigned zero volume.",
+        "Measured zero pressure differs from missing pressure and EMA warmup; gaps never create artificial impulses or connecting points.",
+        "Cumulative values and EMA results match hand-computed minute fixtures independent of poll frequency and visible TRACE range.",
+        "The four bucket signs are correct, provisional minutes do not enter completed history, and legacy outputs stay unchanged."
+      ],
+      "depends_on": ["T02", "T03"]
+    },
+    {
+      "id": "T06",
+      "title": "Display pressure and synchronize TRACE research time",
+      "status": "done",
+      "goal": "Provide an estimated-pressure chart whose coverage, viewport, crosshair, and summaries follow the selected session and cursor.",
+      "subgoals": [
+        "Add pressure types and strict validators to src/types.ts/src/api.ts, preserving nullable points, bucket diagnostics, status, availability bounds, and old-response compatibility.",
+        "Create src/PressurePanel.tsx and src/pressure.css with cumulative pressure, configured EMA lines, slope/impulse summaries, classification coverage, warnings, and the required inference disclosure.",
+        "Integrate Cockpit and a lower TRACE panel via src/Cockpit.tsx, src/ResearchViews.tsx, and src/TraceCharts.tsx using the existing LightweightChart host.",
+        "Synchronize actual visible time ranges and crosshair positions with loop guards; compute research summaries at cursor as-of and clip points by availability without resetting full-session cumulative history.",
+        "Extend frontend tests for numeric zero, null, partial data, cold starts, missing EMA values, unavailable state, retained zoom, and source/session changes."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "The display always identifies pressure as estimated and shows classification quality alongside values.",
+        "TRACE panning and replay cannot change earlier cumulative values or expose future completed minutes.",
+        "Null intervals render as gaps; labels distinguish unknown, warming up, flat, rising, and falling.",
+        "Existing chart lifecycle and retained-view tests pass with the synchronized panel."
+      ],
+      "depends_on": ["T04", "T05"]
+    },
+    {
+      "id": "T07",
+      "title": "Implement causal exhaustion candidates and evidence",
+      "status": "done",
+      "goal": "Emit reproducible inferred side/action events using completed observed bars, trailing flow percentiles, and weakening evidence.",
+      "subgoals": [
+        "Add backend/exhaustion.py to build observed minute OHLC with sample counts, enforce completed eligible price bars, and calculate inclusive five-bar 70/30 location filters.",
+        "Implement prior-60-eligible-minute bucket percentiles with 30-reference warmup, Low/Medium/High/Strong thresholds, positive-flow gate, and current classification coverage requirement.",
+        "Implement the plan's exact turn/deceleration/EMA reversal/divergence/proximity definitions, mandatory weakening evidence, weighted component score, and availability flags.",
+        "Generate stable event IDs, minute-end availability timestamps, five-minute per-bucket cooldown, separate hedge direction, nearest envelope context, and latest active Cockpit summary.",
+        "Integrate research events/status into existing dashboard and TRACE responses; add backend/tests/test_exhaustion.py for all buckets, presets, boundary values, warmup, evidence, missing samples, filter-disabled behavior, cooldown, configuration identity, and no look-ahead."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Each event exposes its inferred label, evidence flags, score components, quality, and observed-price source.",
+        "Envelope proximity by itself cannot emit an event; insufficient observations produce no fabricated candidate.",
+        "Adding or modifying future rows cannot change an earlier event; full-history filtered output equals prefix calculation.",
+        "Exact 70/30 thresholds and +5-minute cooldown boundaries pass deterministic tests; no scenario or signal generation changes."
+      ],
+      "depends_on": ["T03", "T05"]
+    },
+    {
+      "id": "T08",
+      "title": "Add exhaustion UI and persist research settings",
+      "status": "done",
+      "goal": "Make markers, evidence, active-state summaries, and research configuration available without disturbing existing preferences.",
+      "subgoals": [
+        "Add strict exhaustion/event/config types and validators in src/types.ts/src/api.ts and backend unavailable-object contracts.",
+        "Add src/ExhaustionMarkers.ts using the existing TRACE primitive/overlay approach; render distinct four-bucket markers with evidence tooltips and accessible text, clipped to cursor availability.",
+        "Add the latest five-minute active-candidate summary in Cockpit with distinct unavailable and no-active-condition states.",
+        "Extend backend/app_settings.py and src/ManagementViews.tsx with nested option_research defaults, safe deep merging, enum/range/timezone validation, basic controls, and advanced period/threshold/timezone controls.",
+        "Include config fingerprint in calculated payloads/cache keys and invalidate research caches on settings changes; extend backend/tests/test_settings.py and frontend tests for preservation of existing preferences and correct configured labels."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Marker tooltip evidence matches its event data and no marker is visible before its minute-end availability.",
+        "Settings round-trip correctly, reject invalid combinations, preserve unrelated settings, and consistently recompute research output.",
+        "All four inferred side/action labels remain distinguishable without implying a trade recommendation or observed dealer identity.",
+        "Theme, tab state, source control, null handling, and baseline scenario rendering remain intact."
+      ],
+      "depends_on": ["T06", "T07"]
+    },
+    {
+      "id": "T09",
+      "title": "Exercise research with deterministic demo and browser workflows",
+      "status": "done",
+      "goal": "Verify the full UI and RPC path using synthetic observations processed by the production calculators.",
+      "subgoals": [
+        "Extend backend/demo_data.py with deterministic multi-poll minute observations, valid clocks, rising and rolling pressure, upper/lower price patterns, nearby envelopes, and sufficient percentile/EMA warmup.",
+        "Include zero-OI activity, midpoint trades, missing quote fields, gaps, and reset fixtures with explicit synthetic labels; keep collector and broadcaster disabled in demo.",
+        "Add tests/e2e/option-research.spec.ts using existing chart helpers to test source toggle, coverage, pressure lines, four marker tooltips, settings, session changes, and cursor timing.",
+        "Verify full-session versus prefix replay equivalence through RPC/UI, including same-minute snapshots, a shortened visible range, and future appended observations.",
+        "Test synchronized range/crosshair, wheel zoom, drag pan, hidden-tab replay pause, fractional viewport retention, themes, resize, and PNG export with new lines/markers."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Both upside and downside synthetic fixtures render expected events derived by real backend calculators.",
+        "Browser replay never exposes future envelope states, pressure points, or exhaustion markers.",
+        "New and existing browser workflows pass, including unchanged displayed scenario decisions.",
+        "Demo starts without credentials, remains labeled synthetic, and cannot collect or broadcast live data."
+      ],
+      "depends_on": ["T08"]
+    },
+    {
+      "id": "T10",
+      "title": "Extend the read-only historical shadow evaluator",
+      "status": "done",
+      "goal": "Produce reproducible JSON/CSV research comparisons with chronological holdout and explicit coverage exclusions.",
+      "subgoals": [
+        "Extend backend/positioning_validation.py with envelope_touch, pressure_direction, pressure_divergence, and exhaustion_reversal families while preserving legacy defaults and read-only database access.",
+        "Add --families, --output-json, and --output-csv options; include model versions, config fingerprint, session split, sample counts, clock/coverage exclusions, and optional samples.",
+        "Implement the plan's fixed 5/15/30-minute outcome definitions, nonoverlapping primary observations, common family-specific eligible samples, envelope baselines/distance buckets, and exhaustion side/action/regime/proximity segments.",
+        "Preserve earliest-80%-development/session-level holdout separation; calculate all features from a bounded prefix and keep future outcome loading separate.",
+        "Extend backend/tests/test_positioning_validation.py with missing old quote fields, insufficient sessions, frozen cutoffs, incomplete forward paths, no-write checks, matching sample populations, and JSON/CSV parity."
+      ],
+      "notes": "",
+      "verify_complete": [
+        "Evaluator runs on an explicitly selected app-owned or synthetic database without collector/app startup or source database writes.",
+        "Development and holdout session sets are disjoint; future observations never enter feature calculation.",
+        "Reports show coverage and comparable baseline samples; older Structural-only rows remain usable for their family.",
+        "Insufficient data is labeled honestly, and 20-session/100-candidate prerequisites do not automatically enable signals.",
+        "Exported JSON and CSV parse and represent the same report/sample values."
+      ],
+      "depends_on": ["T07", "T08"]
+    },
+    {
+      "id": "T11",
+      "title": "Bound research loading, caching, and replay costs",
+      "status": "done",
+      "goal": "Keep full-session research responsive and isolated without premature derived persistence.",
+      "subgoals": [
+        "Profile ordered research queries, envelope sweeps, pressure/exhaustion scans, JSON serialization, and frontend updates using the plan's deterministic full-session five-symbol benchmark.",
+        "Use one chronological pass and batched reads instead of repeated prefix calculations; memoize per-snapshot envelopes and preserve exact cutoff results.",
+        "Implement or finalize bounded four-session/30-second research caching keyed by engine/workspace, symbol, session, final snapshot/time, versions, settings fingerprint, and relevant request window.",
+        "Verify separate One-Off/live/demo namespaces, defensive returned copies, settings invalidation, and no stale reused results after snapshot changes.",
+        "Record machine, cold/warm latency, memory, payload bytes, and query counts; optimize to the plan's budgets without changing semantics or adding an unreviewed derived-data migration."
+      ],
+      "notes": "Measured on AMD Ryzen 7 2700X / 16 logical processors / 23.9 GB RAM with Node 25.8.2 and Python 3.12.6. Dashboard: 587.3 ms cold, 63.8 ms warm, 129132 bytes. TRACE: 1311.6 ms cold, 78.5 ms warm, 603205 bytes.",
+      "verify_complete": [
+        "Measured one-symbol full-session payload meets <=2-second cold, <=500-ms warm, and <=10-MB JSON targets on the recorded test machine, or implementation is optimized before release.",
+        "SQL query count does not grow per contract or per minute, cache size is bounded, and full-session processing does not repeat every prefix.",
+        "Cache and uncached calculations agree for the same input/config; workspace, session, config, and One-Off changes cannot cross-contaminate results.",
+        "Causality, nullable values, and all baseline analytical fixtures remain unchanged after optimization."
+      ],
+      "depends_on": ["T09", "T10"]
+    },
+    {
+      "id": "T12",
+      "title": "Complete release verification and document research limits",
+      "status": "done",
+      "goal": "Deliver a tested research release with accurate documentation and no automatic decision or integration changes.",
+      "subgoals": [
+        "Run npm run build, npm test, python -m pytest backend/tests -q (or documented npm run test:backend environment equivalent), npm run test:e2e, and npm run native:test; resolve feature regressions and record results.",
+        "For packaged release run npm run native:build, node scripts/native-ui-smoke.mjs, and .venv/Scripts/python.exe scripts/native-smoke.py following scripts/native-* and README; verify new Python modules and chart primitives in the frozen backend/production CSP.",
+        "Check existing lifecycle/isolation tests for automatic live startup preferences, missing credentials, occupied port 5010, shutdown, explicit RPC allowlists, and disabled demo integrations without starting a real live collector for research validation.",
+        "Update README.md and the current docs/IMPLEMENTATION.md section with research labels, clock assumption, sparse-data/warmup limitations, settings, evaluator usage, measured performance, and actual check results.",
+        "Compare all T01 legacy fixtures unchanged; document optional NinjaTrader fields and future signal integration as separate follow-up work gated by frozen holdout evidence."
+      ],
+      "notes": "Passed npm run build, 85 frontend tests, 202 backend tests, 17 Playwright workflows, and 4 native Rust tests. Packaged installer and live provider/NinjaTrader checks were not run because this verification did not produce a packaged release.",
+      "verify_complete": [
+        "All required build, backend, frontend, browser, and native checks pass; packaged checks are recorded if a packaged release is produced.",
+        "Existing decision outputs, execution candidates, positioning, OI Gamma Sweep, and schema-v2 numerical fields match T01 fixtures.",
+        "Envelopes, estimated pressure, and exhaustion satisfy the source proposal's observational acceptance criteria with no future-data leakage.",
+        "Documentation distinguishes completed automated checks, unperformed manual/live checks, and research hypotheses; no original-app runtime resource was accessed.",
+        "No signal integration or new NinjaTrader fields are enabled, and release completion does not require waiting for future market sessions."
+      ],
+      "depends_on": ["T11"]
+    }
+  ]
+}

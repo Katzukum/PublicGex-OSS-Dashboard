@@ -6,6 +6,9 @@ import type { Candidate, Component, Theme, Workspace } from './types';
 import { cockpitMetrics, zeroGammaLevels } from './parityModels';
 import './parity.css';
 import { PositioningPanel } from './PositioningPanel';
+import { EnvelopePanel } from './EnvelopePanel';
+import { PressurePanel } from './PressurePanel';
+import type { EnvelopeSource } from './types';
 
 function ageLabel(age: number | null | undefined) {
   return finite(age)
@@ -223,6 +226,7 @@ export default function Cockpit({
   onJournal: () => void;
 }) {
   const [sweep, setSweep] = useState(true);
+  const [envelopeSource, setEnvelopeSource] = useState<EnvelopeSource>('volume_gamma');
   if (!workspace)
     return (
       <Panel>
@@ -343,6 +347,51 @@ export default function Cockpit({
         symbol={snap.symbol}
         spot={snap.spot_price}
       />
+      <EnvelopePanel
+        envelopes={dashboard.envelopes}
+        source={envelopeSource}
+        onSourceChange={setEnvelopeSource}
+      />
+      <PressurePanel data={dashboard.estimated_pressure} theme={theme} />
+      <Panel title="Option Exhaustion" eyebrow="Latest inferred candidate">
+        {dashboard.exhaustion?.status === 'unavailable' ? (
+          <Empty title="Exhaustion unavailable">
+            More completed price bars and classified option flow are required.
+          </Empty>
+        ) : dashboard.exhaustion?.current ? (
+          <div className="research-metric-grid">
+            <Metric
+              label="Candidate"
+              value={dashboard.exhaustion.current.label}
+              detail="Inferred research label"
+            />
+            <Metric
+              label="Evidence score"
+              value={percent(dashboard.exhaustion.current.score)}
+              detail="not reversal probability"
+            />
+            <Metric
+              label="Flow percentile"
+              value={percent(dashboard.exhaustion.current.flow_percentile)}
+            />
+            <Metric
+              label="Classification"
+              value={percent(dashboard.exhaustion.current.classification_ratio)}
+            />
+          </div>
+        ) : (
+          <Empty title="No active exhaustion condition">
+            No candidate was emitted in the latest five completed minutes.
+          </Empty>
+        )}
+        {!!dashboard.exhaustion?.warnings.length && (
+          <Notice tone="warning">{dashboard.exhaustion.warnings.join(' · ')}</Notice>
+        )}
+        <p className="source-note">
+          Candidates summarize evidence around inferred option flow; they are not trade
+          recommendations or reversal probabilities.
+        </p>
+      </Panel>
       <div className="cockpit-grid">
         <div className="cockpit-landscape-column">
           <Panel
@@ -359,6 +408,7 @@ export default function Cockpit({
               theme={theme}
               target={decision?.target}
               invalidation={decision?.invalidation}
+              envelopeSource={envelopeSource}
             />
             <div className="chart-foot">
               <span>

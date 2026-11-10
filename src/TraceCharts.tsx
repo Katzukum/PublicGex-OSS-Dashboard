@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
-import { CandlestickSeries, LineSeries, LineStyle } from 'lightweight-charts';
+import { CandlestickSeries, LineSeries, LineStyle, createSeriesMarkers } from 'lightweight-charts';
 import type { IChartApiBase, ISeriesApi, SeriesType } from 'lightweight-charts';
 import { LightweightChart } from './LightweightChart';
 import { ChartLevelLegend } from './ChartLevelLegend';
@@ -20,7 +20,13 @@ import {
   traceViewportSelection,
 } from './traceHeatmap';
 import type { HeatmapColumn } from './traceHeatmap';
-import type { Theme, TraceData, TraceMetric } from './types';
+import type { EnvelopeSource, Theme, TraceData, TraceMetric } from './types';
+import { PressurePanel } from './PressurePanel';
+import {
+  exhaustionEvidence,
+  exhaustionMarkers,
+  visibleExhaustionEvents,
+} from './ExhaustionMarkers';
 
 export interface TraceChartsProps {
   data: TraceData;
@@ -33,6 +39,7 @@ export interface TraceChartsProps {
   showCandles?: boolean;
   showSpot?: boolean;
   resetRevision?: number;
+  envelopeSource?: EnvelopeSource;
   onViewportChange?: (cursor: number, width: number) => void;
 }
 
@@ -47,6 +54,7 @@ export function TraceCharts({
   showCandles = true,
   showSpot = true,
   resetRevision = 0,
+  envelopeSource = 'volume_gamma',
   onViewportChange,
 }: TraceChartsProps) {
   const [profileWindow, setProfileWindow] = useState('near');
@@ -81,6 +89,15 @@ export function TraceCharts({
   );
   const range = useMemo(() => traceReplayRange(times, cursor, width), [times, cursor, width]);
   const identity = `${data.symbol}:${data.session_date}:${resetRevision}`;
+  const cursorTime =
+    times[Math.max(0, Math.min(cursor < 0 ? times.length - 1 : cursor, times.length - 1))];
+  const envelopeHistory = useMemo(
+    () =>
+      (data.envelope_history ?? [])
+        .filter((point) => cursorTime === undefined || chartTime(point.as_of) <= cursorTime)
+        .sort((a, b) => chartTime(a.as_of) - chartTime(b.as_of)),
+    [data.envelope_history, cursorTime],
+  );
 
   const buildHeatmap = useCallback(
     (chart: IChartApiBase<number>): ChartBuildResult => {
@@ -100,7 +117,54 @@ export function TraceCharts({
           color: COLORS.positive,
         },
       ];
+      const researchEnvelope = envelopeHistory.map((point) =>
+        envelopeSource === 'volume_gamma' ? point.flow : point.structural,
+      );
+      const envelopeLines = [
+        {
+          key: 'zero_gamma' as const,
+          name: 'Envelope Zero',
+          color: COLORS.amber,
+          style: LineStyle.Solid,
+        },
+        {
+          key: 'major_gamma' as const,
+          name: 'Envelope Major',
+          color: '#b692ff',
+          style: LineStyle.Dashed,
+        },
+        {
+          key: 'minor_gamma' as const,
+          name: 'Envelope Minor',
+          color: '#8d76c2',
+          style: LineStyle.Dotted,
+        },
+      ];
+      for (const line of envelopeLines) {
+        const envelopeSeries = chart.addSeries(LineSeries, {
+          color: line.color,
+          lineWidth: line.key === 'major_gamma' ? 2 : 1,
+          lineStyle: line.style,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          pointMarkersVisible: false,
+          autoscaleInfoProvider,
+        });
+        envelopeSeries.setData(
+          envelopeHistory.map((point, index) => {
+            const value = researchEnvelope[index]?.[line.key];
+            return value == null
+              ? { time: chartTime(point.as_of) }
+              : { time: chartTime(point.as_of), value };
+          }),
+        );
+        series.push({ series: envelopeSeries, name: line.name, color: line.color });
+      }
       chart.priceScale('right').applyOptions({ scaleMargins: { top: 0.02, bottom: 0.02 } });
+      let markerTarget: ISeriesApi<SeriesType, number> = heatmap as unknown as ISeriesApi<
+        SeriesType,
+        number
+      >;
       if (showCandles && candles.length) {
         const candleSeries = chart.addSeries(CandlestickSeries, {
           upColor: theme === 'dark' ? '#e4edf8' : '#ffffff',
@@ -125,6 +189,7 @@ export function TraceCharts({
           name: 'Price candles',
           color: theme === 'dark' ? '#e4edf8' : '#4b5b6d',
         });
+        markerTarget = candleSeries;
       }
       if (showSpot && data.spot_path?.length) {
         const spot = chart.addSeries(LineSeries, {
@@ -144,6 +209,30 @@ export function TraceCharts({
           [...points].sort(([a], [b]) => a - b).map(([time, value]) => ({ time, value })),
         );
         series.push({ series: spot, name: 'Spot path', color: COLORS.accent });
+        markerTarget = spot;
+      }
+      const visibleEvents = visibleExhaustionEvents(data.exhaustion_events, cursorTime);
+      if (visibleEvents.length) {
+        const markerAnchor = chart.addSeries(LineSeries, {
+          color: 'transparent',
+          lineVisible: false,
+          pointMarkersVisible: false,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          autoscaleInfoProvider,
+        });
+        markerAnchor.setData(
+          [...new Map(visibleEvents.map((event) => [chartTime(event.timestamp), event.price]))]
+            .sort(([a], [b]) => a - b)
+            .map(([time, value]) => ({ time, value })),
+        );
+        series.push({
+          series: markerAnchor,
+          name: 'Option Exhaustion',
+          color: COLORS.amber,
+          hidden: true,
+        });
+        markerTarget = markerAnchor;
       }
       for (const level of levels)
         heatmap.createPriceLine({
@@ -156,10 +245,14 @@ export function TraceCharts({
         });
       const primitive = new TraceOverlayPrimitive(annotations, times, theme);
       heatmap.attachPrimitive(primitive);
+      const eventMarkers = createSeriesMarkers(markerTarget, exhaustionMarkers(visibleEvents));
       return {
         series,
         overlays: primitive.annotations,
-        cleanup: () => heatmap.detachPrimitive(primitive),
+        cleanup: () => {
+          eventMarkers.detach();
+          heatmap.detachPrimitive(primitive);
+        },
         tooltip: (event) => {
           if (!event.point) return [];
           const column = event.seriesData.get(heatmap) as HeatmapColumn | undefined;
@@ -201,6 +294,10 @@ export function TraceCharts({
       annotations,
       times,
       units,
+      envelopeHistory,
+      envelopeSource,
+      data.exhaustion_events,
+      cursorTime,
     ],
   );
 
@@ -369,6 +466,30 @@ export function TraceCharts({
           <TrendChart history={data.history ?? []} theme={theme} revision={identity} />
         </section>
       </div>
+      <PressurePanel
+        data={data.estimated_pressure}
+        theme={theme}
+        asOf={cursorTime}
+        range={range}
+        rangeKey={`${identity}:${cursor}:${width}:pressure`}
+        onRangeChange={onRangeChange}
+        title="TRACE Estimated Hedge Pressure"
+      />
+      {!!visibleExhaustionEvents(data.exhaustion_events, cursorTime).length && (
+        <section className="trace-exhaustion-list" aria-label="Visible exhaustion marker evidence">
+          <h3 className="chart-subtitle">Option Exhaustion markers visible at replay cursor</h3>
+          {visibleExhaustionEvents(data.exhaustion_events, cursorTime)
+            .slice(-4)
+            .map((event) => (
+              <details key={event.id}>
+                <summary>
+                  {event.label} · {Math.round(event.score * 100)} evidence score
+                </summary>
+                <p>{exhaustionEvidence(event).join(' · ')}</p>
+              </details>
+            ))}
+        </section>
+      )}
       {modeled && (
         <p className="source-note">
           Modeled sensitivity surface; not observed dealer transactions. Null cells remain gaps.

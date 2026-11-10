@@ -178,3 +178,30 @@ def test_missing_database_path_is_not_created(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         evaluate_database(path)
     assert not path.exists()
+
+
+def test_research_cli_exports_json_and_csv_without_writing_source(tmp_path, capsys):
+    conn = _database()
+    for day in ("2026-09-30", "2026-10-01"):
+        _day(conn, day)
+    path = tmp_path / "research.db"
+    with sqlite3.connect(path) as target:
+        conn.backup(target)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    json_path = tmp_path / "report.json"
+    csv_path = tmp_path / "samples.csv"
+    assert main([
+        "--db", str(path), "--symbol", "SPX",
+        "--families", "envelope_touch",
+        "--include-samples",
+        "--output-json", str(json_path),
+        "--output-csv", str(csv_path),
+    ]) == 0
+    stdout = json.loads(capsys.readouterr().out)
+    saved = json.loads(json_path.read_text())
+    assert stdout == saved
+    assert saved["model"] == "option_research_shadow_v1"
+    assert saved["families"] == ["envelope_touch"]
+    assert saved["read_only"] is True
+    assert csv_path.read_text().startswith("model,config_fingerprint,family,split")
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before

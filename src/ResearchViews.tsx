@@ -7,7 +7,10 @@ import { ComponentCards, ComponentsTable } from './Cockpit';
 import { useRemote } from './hooks';
 import { aggregateStrikes, heatmapGrid, millions, number, percent, pretty } from './models';
 import type { Dashboard, Theme, TraceMetric } from './types';
+import type { EnvelopeSource } from './types';
 import { matrixRows, matrixState, traceStability } from './parityModels';
+import { EnvelopePanel, envelopePairAt } from './EnvelopePanel';
+import { chartTime } from './chartConstants';
 
 export function Regime({
   theme,
@@ -95,6 +98,7 @@ export function Trace({
     [showCandles, setShowCandles] = useState(true),
     [showSpot, setShowSpot] = useState(true),
     [profileMode, setProfileMode] = useState<'latest' | 'cursor'>('latest'),
+    [envelopeSource, setEnvelopeSource] = useState<EnvelopeSource>('volume_gamma'),
     [resetRevision, setResetRevision] = useState(0);
   const dates = useRemote('get_trace_dates', [symbol, 30], {
     enabled: active && !!symbol,
@@ -234,6 +238,16 @@ export function Trace({
                   'Modeled pressure reflects option sensitivities, not actual dealer flow.'}
               </Notice>
             )}
+            <EnvelopePanel
+              envelopes={envelopePairAt(
+                data.envelopes,
+                data.envelope_history,
+                grid.times[current] ? chartTime(grid.times[current]!) : undefined,
+              )}
+              source={envelopeSource}
+              onSourceChange={setEnvelopeSource}
+              title="TRACE Option Envelopes"
+            />
             <PositioningPanel
               data={data.positioning}
               theme={theme}
@@ -258,6 +272,7 @@ export function Trace({
                   showSpot={showSpot}
                   profileMode={profileMode}
                   resetRevision={resetRevision}
+                  envelopeSource={envelopeSource}
                   onViewportChange={(nextCursor, nextWidth) => {
                     setPlaying(false);
                     setCursor(nextCursor);

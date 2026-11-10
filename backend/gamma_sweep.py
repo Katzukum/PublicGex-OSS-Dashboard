@@ -32,7 +32,7 @@ def _option_side(row):
 _infer_total_vol = infer_total_vol
 
 
-def _prepare_contract(row, current_spot):
+def _prepare_contract(row, current_spot, weight_field="open_interest"):
     side = _option_side(row)
     implied, reason = _infer_total_vol(row, current_spot)
     if reason:
@@ -40,17 +40,21 @@ def _prepare_contract(row, current_spot):
 
     try:
         strike = float(_row_value(row, "strike_price"))
-        open_interest = int(_row_value(row, "open_interest"))
+        raw_weight = _row_value(row, weight_field)
+        weight = int(raw_weight) if weight_field == "open_interest" else float(raw_weight)
     except (TypeError, ValueError):
         return None, "invalid_contract"
 
-    if not isfinite(strike) or strike <= 0 or open_interest <= 0:
+    minimum_valid = weight > 0 if weight_field == "open_interest" else weight >= 0
+    if not isfinite(strike) or strike <= 0 or not isfinite(weight) or not minimum_valid:
         return None, "invalid_contract"
 
     sign = 1 if side == "CALL" else -1
     return {
         "strike": strike,
-        "open_interest": open_interest,
+        # Keep the legacy internal name so the default calculation remains
+        # byte-for-byte equivalent for integral open-interest inputs.
+        "open_interest": weight,
         "sign": sign,
         "d1": implied["d1"],
         "total_vol": implied["total_vol"],
@@ -130,7 +134,9 @@ def _interpolate_anchor(points, current_spot):
     return 0.0
 
 
-def build_gamma_sweep(profile_rows, spot, symbol):
+def build_gamma_sweep(profile_rows, spot, symbol, *, weight_field="open_interest"):
+    if weight_field not in {"open_interest", "volume"}:
+        raise ValueError("weight_field must be 'open_interest' or 'volume'")
     try:
         current_spot = float(spot or 0)
     except (TypeError, ValueError):
@@ -147,7 +153,7 @@ def build_gamma_sweep(profile_rows, spot, symbol):
     skipped = {}
     strikes = []
     for row in raw_rows:
-        contract, reason = _prepare_contract(row, current_spot)
+        contract, reason = _prepare_contract(row, current_spot, weight_field)
         if contract:
             contracts.append(contract)
             strikes.append(contract["strike"])

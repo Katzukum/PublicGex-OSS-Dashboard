@@ -8,14 +8,20 @@ snapshot breaks the sequence; no volume is imputed across that break.
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-import math
 import sqlite3
 
 from sqlalchemy import text
+from observation_intervals import (
+    MAX_OBSERVATION_GAP_SECONDS,
+    finite_number,
+    naive_observation_time,
+    row_mapping,
+    validate_volume_interval,
+)
 
 
 WINDOWS_MINUTES = (5, 15)
-MAX_GAP_SECONDS = 120
+MAX_GAP_SECONDS = MAX_OBSERVATION_GAP_SECONDS
 METHOD_WARNING = (
     "Activity is unsigned traded-contract turnover, valued with current snapshot gamma and spot; "
     "it is not new open interest or dealer positioning. Only complete intervals of at most 120 seconds are counted."
@@ -27,24 +33,15 @@ PERSISTENCE_WARNING = (
 
 
 def _number(value):
-    try:
-        result = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return result if math.isfinite(result) else None
+    return finite_number(value)
 
 
 def _time(value):
-    try:
-        result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
-        # Database collection timestamps use the same local, naive clock.
-        return result if result.tzinfo is None else None
-    except (TypeError, ValueError):
-        return None
+    return naive_observation_time(value)
 
 
 def _mapping(row):
-    return dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+    return row_mapping(row)
 
 
 def unavailable_positioning(as_of="", warning="Positioning observations are unavailable."):
@@ -163,13 +160,14 @@ def build_positioning(rows, *, snapshot_id, symbol, as_of, spot):
             if previous is None or latest is None:
                 invalid_intervals = True
                 continue
-            old_volume, new_volume = _number(previous.get("volume")), _number(latest.get("volume"))
+            volume_delta, volume_reason = validate_volume_interval(
+                previous, latest, require_integral=False
+            )
             gamma = _number(current[key].get("gamma"))
-            if (old_volume is None or new_volume is None or min(old_volume, new_volume) < 0
-                    or new_volume < old_volume or gamma is None or gamma < 0):
+            if volume_reason is not None or gamma is None or gamma < 0:
                 invalid_intervals = True
                 continue
-            amount = (new_volume - old_volume) * gamma * spot * spot
+            amount = volume_delta * gamma * spot * spot
             for window in WINDOWS_MINUTES:
                 if left[0] >= end - timedelta(minutes=window):
                     activity[key][window] = (activity[key][window] or 0.0) + amount

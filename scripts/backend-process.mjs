@@ -76,19 +76,38 @@ export async function startBackend(root, { demo = false, dataDir } = {}) {
       resolveReady(data);
     });
   });
-  const request = async (method, args = []) => {
+  let requestTail = Promise.resolve();
+  const runRequest = async (method, args = []) => {
     if (stopped || child.exitCode !== null)
       throw new Error('The local analytics service has stopped. Restart the app.');
-    const response = await fetch(`http://127.0.0.1:${ready.port}/rpc`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ready.token}` },
-      body: JSON.stringify({ method, args }),
-      signal: AbortSignal.timeout(method === 'build_one_off_profile' ? 190000 : 45000),
-    });
+    const send = () =>
+      fetch(`http://127.0.0.1:${ready.port}/rpc`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ready.token}` },
+        body: JSON.stringify({ method, args }),
+        signal: AbortSignal.timeout(method === 'build_one_off_profile' ? 190000 : 45000),
+      });
+    let response;
+    try {
+      response = await send();
+    } catch (error) {
+      // Undici can occasionally reuse a loopback socket just as the Python
+      // service closes it. Read RPCs are safe to repeat once; writes and
+      // lifecycle methods must remain single-attempt operations.
+      if (!method.startsWith('get_') || stopped || child.exitCode !== null) throw error;
+      response = await send();
+    }
     const payload = await response.json();
     if (!response.ok || payload.error)
       throw new Error(payload.error || `Analytics service returned ${response.status}`);
     return payload.result;
+  };
+  const request = (method, args = []) => {
+    // The Python service protects domain work with one RPC_LOCK. Queueing here
+    // avoids filling its loopback accept queue without reducing throughput.
+    const result = requestTail.then(() => runRequest(method, args));
+    requestTail = result.catch(() => {});
+    return result;
   };
   const stop = async () => {
     if (stopped) return;

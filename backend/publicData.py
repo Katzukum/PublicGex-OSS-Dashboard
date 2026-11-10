@@ -525,7 +525,6 @@ def process_symbol(
     strike_window_count: Optional[int] = None,
 ):
     logger.info("Starting collection for %s...", symbol)
-    timestamp = datetime.now()
 
     try:
         itype = get_instrument_type(symbol)
@@ -601,6 +600,12 @@ def process_symbol(
         logger.info("Fetching Greeks for %s contracts using batch API...", len(all_osi))
         greeks_map = get_option_greeks_batch(client, all_osi, config["account_id"], rate_limiter)
         quotes_map = get_option_quotes_batch(client, all_osi, config["account_id"], rate_limiter)
+
+        # The snapshot becomes observable only after every quote batch returns.
+        # Dating it at request start makes later batches appear to come from
+        # the future and exposes their contents too early during replay.
+        # Keep headers, contract rows, and emitted events on the same clock.
+        timestamp = datetime.now()
 
         total_net_gex = 0.0
         total_call_gex = 0.0

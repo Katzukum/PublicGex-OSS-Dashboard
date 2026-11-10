@@ -14,6 +14,8 @@ Double-click **Launch PublicGex Dashboard.bat** for a clean live workspace, or *
 
 The native release executable and its companion `publicgex-backend.exe` must remain together under `src-tauri/target/release`. The installer is produced under `src-tauri/target/release/bundle/nsis`.
 
+Both BAT launchers reuse the existing desktop build without rebuilding. They check that the native executable and companion backend exist and compare their timestamps with the source files. If source files are newer, a warning offers to launch the existing build anyway (type `y`) or cancel (Enter). Missing executables stop the launcher. This is a quick timestamp check, not a content-integrity check; deleted files or changes preserving old timestamps are not detected. To update the desktop app, close it and run `npm run native:build` with the development dependencies below installed. This rebuilds the frontend, Python sidecar, and native release; `npm run build` alone does not update the desktop app.
+
 ## Independence from the original app
 
 - No runtime imports, credentials, settings, databases, or virtual environment are shared with the original project.
@@ -53,6 +55,36 @@ The historical shadow evaluator opens an explicitly selected database read-only 
 ```
 
 Add `--include-samples` to inspect the individual selected levels and outcomes. Fixed top-three rankings for OI concentration, recent activity, absolute net OI proxy, and nearest strikes share nonoverlapping 15-minute observations. The earliest 80% of recorded sessions form the development sample; newer sessions are held out. At least two sessions are needed. Incomplete feature or forward-price coverage is excluded for every method together. Touch rates, initial distances, and distance buckets assess level reach; they do not establish dealer ownership, profitable signals, or an improvement without enough comparable observations.
+
+## Option Envelopes, Estimated Hedge Pressure, and Option Exhaustion
+
+The dashboard includes three versioned observational research models. They do not change regime, scenario, bias, target, invalidation, execution candidates, or NinjaTrader schema-v2 values.
+
+- Option Envelopes rank Major and Minor strikes by absolute signed call-minus-put gamma concentration. Flow uses current-session cumulative volume; Structural uses reported open interest. Zero Gamma reuses the existing modeled Gamma Sweep with the selected weight. Coverage and strike-boundary warnings stay visible because the collector's normal universe remains approximately spot +/-3%.
+- Estimated Hedge Pressure classifies positive cumulative-volume changes from the right-endpoint bid/ask/last quote, then estimates underlying delta shares and dollars. The session series uses completed one-minute buckets and configured fast/slow EMAs. Unknown, stale, reset, duplicated, or widely spaced observations remain excluded; nulls are not converted to zero. Public.com does not identify customers, dealers, opening trades, or every print between polls.
+- Option Exhaustion combines trailing bucket-flow percentiles, observed five-bar price location, pressure weakening/divergence, and nearby Envelopes. Its score is an evidence score, not a reversal probability or trade recommendation. TRACE markers retain their evidence and replay availability time.
+
+Cockpit shows current research; TRACE shows historical stepped Envelopes, a synchronized pressure pane, and exhaustion markers. One-Off profiles show Structural Envelopes and do not borrow live-session flow. Settings includes source, EMA, sensitivity, price-filter, threshold, and observation-timezone controls under **Option research settings**. Stored collector timestamps are local wall clock and default to `America/New_York`; provider quote timestamps follow the collector's UTC serialization convention. If clock provenance cannot be established, the affected research remains unavailable.
+
+New collector snapshots are timestamped after all option quote batches return. This keeps slow responses from being rejected as future quotes and prevents replay from exposing fetched data before it was available. Earlier snapshots retain their recorded timestamps because their exact receipt times were not stored; their pressure coverage may remain incomplete. The five-second future-quote guard and minimum classification coverage remain enforced.
+
+The deterministic demo runs the same calculators against isolated synthetic multi-poll observations and includes pressure turns and upper/lower exhaustion examples. Demo collection and broadcasting remain disabled.
+
+Run the expanded read-only evaluator for one or more research families:
+
+```powershell
+.venv\Scripts\python.exe backend/positioning_validation.py `
+  --db "$env:LOCALAPPDATA/com.publicgex.dashboard/data/gex_data.db" `
+  --symbol SPX `
+  --families envelope_touch pressure_direction pressure_divergence exhaustion_reversal `
+  --include-samples `
+  --output-json option-research.json `
+  --output-csv option-research.csv
+```
+
+The evaluator calculates features only from each timestamp-bounded prefix, then loads 5/15/30-minute outcomes separately. It preserves the chronological 80/20 session split and reports clock, interval, classification, and forward-coverage exclusions. Twenty independent sessions and 100 usable exhaustion candidates are prerequisites for a later signal-integration review; reaching those counts does not enable signals automatically.
+
+On the verification host (AMD Ryzen 7 2700X, 16 logical processors, 23.9 GB RAM, Node 25.8.2, Python 3.12.6), the deterministic SPX session measured 587.3 ms cold and 63.8 ms warm for the dashboard payload (129,132 bytes), and 1,311.6 ms cold and 78.5 ms warm for TRACE (603,205 bytes). Both paths remain below the research budgets of two seconds cold, 500 ms warm, and 10 MB per JSON payload. The measurement covers RPC calculation and serialization after sidecar startup.
 
 ## Configure market data
 
@@ -96,7 +128,7 @@ npm run native:test
 
 Browser tests use installed Microsoft Edge and a synthetic Python workspace. They require no broker credentials. Native integration does not exercise a real NinjaTrader session or a live market-data account.
 
-Version 0.1.4 passed 148 Python tests, 79 TypeScript/API tests, sixteen browser workflows, and four Rust lifecycle tests. Positioning checks cover window boundaries, counter resets, missing observations, zero-OI retention, unchanged legacy scenario/broadcast/backtest behavior, chronological holdout evaluation, and the distinction between unknown and zero activity. Browser checks cover all chart families through real Lightweight Charts APIs and raster output, wheel zoom, drag pan, tooltips, PNG export, exact fractional zoom retention across theme/tab/refresh, nullable-label TRACE overlays, dual exposure axes, Gamma Sweep defaults and placement, the right notification column, all five instruments, replay, journal edits, settings, and transport recovery. Screenshots are saved under `docs/screenshots`; `reference` contains original UI captures served read-only against isolated synthetic data.
+Version 0.1.4 passed 202 Python tests, 85 TypeScript/API tests, seventeen browser workflows, and four Rust lifecycle tests. Positioning and observational-research checks cover window boundaries, counter resets, missing observations, zero-OI retention, unchanged legacy scenario/broadcast/backtest behavior, chronological holdout evaluation, causal availability, pressure classification, envelope ranking, exhaustion evidence, and the distinction between unknown and zero activity. Browser checks cover all chart families through real Lightweight Charts APIs and raster output, wheel zoom, drag pan, tooltips, PNG export, exact fractional zoom retention across theme/tab/refresh, nullable-label TRACE overlays, dual exposure axes, Gamma Sweep defaults and placement, research replay ordering, the right notification column, all five instruments, replay, journal edits, settings, and transport recovery. Screenshots are saved under `docs/screenshots`; `reference` contains original UI captures served read-only against isolated synthetic data.
 
 The packaged 0.1.4 release passed fresh live and demo backend checks, including the new positioning payload, automatic bridge startup and shutdown. Its native demo WebView passed Rust IPC, the new positioning chart, existing chart families, decision overlays, retained tab state, and Settings under the production content security policy. The native live WebView's automatic Collector/NinjaTrader startup and workspace-isolation checks were last run on 0.1.3. The 0.1.4 executable and NSIS installer were built; the installer was not installed. An actual NinjaTrader chart session and live market-data accuracy remain outside these checks.
 

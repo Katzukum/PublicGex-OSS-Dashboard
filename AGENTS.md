@@ -7,3 +7,5 @@ Use React + strict TypeScript and TradingView Lightweight Charts for every chart
 All backend RPCs must be explicit allowlisted methods. The user requires automatic Collector and NinjaTrader startup for live launches, using only this app's credentials/data and the original NinjaTrader port 5010. Startup preferences can disable either service; missing credentials or a busy port must leave the UI usable and report the issue. Do not terminate another application's listener to claim that port. Demo data must remain labeled and separate, with live collection/broadcast disabled.
 
 Verification: npm run build; npm test; npm run test:e2e; python -m pytest backend/tests -q. Native compilation: follow scripts/native-* and README.
+
+Both BAT launchers must check the existing native executable and companion Python sidecar without rebuilding automatically. Warn when source files are newer and let the user explicitly continue with the existing build or cancel. Missing artifacts must stop with instructions to run npm run native:build. A frontend-only build does not update the desktop app.

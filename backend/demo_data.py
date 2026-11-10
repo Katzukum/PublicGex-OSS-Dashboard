@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import NormalDist
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -34,15 +35,26 @@ def seed_demo(engine):
         data_path("settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
     normal = NormalDist()
     with Session.begin() as session:
-        for step in range(61):
-            timestamp = now - timedelta(minutes=2 * (60 - step))
+        # Two observations per minute provide deterministic observed OHLC bars,
+        # EMA warmup and trailing-percentile history for the research panels.
+        for step in range(121):
+            timestamp = now - timedelta(seconds=30 * (120 - step))
             run = CollectionRun(started_at=timestamp, finished_at=timestamp, status="success",
                                 message="SYNTHETIC DEMO — no market data", symbols_requested=json.dumps(list(universe)),
                                 symbols_succeeded=json.dumps(list(universe)), symbols_failed="[]", symbols_skipped="[]")
             session.add(run)
             session.flush()
             for index, (symbol, (anchor, increment)) in enumerate(universe.items()):
-                spot = anchor + increment * (math.sin(step / 7 + index) * 1.1 + step / 80)
+                quote_timestamp = (
+                    timestamp.replace(tzinfo=ZoneInfo("America/New_York"))
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+                upside_wave = 3.2 * math.exp(-((step - 82) / 6) ** 2)
+                downside_wave = 3.0 * math.exp(-((step - 108) / 6) ** 2)
+                spot = anchor + increment * (
+                    math.sin(step / 13 + index) * 1.1 + step / 160 + upside_wave - downside_wave
+                )
                 raw = []
                 for offset in range(-12, 13):
                     strike = anchor + offset * increment
@@ -56,13 +68,26 @@ def seed_demo(engine):
                         oi = int(400 + 3800 * math.exp(-((offset - wall_center) / 2.8) ** 2) + 500 * (1 + math.sin(offset + step / 8)))
                         premium = max(0.1, (max(spot - strike, 0) if call else max(strike - spot, 0)) + spot * volatility * math.exp(-abs(offset) / 7) * 0.45)
                         spread = min(0.2, premium * 0.06)
+                        base_volume = 80 + abs(offset) * 3
+                        call_pulse = 18 * max(0, min(step - 68, 14)) if call else 0
+                        put_pulse = 20 * max(0, min(step - 94, 14)) if not call else 0
+                        volume = base_volume + step * 2 + call_pulse + put_pulse
+                        if call:
+                            at_ask = 68 <= step <= 82
+                            # A large opposing put impulse at the upper turn makes
+                            # the synthetic pressure roll while call flow remains elevated.
+                            if 80 <= step <= 86:
+                                at_ask = True
+                        else:
+                            at_ask = 80 <= step <= 86 or 94 <= step <= 108
+                        last_price = premium + spread / 2 if at_ask else premium - spread / 2
                         raw.append(dict(timestamp=timestamp, symbol=symbol, expiration_date=now.date(),
                             osi_symbol=f"DEMO-{symbol}-{strike:g}-{'C' if call else 'P'}", strike_price=strike, option_type=side,
                             delta=delta, gamma=gamma, open_interest=oi, underlying_price=spot,
                             gex_value=gamma * oi * 100 * spot * spot * 0.01 * (1 if call else -1),
-                            bid=round(premium-spread/2, 4), ask=round(premium+spread/2, 4), mid_price=round(premium, 4), last_price=round(premium,4),
-                            bid_size=20, ask_size=25, volume=120, implied_volatility=0.20,
-                            bid_timestamp=timestamp, ask_timestamp=timestamp, last_timestamp=timestamp))
+                            bid=round(premium-spread/2, 4), ask=round(premium+spread/2, 4), mid_price=round(premium, 4), last_price=round(last_price, 4),
+                            bid_size=20, ask_size=25, volume=volume, implied_volatility=0.20,
+                            bid_timestamp=quote_timestamp, ask_timestamp=quote_timestamp, last_timestamp=quote_timestamp))
                 call_gex = sum(row["gex_value"] for row in raw if row["option_type"] == "CALL")
                 put_gex = sum(row["gex_value"] for row in raw if row["option_type"] == "PUT")
                 snapshot = GexSnapshot(collection_run_id=run.id, timestamp=timestamp, symbol=symbol, spot_price=spot,

@@ -1,9 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set "PUBLICGEX_DEMO=1"
-if exist "src-tauri\target\release\publicgex-dashboard.exe" (
-    start "PublicGex Demo" "src-tauri\target\release\publicgex-dashboard.exe"
-) else (
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\native-run.ps1" -Action dev -Demo
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\launch-desktop.ps1" -Demo
+if errorlevel 1 (
+    echo PublicGex Demo could not be launched. See the message above.
+    pause
+    exit /b 1
 )
