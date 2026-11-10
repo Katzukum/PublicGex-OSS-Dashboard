@@ -18,6 +18,8 @@ Baseline before Phase 1: `npm run build` passed; `npm test` 85 passed; `npm run 
 
 Current: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed; `npm run test:backend` 217 passed. Focused collector, calendar, signal, migration, and Edge Lab tests passed. An initial browser run exposed two existing-demo upgrade cases: version-1 synthetic outcomes and a database already at schema version 4 before pin bands were added. The synthetic evidence upgrade and version-5 migration fixed both; the full suite passed on rerun.
 
+`npm run native:check` did not reach this code: the machine lacks a discoverable MSVC C++ Build Tools installation (`cl.exe`). This remains a final native verification item.
+
 ## Remaining Gate 1 evidence
 
 - Capture a before/after Cockpit scenario fixture and compare NinjaTrader payload key sets.

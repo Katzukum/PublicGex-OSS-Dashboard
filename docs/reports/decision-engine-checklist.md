@@ -46,6 +46,6 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 ## Final verification and delivery
 
 - [ ] Run `npm run build`, `npm test`, `npm run test:e2e`, and `python -m pytest backend/tests -q`.
-- [ ] Run native compilation and smoke checks when desktop behavior changes.
+- [ ] Run native compilation and smoke checks when desktop behavior changes. `npm run native:check` currently stops because MSVC C++ Build Tools (`cl.exe`) are not installed or discoverable; `vswhere` finds no installation with `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`.
 - [ ] Confirm database, credentials, logs, and collector locks remain isolated from the original app; NinjaTrader schema-v2 keys and port 5010 remain compatible.
 - [ ] Push the decision-engine branch only when the requested work is done.
