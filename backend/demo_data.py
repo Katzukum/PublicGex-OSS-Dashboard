@@ -14,6 +14,19 @@ from models import (CollectionRun, GexSnapshot, RawOptionGreek, SignalEvent, Sig
 from runtime_paths import data_path
 
 
+def _upgrade_synthetic_evidence(session):
+    """Keep an already seeded demo workspace usable after outcome schema upgrades."""
+    events = session.scalars(select(SignalEvent).where(SignalEvent.payload_json == '{"synthetic":true}')).all()
+    for event in events:
+        event.engine = "scenario_v1"
+        for outcome in event.outcomes:
+            outcome.label_version = 2
+            outcome.outcome_label = "target_first" if outcome.target_first else "invalidation_first" if outcome.invalidation_first else "timeout"
+            risk = abs(float(event.spot_price) - float(event.invalidation)) if event.spot_price is not None and event.invalidation is not None else 0
+            outcome.r_multiple = ((float(event.target) - float(event.spot_price)) * (1 if event.bias == "CALL" else -1) / risk) if outcome.target_first and risk else -1.0 if outcome.invalidation_first else None
+            outcome.path_resolution_seconds = 60
+
+
 def seed_demo(engine):
     marker = data_path("SYNTHETIC_DEMO.json")
     Session = get_session_factory(engine)
@@ -22,6 +35,8 @@ def seed_demo(engine):
     if existing:
         if not marker.exists():
             raise ValueError("Demo mode requires an empty workspace. Existing market data will not be mixed with synthetic data.")
+        with Session.begin() as session:
+            _upgrade_synthetic_evidence(session)
         return
     now = datetime.now().replace(second=0, microsecond=0)
     universe = {"SPY": (610.0, 1.0), "QQQ": (540.0, 1.0), "IWM": (225.0, 1.0), "SPX": (6100.0, 5.0), "NDX": (22000.0, 25.0)}
@@ -98,27 +113,34 @@ def seed_demo(engine):
                 session.add(snapshot)
                 session.flush()
                 session.add_all([RawOptionGreek(snapshot_id=snapshot.id, **row) for row in raw])
-        for symbol in ("SPX", "NDX"):
+        for symbol in universe:
             anchor, increment = universe[symbol]
             for index in range(48):
                 timestamp = (now - timedelta(days=1 + index // 2)).replace(hour=10 if index % 2 else 13, minute=0)
                 win = index % 5 < 3
-                event = SignalEvent(emitted_at=timestamp, symbol=symbol, spot_price=anchor, regime="MELT UP",
-                    bias="CALL", bias_score=0.45, confidence=0.85, data_quality=0.95, edge_probability=0.58,
-                    target=anchor+increment*3, invalidation=anchor-increment*2, flip=anchor,
-                    state_key=f"SYNTHETIC|{index}", scenario_type="UPSIDE_EXPANSION", scenario_id=f"DEMO-{symbol}-{index}",
+                scenario_type = ("UPSIDE_EXPANSION", "DOWNSIDE_EXPANSION", "PIN_MEAN_REVERSION")[index % 3]
+                bias = "CALL" if scenario_type == "UPSIDE_EXPANSION" else "PUT" if scenario_type == "DOWNSIDE_EXPANSION" else "WAIT"
+                target = anchor + increment * 3 if bias == "CALL" else anchor - increment * 3 if bias == "PUT" else anchor
+                invalidation = anchor - increment * 2 if bias == "CALL" else anchor + increment * 2
+                event = SignalEvent(engine="scenario_v1", emitted_at=timestamp, symbol=symbol, spot_price=anchor, regime="MELT UP",
+                    bias=bias, bias_score=0.45, confidence=0.85, data_quality=0.95, edge_probability=0.58,
+                    target=target, invalidation=invalidation, flip=anchor,
+                    state_key=f"SYNTHETIC|{index}", scenario_type=scenario_type, scenario_id=f"DEMO-{symbol}-{index}",
                     session_date=timestamp.date(), event_tags_json='["SYNTHETIC_DEMO"]', liquidity_grade="A", is_opportunity=True,
-                    setup_key=f"{symbol}|SYNTHETIC|{index}", direction_key=f"{symbol}|CALL", payload_json='{"synthetic":true}')
+                    setup_key=f"{symbol}|SYNTHETIC|{index}", direction_key=f"{symbol}|{bias}", payload_json='{"synthetic":true}')
                 session.add(event)
                 session.flush()
                 for horizon in (15, 30, 60):
-                    move = increment * (1.6 if win else -1.2)
-                    session.add(SignalOutcome(signal_event_id=event.id, horizon_minutes=horizon, labeled_at=timestamp+timedelta(minutes=horizon),
+                    move = increment * (0.4 if win else 2.4) if bias == "WAIT" else increment * (1.6 if win else -1.2) * (1 if bias == "CALL" else -1)
+                    label = ("pin_held" if win else "pin_broken") if bias == "WAIT" else ("target_first" if win else "invalidation_first")
+                    session.add(SignalOutcome(label_version=2, signal_event_id=event.id, horizon_minutes=horizon, labeled_at=timestamp+timedelta(minutes=horizon),
                         horizon_at=timestamp+timedelta(minutes=horizon), observed_at=timestamp+timedelta(minutes=horizon),
                         end_spot=anchor+move, move_points=move, move_pct=move/anchor, directional_move_points=move,
                         max_favorable_points=increment*2.2, max_adverse_points=increment*0.7,
-                        hit_target=win, hit_invalidation=not win, target_first=win, invalidation_first=not win, is_win=win,
-                        outcome_label="target" if win else "invalidation"))
+                        hit_target=win if bias != "WAIT" else False, hit_invalidation=not win if bias != "WAIT" else False,
+                        target_first=win if bias != "WAIT" else False, invalidation_first=not win if bias != "WAIT" else False, is_win=win,
+                        outcome_label=label, pin_held=win if bias == "WAIT" else None,
+                        r_multiple=None if bias == "WAIT" else 1.5 if win else -1.0, path_resolution_seconds=60))
         session.add(TradeJournalEntry(created_at=now, updated_at=now, symbol="SPX", session_date=now.date(),
             scenario_type="UPSIDE_EXPANSION", regime="SYNTHETIC DEMO", event_tags_json='["SYNTHETIC_DEMO"]',
             liquidity_grade="A", contracts=1, entry_price=1.2, exit_price=1.7, entry_time=now-timedelta(minutes=45),

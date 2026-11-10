@@ -59,6 +59,29 @@ def parse_ics_events(text: str, source: str) -> list[dict]:
     return sorted(unique.values(), key=lambda item: item["starts_at"])
 
 
+def stored_timestamp_to_eastern(value: datetime, source_timezone=None) -> datetime:
+    """Interpret legacy naive timestamps in their recording timezone, then convert to ET."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=source_timezone) if source_timezone else value.astimezone()
+    return value.astimezone(EASTERN)
+
+
+def load_public_calendar_events(cache_dir: Path, *, fetch=None) -> dict:
+    """Load the two existing government calendars without delaying an RPC over five seconds."""
+    if fetch is None:
+        def fetch(url):
+            with urlopen(url, timeout=2) as response:  # nosec B310 - fixed provider URLs
+                return response.read().decode("utf-8")
+    providers = (
+        CachedIcsProvider("BLS", BLS_ICS_URL, Path(cache_dir) / "bls.ics", fetch=fetch),
+        CachedIcsProvider("FOMC", FOMC_ICS_URL, Path(cache_dir) / "fomc.ics", fetch=fetch),
+    )
+    results = [provider.load() for provider in providers]
+    warnings = [f"{provider.source} calendar: {warning}" for provider, result in zip(providers, results) for warning in result["warnings"]]
+    events = None if any(result["warnings"] or result["status"] == "unavailable" for result in results) else [event for result in results for event in result["events"]]
+    return {"events": events, "warnings": warnings, "sources": {provider.source: result["status"] for provider, result in zip(providers, results)}}
+
+
 class CachedIcsProvider:
     def __init__(self, source: str, url: str, cache_path: Path, max_age: timedelta = timedelta(hours=12), fetch=None):
         self.source = source

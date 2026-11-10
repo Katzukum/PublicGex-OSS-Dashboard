@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 5
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -151,10 +151,34 @@ def _migration_3_decision_tables(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_4_versioned_signal_evidence(connection: sqlite3.Connection) -> None:
+    _add_columns(connection, "signal_events", {"engine": "TEXT"})
+    _add_columns(connection, "signal_outcomes", {
+        "label_version": "INTEGER NOT NULL DEFAULT 1",
+        "r_multiple": "REAL",
+        "path_resolution_seconds": "REAL",
+        "pin_held": "BOOLEAN",
+    })
+    if _table_exists(connection, "signal_events"):
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_signal_engine_state "
+            "ON signal_events(symbol, engine, state_key, emitted_at)"
+        )
+
+
+def _migration_5_pin_bands(connection: sqlite3.Connection) -> None:
+    _add_columns(connection, "signal_events", {
+        "pin_band_low": "REAL",
+        "pin_band_high": "REAL",
+    })
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1_quotes),
     (2, _migration_2_signal_evidence),
     (3, _migration_3_decision_tables),
+    (4, _migration_4_versioned_signal_evidence),
+    (5, _migration_5_pin_bands),
 )
 
 

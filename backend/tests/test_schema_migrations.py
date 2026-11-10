@@ -17,6 +17,10 @@ def _legacy_database(path):
                 id INTEGER PRIMARY KEY, emitted_at DATETIME, symbol TEXT
             );
             INSERT INTO signal_events VALUES (1, '2026-08-14 10:00:00', 'SPX');
+            CREATE TABLE signal_outcomes (
+                id INTEGER PRIMARY KEY, signal_event_id INTEGER, outcome_label TEXT
+            );
+            INSERT INTO signal_outcomes VALUES (1, 1, 'directional');
             """
         )
 
@@ -34,8 +38,13 @@ def test_legacy_database_migrates_without_data_loss(tmp_path):
         )
         quote_columns = {row[1] for row in connection.execute("PRAGMA table_info(raw_option_greeks)")}
         signal_columns = {row[1] for row in connection.execute("PRAGMA table_info(signal_events)")}
+        outcome_columns = {row[1] for row in connection.execute("PRAGMA table_info(signal_outcomes)")}
         assert {"bid", "ask", "mid_price", "implied_volatility"} <= quote_columns
         assert {"data_quality", "edge_probability", "scenario_id", "is_opportunity"} <= signal_columns
+        assert {"engine", "pin_band_low", "pin_band_high"} <= signal_columns
+        assert {"label_version", "r_multiple", "path_resolution_seconds", "pin_held"} <= outcome_columns
+        assert connection.execute("SELECT id, symbol, engine FROM signal_events").fetchone() == (1, "SPX", None)
+        assert connection.execute("SELECT id, outcome_label, label_version FROM signal_outcomes").fetchone() == (1, "directional", 1)
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='trade_journal_entries'"
         ).fetchone()
@@ -75,3 +84,16 @@ def test_backup_is_created_only_for_pending_existing_database(tmp_path):
     assert len(backups) == 1
     run_migrations(db_path, create_backup=True)
     assert list(tmp_path.glob("production-copy_pre_migration_*.db")) == backups
+
+
+def test_version_four_database_receives_pin_band_columns(tmp_path):
+    db_path = tmp_path / "version-four.db"
+    _legacy_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("ALTER TABLE signal_events ADD COLUMN engine TEXT")
+        connection.execute("PRAGMA user_version = 4")
+    assert run_migrations(db_path) == CURRENT_SCHEMA_VERSION
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(signal_events)")}
+        assert {"pin_band_low", "pin_band_high"} <= columns
+        assert connection.execute("SELECT id, symbol FROM signal_events").fetchone() == (1, "SPX")

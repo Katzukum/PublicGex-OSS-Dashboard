@@ -307,8 +307,9 @@ def initialize_runtime():
 
 
 def shutdown_runtime():
-    from native_runtime import get_runtime
-    get_runtime().close()
+    runtime_module = sys.modules.get("native_runtime")
+    if runtime_module is not None:
+        runtime_module.get_runtime().close()
 
 
 atexit.register(shutdown_runtime)
@@ -638,17 +639,24 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
         else 0
     )
 
-    from market_context import build_market_context
+    from market_context import build_market_context, load_public_calendar_events
     from scenario_engine import build_scenario_workspace
 
+    calendar = ({"events": None, "warnings": [], "sources": {}}
+                if data_path("SYNTHETIC_DEMO.json").exists()
+                else load_public_calendar_events(DATA_DIR / "calendar_cache"))
     market_context = build_market_context(
         symbol,
         snapshot.get("spot_price"),
         dashboard.get("profile", []),
         dashboard.get("history", []),
-        None,
+        calendar["events"],
         cross_asset_state=(index_basket.get("label") or None),
     )
+    market_context["warnings"].extend(calendar["warnings"])
+    market_context["calendar_sources"] = calendar["sources"]
+    if calendar["warnings"]:
+        market_context["status"] = "partial"
     scenario = build_scenario_workspace(
         snapshot,
         dashboard.get("profile", []),

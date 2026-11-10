@@ -12,6 +12,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
 from models import GexSnapshot, SignalEvent, SignalOutcome, get_session_factory
+from market_context import stored_timestamp_to_eastern
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,8 @@ DASHBOARD_FIELDS = (
     "dashboard_scenario_type",
     "dashboard_target",
     "dashboard_invalidation",
+    "dashboard_pin_band_low",
+    "dashboard_pin_band_high",
     "dashboard_flip",
     "dashboard_context",
     "dashboard_market",
@@ -158,7 +161,7 @@ def _session_or_new(session=None):
     return session_factory(), True
 
 
-def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -> int:
+def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS, *, engine="broadcaster_vote") -> int:
     """Persist only decision-state transitions, not routine refreshes."""
 
     db, owns_session = _session_or_new(session)
@@ -175,7 +178,7 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -
             state_key = str(dashboard.get("dashboard_scenario_id") or setup_key)
             previous = (
                 db.query(SignalEvent)
-                .filter(SignalEvent.symbol == symbol)
+                .filter(SignalEvent.symbol == symbol, SignalEvent.engine == engine)
                 .order_by(SignalEvent.emitted_at.desc(), SignalEvent.id.desc())
                 .first()
             )
@@ -189,8 +192,14 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -
             bias = _bias_family(dashboard.get("dashboard_bias"))
             target = _float_or_none(dashboard.get("dashboard_target"))
             invalidation = _float_or_none(dashboard.get("dashboard_invalidation"))
-            is_opportunity = bias != "WAIT" and (data_quality or 0) >= 0.45 and target is not None and invalidation is not None
+            pin_band_low = _float_or_none(dashboard.get("dashboard_pin_band_low"))
+            pin_band_high = _float_or_none(dashboard.get("dashboard_pin_band_high"))
+            scenario_type = dashboard.get("dashboard_scenario_type")
+            is_pin = scenario_type in ("PIN", "PIN_MEAN_REVERSION")
+            has_invalidation = invalidation is not None or (is_pin and pin_band_low is not None and pin_band_high is not None)
+            is_opportunity = (bias != "WAIT" or is_pin) and (data_quality or 0) >= 0.45 and target is not None and has_invalidation
             event = SignalEvent(
+                engine=engine,
                 emitted_at=emitted_at,
                 symbol=symbol,
                 spot_price=float(dashboard["spot"]),
@@ -202,16 +211,18 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -
                 edge_probability=None,
                 target=target,
                 invalidation=invalidation,
+                pin_band_low=pin_band_low,
+                pin_band_high=pin_band_high,
                 flip=_float_or_none(dashboard.get("dashboard_flip")),
                 market_state=_clean_label(dashboard.get("dashboard_market")),
                 dealer_state=_clean_label(dashboard.get("dashboard_dealer")),
                 liquidity_state=_clean_label(dashboard.get("dashboard_liquidity")),
                 whale_state=_clean_label(dashboard.get("dashboard_index_basket") or dashboard.get("dashboard_whale")),
                 state_key=state_key,
-                scenario_type=dashboard.get("dashboard_scenario_type"),
+                scenario_type=scenario_type,
                 scenario_id=dashboard.get("dashboard_scenario_id"),
-                session_date=emitted_at.date(),
-                event_tags_json="[]",
+                session_date=stored_timestamp_to_eastern(emitted_at).date(),
+                event_tags_json=json.dumps(payload.get("event_tags") or []),
                 liquidity_grade=None,
                 is_opportunity=is_opportunity,
                 setup_key=setup_key,
@@ -224,6 +235,78 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS) -
         if owns_session:
             db.commit()
         return created
+    except Exception:
+        if owns_session:
+            db.rollback()
+        raise
+    finally:
+        if owns_session:
+            db.close()
+
+
+def record_scenario_workspace(workspace: dict, session=None, *, engine="scenario_v1") -> int:
+    """Record the exact scenario workspace displayed for one snapshot."""
+
+    active = workspace.get("active_scenario") or {}
+    decision = workspace.get("decision") or {}
+    symbol = str(workspace.get("symbol") or "").upper()
+    snapshot = (workspace.get("dashboard") or {}).get("snapshot") or {}
+    spot = _float_or_none(snapshot.get("spot_price"))
+    if not symbol or spot is None or not active.get("scenario_type"):
+        return 0
+    quality = workspace.get("data_quality") or decision.get("data_quality") or {}
+    event_risk = (workspace.get("market_context") or {}).get("event_risk") or {}
+    target = decision.get("target")
+    invalidation = decision.get("invalidation")
+    pin_band_low = decision.get("pin_band_low")
+    pin_band_high = decision.get("pin_band_high")
+    state_key = "|".join(map(str, (active.get("scenario_type"), active.get("bias"), target, invalidation, pin_band_low, pin_band_high, event_risk.get("state"))))
+    next_event = event_risk.get("next_event") or {}
+    tags = [event_risk.get("state")] if event_risk.get("state") else []
+    tags.extend(str(next_event[key]) for key in ("source", "title") if next_event.get(key))
+    payload = {
+        "timestamp": workspace.get("as_of") or snapshot.get("timestamp"),
+        "regime": active.get("scenario_type"),
+        "dashboard_symbol": symbol,
+        "dashboard_bias": active.get("bias"),
+        "dashboard_bias_score": decision.get("score"),
+        "dashboard_data_quality": quality.get("score"),
+        "dashboard_scenario_id": active.get("scenario_id"),
+        "dashboard_scenario_type": active.get("scenario_type"),
+        "dashboard_target": target,
+        "dashboard_invalidation": invalidation,
+        "dashboard_pin_band_low": pin_band_low,
+        "dashboard_pin_band_high": pin_band_high,
+        "dashboard_flip": decision.get("flip"),
+        "spot_" + symbol.lower(): spot,
+        "event_tags": tags,
+    }
+    db, owns_session = _session_or_new(session)
+    try:
+        # The scenario ID includes a snapshot ID, so use the decision state for deduplication.
+        dashboard = dashboard_from_payload(payload, symbol)
+        if dashboard is None:
+            return 0
+        previous = (
+            db.query(SignalEvent)
+            .filter(SignalEvent.symbol == symbol, SignalEvent.engine == engine)
+            .order_by(SignalEvent.emitted_at.desc(), SignalEvent.id.desc())
+            .first()
+        )
+        if previous and previous.state_key == state_key:
+            return 0
+        count = record_signal_payload(payload, session=db, symbols=(symbol,), engine=engine)
+        if count:
+            event = (
+                db.query(SignalEvent)
+                .filter(SignalEvent.symbol == symbol, SignalEvent.engine == engine)
+                .order_by(SignalEvent.id.desc())
+                .first()
+            )
+            event.state_key = state_key
+        if owns_session:
+            db.commit()
+        return count
     except Exception:
         if owns_session:
             db.rollback()
@@ -271,6 +354,7 @@ def _build_outcome(
         return None
 
     direction = _direction_from_bias(event.bias)
+    label_version = 2 if event.engine in ("broadcaster_vote", "scenario_v1", "scenario_v2") else 1
     start_spot = float(event.spot_price or 0)
     end_spot = float(end_row.spot_price or 0)
     if start_spot <= 0 or end_spot <= 0:
@@ -278,7 +362,11 @@ def _build_outcome(
 
     target_hit_at = None
     invalidation_hit_at = None
+    first_hit = None
     directed_path = []
+    observed_spots = [start_spot]
+    path_times = [emitted_at]
+    previous_spot = start_spot
 
     for row in path_rows:
         spot = float(row.spot_price or 0)
@@ -289,23 +377,59 @@ def _build_outcome(
             directed_path.append((spot - start_spot) * direction)
 
         row_time = parse_datetime(row.timestamp)
-        if not target_hit_at and _target_hit(direction, spot, event.target):
+        observed_spots.append(spot)
+        if row_time:
+            path_times.append(row_time)
+        hit_target = _target_hit(direction, spot, event.target)
+        hit_invalidation = _invalidation_hit(direction, spot, event.invalidation)
+        if label_version == 2 and direction and event.target is not None and event.invalidation is not None:
+            low, high = sorted((previous_spot, spot))
+            if low <= float(event.target) <= high and low <= float(event.invalidation) <= high:
+                hit_target = hit_invalidation = True  # Intragap order is unknown; count invalidation first.
+        if first_hit is None and (hit_target or hit_invalidation):
+            first_hit = ("invalidation_first" if hit_invalidation else "target_first", row_time)
+        if not target_hit_at and hit_target:
             target_hit_at = row_time
-        if not invalidation_hit_at and _invalidation_hit(direction, spot, event.invalidation):
+        if not invalidation_hit_at and hit_invalidation:
             invalidation_hit_at = row_time
+        previous_spot = spot
 
     move_points = end_spot - start_spot
     move_pct = move_points / start_spot
     directional_move = move_points * direction if direction else None
 
-    target_first = bool(
-        target_hit_at and (not invalidation_hit_at or target_hit_at <= invalidation_hit_at)
-    )
-    invalidation_first = bool(
-        invalidation_hit_at and (not target_hit_at or invalidation_hit_at < target_hit_at)
-    )
+    target_first = bool(target_hit_at and (not invalidation_hit_at or target_hit_at <= invalidation_hit_at))
+    invalidation_first = bool(invalidation_hit_at and (not target_hit_at or invalidation_hit_at < target_hit_at))
+    pin_held = None
+    r_multiple = None
+    path_resolution_seconds = max((right - left).total_seconds() for left, right in zip(path_times, path_times[1:])) if len(path_times) > 1 else None
 
-    if direction == 0:
+    if label_version == 2 and event.scenario_type in ("PIN", "PIN_MEAN_REVERSION") and event.target is not None and (event.invalidation is not None or (event.pin_band_low is not None and event.pin_band_high is not None)):
+        if event.pin_band_low is not None and event.pin_band_high is not None:
+            pin_held = all(float(event.pin_band_low) <= spot <= float(event.pin_band_high) for spot in observed_spots)
+        else:
+            band = abs(float(event.invalidation) - float(event.target))
+            pin_held = max(abs(spot - float(event.target)) for spot in observed_spots) <= band
+        is_win = pin_held
+        outcome_label = "pin_held" if pin_held else "pin_broken"
+        max_favorable = None
+        max_adverse = max(abs(spot - float(event.target)) for spot in observed_spots)
+    elif label_version == 2 and direction != 0:
+        max_favorable = max([0, *directed_path]) if directed_path else 0
+        max_adverse = max([0, *(-value for value in directed_path)]) if directed_path else 0
+        if first_hit:
+            outcome_label = first_hit[0]
+            is_win = outcome_label == "target_first"
+        else:
+            outcome_label = "timeout"
+            is_win = None
+        target_first = outcome_label == "target_first"
+        invalidation_first = outcome_label == "invalidation_first"
+        risk = abs(start_spot - float(event.invalidation)) if event.invalidation is not None else 0
+        if risk > 0:
+            exit_spot = float(event.target) if target_first else float(event.invalidation) if invalidation_first else end_spot
+            r_multiple = (exit_spot - start_spot) * direction / risk
+    elif direction == 0:
         is_win = None
         outcome_label = "wait"
         max_favorable = None
@@ -327,6 +451,7 @@ def _build_outcome(
             outcome_label = "against"
 
     return SignalOutcome(
+        label_version=label_version,
         signal_event_id=event.id,
         horizon_minutes=horizon_minutes,
         labeled_at=datetime.now(),
@@ -344,6 +469,9 @@ def _build_outcome(
         invalidation_first=invalidation_first,
         is_win=is_win,
         outcome_label=outcome_label,
+        r_multiple=r_multiple,
+        path_resolution_seconds=path_resolution_seconds if label_version == 2 else None,
+        pin_held=pin_held,
     )
 
 

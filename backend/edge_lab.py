@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 
 from models import SignalEvent, SignalOutcome
+from market_context import stored_timestamp_to_eastern
 from signal_performance import _stats_from_rows, independent_outcomes, parse_datetime
 
 
@@ -13,6 +14,7 @@ def _time_bucket(value) -> str:
     timestamp = parse_datetime(value)
     if not timestamp:
         return "unknown"
+    timestamp = stored_timestamp_to_eastern(timestamp)
     if timestamp.hour < 11:
         return "open"
     if timestamp.hour < 14:
@@ -33,7 +35,7 @@ def query_edge_lab(session, filters: dict | None = None) -> dict:
         .order_by(SignalEvent.emitted_at.asc())
     )
     if not include_legacy:
-        query = query.filter(SignalEvent.is_opportunity.is_(True))
+        query = query.filter(SignalEvent.is_opportunity.is_(True), SignalOutcome.label_version == 2)
     if filters.get("scenario"):
         query = query.filter(SignalEvent.scenario_type == filters["scenario"])
     if filters.get("regime"):
@@ -53,7 +55,8 @@ def query_edge_lab(session, filters: dict | None = None) -> dict:
     stats = _stats_from_rows(rows, "independent opportunities", horizon)
     opportunities = []
     distribution = []
-    breakdown = {"target": 0, "invalidation": 0, "directional": 0, "against": 0, "wait": 0}
+    breakdown = {"target": 0, "invalidation": 0, "directional": 0, "against": 0, "wait": 0,
+                 "target_first": 0, "invalidation_first": 0, "timeout": 0, "pin_held": 0, "pin_broken": 0}
     calibration = []
     for row in independent:
         event = row.signal
@@ -74,6 +77,10 @@ def query_edge_lab(session, filters: dict | None = None) -> dict:
                 "regime": event.regime,
                 "liquidity_grade": event.liquidity_grade,
                 "outcome": row.outcome_label,
+                "label_version": row.label_version,
+                "r_multiple": row.r_multiple,
+                "path_resolution_seconds": row.path_resolution_seconds,
+                "pin_held": row.pin_held,
                 "after_cost_points": after_cost,
                 "mfe": row.max_favorable_points,
                 "mae": row.max_adverse_points,

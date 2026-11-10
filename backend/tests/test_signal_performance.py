@@ -5,7 +5,8 @@ from sqlalchemy import create_engine, event as sqlalchemy_event
 from sqlalchemy.orm import sessionmaker
 
 from models import Base, CollectionRun, GexSnapshot, SignalEvent, SignalOutcome
-from signal_performance import edge_stats_for_dashboard, independent_outcomes, label_due_outcomes, record_signal_payload, setup_keys
+from edge_lab import query_edge_lab
+from signal_performance import edge_stats_for_dashboard, independent_outcomes, label_due_outcomes, record_signal_payload, record_scenario_workspace, setup_keys
 
 
 def _session():
@@ -70,6 +71,100 @@ def _event(session, symbol="NDX", emitted_at=datetime(2026, 6, 22, 9, 30), spot=
 
 
 class SignalPerformanceTests(unittest.TestCase):
+    def test_version_two_labels_target_invalidation_and_timeout(self):
+        session = _session()
+        run = _run(session)
+        base = datetime(2026, 6, 22, 9, 30)
+        target, _ = _event(session, emitted_at=base, target=102, invalidation=98)
+        invalidation, _ = _event(session, emitted_at=base, target=104, invalidation=99)
+        timeout, _ = _event(session, emitted_at=base, target=110, invalidation=90)
+        for signal in (target, invalidation, timeout):
+            signal.engine = "scenario_v1"
+        _snapshot(session, run, "NDX", base + timedelta(minutes=5), 102.5)
+        _snapshot(session, run, "NDX", base + timedelta(minutes=10), 98.5)
+        _snapshot(session, run, "NDX", base + timedelta(minutes=15), 101)
+        session.commit()
+
+        self.assertEqual(label_due_outcomes(session=session, horizons=(15,)), 3)
+        labeled = {row.signal_event_id: row for row in session.query(SignalOutcome).all()}
+        self.assertEqual(labeled[target.id].outcome_label, "target_first")
+        self.assertEqual(labeled[target.id].r_multiple, 1)
+        self.assertEqual(labeled[invalidation.id].outcome_label, "invalidation_first")
+        self.assertEqual(labeled[invalidation.id].r_multiple, -1)
+        self.assertEqual(labeled[timeout.id].outcome_label, "timeout")
+        self.assertIsNone(labeled[timeout.id].is_win)
+        self.assertEqual(labeled[timeout.id].r_multiple, 0.1)
+        self.assertEqual(labeled[timeout.id].path_resolution_seconds, 300)
+        self.assertTrue(all(row.label_version == 2 for row in labeled.values()))
+
+    def test_scenario_workspace_dedupes_its_state_independently_of_broadcaster(self):
+        session = _session()
+        workspace = {
+            "symbol": "SPY", "as_of": "2026-06-22T09:30:00",
+            "dashboard": {"snapshot": {"spot_price": 100}},
+            "data_quality": {"score": 0.8},
+            "market_context": {"event_risk": {"state": "NORMAL"}},
+            "active_scenario": {"scenario_id": "one", "scenario_type": "PIN_MEAN_REVERSION", "bias": "NEUTRAL"},
+            "decision": {"score": 0, "target": 100, "invalidation": 98, "flip": 100},
+        }
+        self.assertEqual(record_scenario_workspace(workspace, session=session), 1)
+        session.flush()
+        workspace["active_scenario"]["scenario_id"] = "two"
+        workspace["as_of"] = "2026-06-22T09:31:00"
+        self.assertEqual(record_scenario_workspace(workspace, session=session), 0)
+        event = session.query(SignalEvent).one()
+        self.assertEqual(event.engine, "scenario_v1")
+        self.assertEqual(event.scenario_type, "PIN_MEAN_REVERSION")
+        self.assertTrue(event.is_opportunity)
+        self.assertEqual(event.event_tags_json, '["NORMAL"]')
+
+    def test_pin_is_scored_and_edge_lab_defaults_to_version_two(self):
+        session = _session()
+        run = _run(session)
+        base = datetime(2026, 6, 22, 9, 30)
+        pin, _ = _event(session, symbol="SPX", emitted_at=base, spot=100, target=100, invalidation=98)
+        pin.engine = "scenario_v1"
+        pin.bias = "WAIT"
+        pin.scenario_type = "PIN_MEAN_REVERSION"
+        legacy, _ = _event(session, symbol="SPX", emitted_at=base, spot=100, target=105, invalidation=95)
+        legacy.scenario_type = "UPSIDE_EXPANSION"
+        _snapshot(session, run, "SPX", base + timedelta(minutes=5), 101)
+        _snapshot(session, run, "SPX", base + timedelta(minutes=15), 100.5)
+        session.commit()
+
+        label_due_outcomes(session=session, horizons=(15,))
+        pin_outcome = session.query(SignalOutcome).filter_by(signal_event_id=pin.id).one()
+        self.assertEqual(pin_outcome.outcome_label, "pin_held")
+        self.assertTrue(pin_outcome.pin_held)
+        self.assertTrue(pin_outcome.is_win)
+        edge = query_edge_lab(session, {"symbol": "SPX", "horizon": 15, "scenario": "PIN_MEAN_REVERSION"})
+        self.assertEqual(edge["stats"]["sample_size"], 1)
+        self.assertEqual(edge["opportunities"][0]["label_version"], 2)
+
+    def test_shadow_pin_uses_two_sided_band_without_reusing_legacy_invalidation(self):
+        session = _session()
+        run = _run(session)
+        base = datetime(2026, 6, 22, 15, 0)
+        workspace = {
+            "symbol": "SPX", "as_of": base.isoformat(),
+            "dashboard": {"snapshot": {"spot_price": 100}},
+            "data_quality": {"score": 0.9},
+            "market_context": {"event_risk": {"state": "NORMAL"}},
+            "active_scenario": {"scenario_id": "shadow-pin", "scenario_type": "PIN", "bias": "NEUTRAL"},
+            "decision": {"target": 100, "invalidation": None, "pin_band_low": 98, "pin_band_high": 102},
+        }
+        assert record_scenario_workspace(workspace, session=session, engine="scenario_v2") == 1
+        session.flush()
+        event = session.query(SignalEvent).one()
+        assert event.is_opportunity and event.invalidation is None
+        _snapshot(session, run, "SPX", base + timedelta(minutes=5), 101)
+        _snapshot(session, run, "SPX", base + timedelta(minutes=15), 103)
+        session.commit()
+        label_due_outcomes(session=session, horizons=(15,))
+        outcome = session.query(SignalOutcome).one()
+        assert outcome.outcome_label == "pin_broken"
+        assert outcome.pin_held is False
+
     def test_label_due_outcome_records_target_first_win(self):
         session = _session()
         run = _run(session)

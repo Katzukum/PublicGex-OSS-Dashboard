@@ -344,7 +344,20 @@ def main() -> int:
                 })
             output["checks"]["0.7_open_interest"] = {"yes": all(item["yes"] for item in readings) and len(readings) == 3, "readings": readings}
         else:
-            output["checks"]["0.7_open_interest"] = {"yes": False, "error": "requires --full at 09:25 ET"}
+            if datetime.now(EASTERN).time() >= OI_READING_TIMES[1] and len(contracts) >= 20:
+                result = attempt(lambda: probe.quotes(contracts[:20]))
+                output["checks"]["0.7_open_interest"] = {
+                    "yes": False, "fallback": "first available reading after 09:35 ET",
+                    "observed_et": datetime.now(EASTERN).isoformat(),
+                    "reading_succeeded": result["yes"],
+                    "open_interest": {
+                        str(field(field(q, "instrument"), "symbol")): field(q, "open_interest")
+                        for q in result.get("result", [])
+                    },
+                    "error": result.get("error"),
+                }
+            else:
+                output["checks"]["0.7_open_interest"] = {"yes": False, "error": "timing unverified; use --full by 09:20 ET for the three scheduled readings"}
     except Exception as exc:
         output["stopped_error"] = safe_error(exc)
     output["run_finished_et"] = datetime.now(EASTERN).isoformat()

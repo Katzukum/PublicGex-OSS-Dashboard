@@ -12,6 +12,7 @@ def test_edge_lab_filters_and_excludes_legacy_by_default(tmp_path):
         for index, opportunity in enumerate((True, True, False)):
             emitted = datetime(2026, 8, 10 + index, 10, 0)
             event = SignalEvent(
+                engine="scenario_v1",
                 emitted_at=emitted,
                 symbol="SPX",
                 spot_price=6000,
@@ -27,7 +28,7 @@ def test_edge_lab_filters_and_excludes_legacy_by_default(tmp_path):
             )
             session.add(event)
             session.flush()
-            session.add(SignalOutcome(signal_event_id=event.id, horizon_minutes=30, observed_at=emitted + timedelta(minutes=30), directional_move_points=2, max_favorable_points=3, max_adverse_points=1, is_win=True, outcome_label="target", target_first=True))
+            session.add(SignalOutcome(label_version=2, signal_event_id=event.id, horizon_minutes=30, observed_at=emitted + timedelta(minutes=30), directional_move_points=2, max_favorable_points=3, max_adverse_points=1, is_win=True, outcome_label="target_first", target_first=True))
 
     with Session() as session:
         result = query_edge_lab(session, {"symbol": "SPX", "horizon": 30, "scenario": "UPSIDE_EXPANSION", "event_tag": "CPI", "liquidity_grade": "A"})

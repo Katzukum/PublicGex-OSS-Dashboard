@@ -573,7 +573,7 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         "dashboard_liquidity_detail": liquidity_vote["detail"],
     }
 
-def build_regime_payload(overview_data: dict) -> dict | None:
+def build_regime_payload(overview_data: dict, *, session=None) -> dict | None:
     """Build and record a market update independently from network broadcasting.
 
     Transforms the internal 'overview_data' structure into a flat, parseable
@@ -653,7 +653,7 @@ def build_regime_payload(overview_data: dict) -> dict | None:
 
         try:
             from signal_performance import update_signal_performance_for_payload
-            payload = update_signal_performance_for_payload(payload)
+            payload = update_signal_performance_for_payload(payload, session=session)
         except Exception as e:
             logger.warning(f"Signal performance update failed: {e}")
         

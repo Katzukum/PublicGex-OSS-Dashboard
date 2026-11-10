@@ -1,7 +1,8 @@
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from market_context import EASTERN, CachedIcsProvider, atm_straddle_implied_move, build_market_context, classify_event_window, parse_ics_events, persist_market_context
+from market_context import EASTERN, CachedIcsProvider, atm_straddle_implied_move, build_market_context, classify_event_window, load_public_calendar_events, parse_ics_events, persist_market_context, stored_timestamp_to_eastern
 from models import Base, MarketContextSnapshot, get_engine, get_session_factory
 
 
@@ -44,6 +45,22 @@ def test_cache_expiry_and_network_failure_keep_stale_data(tmp_path):
     assert result["status"] == "stale_cache"
     assert len(result["events"]) == 1
     assert result["warnings"] == ["offline"]
+
+
+def test_calendar_failure_is_unavailable_without_raising(tmp_path):
+    result = load_public_calendar_events(tmp_path, fetch=lambda _url: (_ for _ in ()).throw(OSError("offline")))
+    assert result["events"] is None
+    assert set(result["sources"].values()) == {"unavailable"}
+    assert len(result["warnings"]) == 2
+    context = build_market_context("SPX", 6000, [], [], result["events"])
+    assert context["event_risk"]["state"] == "UNAVAILABLE"
+
+
+def test_stored_naive_timestamps_convert_from_source_zone_to_same_et_instant():
+    instant = datetime(2026, 11, 10, 23, 30, tzinfo=timezone.utc)
+    utc_naive = instant.replace(tzinfo=None)
+    pacific_naive = instant.astimezone(ZoneInfo("America/Los_Angeles")).replace(tzinfo=None)
+    assert stored_timestamp_to_eastern(utc_naive, timezone.utc) == stored_timestamp_to_eastern(pacific_naive, ZoneInfo("America/Los_Angeles"))
 
 
 def test_missing_quotes_return_null_implied_move():

@@ -107,6 +107,7 @@ class SignalEvent(Base):
     __tablename__ = "signal_events"
 
     id = Column(Integer, primary_key=True)
+    engine = Column(String, index=True, nullable=True)
     emitted_at = Column(DateTime, default=datetime.now, index=True)
     symbol = Column(String, index=True)
     spot_price = Column(Float)
@@ -118,6 +119,8 @@ class SignalEvent(Base):
     edge_probability = Column(Float, nullable=True)
     target = Column(Float, nullable=True)
     invalidation = Column(Float, nullable=True)
+    pin_band_low = Column(Float, nullable=True)
+    pin_band_high = Column(Float, nullable=True)
     flip = Column(Float, nullable=True)
     market_state = Column(String, default="")
     dealer_state = Column(String, default="")
@@ -149,6 +152,7 @@ class SignalOutcome(Base):
     __tablename__ = "signal_outcomes"
 
     id = Column(Integer, primary_key=True)
+    label_version = Column(Integer, default=1, nullable=False)
     signal_event_id = Column(Integer, ForeignKey("signal_events.id"), nullable=False, index=True)
     horizon_minutes = Column(Integer, index=True)
     labeled_at = Column(DateTime, default=datetime.now, index=True)
@@ -166,6 +170,9 @@ class SignalOutcome(Base):
     invalidation_first = Column(Boolean, default=False)
     is_win = Column(Boolean, nullable=True)
     outcome_label = Column(String, index=True)
+    r_multiple = Column(Float, nullable=True)
+    path_resolution_seconds = Column(Float, nullable=True)
+    pin_held = Column(Boolean, nullable=True)
 
     signal = relationship("SignalEvent", back_populates="outcomes")
 
