@@ -1,0 +1,797 @@
+{
+  "run_started_et": "2026-11-11T09:08:14.981660-05:00",
+  "sdk_version": "0.1.25",
+  "credential_source": "C:\\Users\\desk\\AppData\\Local\\com.publicgex.dashboard\\data\\.env",
+  "checks": {
+    "0.2_expirations": {
+      "yes": true,
+      "symbols": {
+        "SPX": {
+          "yes": true,
+          "count": 39,
+          "error": null
+        },
+        "SPY": {
+          "yes": true,
+          "count": 35,
+          "error": null
+        },
+        "QQQ": {
+          "yes": true,
+          "count": 32,
+          "error": null
+        },
+        "NDX": {
+          "yes": true,
+          "count": 31,
+          "error": null
+        },
+        "IWM": {
+          "yes": true,
+          "count": 33,
+          "error": null
+        }
+      }
+    },
+    "0.1_chain": {
+      "yes": true,
+      "contracts": 574,
+      "field_coverage_percent": {
+        "greeks": 98.78,
+        "implied_volatility": 98.78,
+        "open_interest": 100.0,
+        "volume": 100.0,
+        "bid_size": 79.44,
+        "ask_size": 100.0,
+        "bid_timestamp": 100.0,
+        "ask_timestamp": 100.0,
+        "last_timestamp": 100.0
+      }
+    },
+    "0.2_chain_call_seconds": {
+      "yes": true,
+      "samples": [
+        0.344,
+        0.25,
+        0.234,
+        0.203,
+        0.219,
+        0.25,
+        0.203,
+        0.281,
+        0.25,
+        0.219
+      ]
+    },
+    "0.3_index_bars": {
+      "SPX_DAY": {
+        "yes": true,
+        "count": 451,
+        "first": "2026-11-10T09:30:00-05:00",
+        "last": "2026-11-10T17:00:00-05:00",
+        "volume_populated_percent": 100.0
+      },
+      "SPX_WEEK": {
+        "yes": false,
+        "error": "ValidationError: API Error 400: Period WEEK is not compatible with aggregation ONE_MINUTE"
+      },
+      "SPX_MONTH": {
+        "yes": false,
+        "error": "ValidationError: API Error 400: Period MONTH is not compatible with aggregation ONE_MINUTE"
+      },
+      "NDX_DAY": {
+        "yes": true,
+        "count": 467,
+        "first": "2026-11-10T09:30:00-05:00",
+        "last": "2026-11-10T17:16:00-05:00",
+        "volume_populated_percent": 100.0
+      },
+      "NDX_WEEK": {
+        "yes": false,
+        "error": "ValidationError: API Error 400: Period WEEK is not compatible with aggregation ONE_MINUTE"
+      },
+      "NDX_MONTH": {
+        "yes": false,
+        "error": "ValidationError: API Error 400: Period MONTH is not compatible with aggregation ONE_MINUTE"
+      }
+    },
+    "0.4_option_bars": {
+      "yes": true,
+      "count": 404,
+      "first": "2026-11-10T09:31:00-05:00",
+      "last": "2026-11-10T16:14:00-05:00",
+      "volume_populated_percent": 100.0
+    },
+    "0.5_volatility_indexes": {
+      "VIX": {
+        "yes": true,
+        "last_present": true,
+        "error": null
+      },
+      "VIX1D": {
+        "yes": false,
+        "last_present": false,
+        "error": "ValidationError: API Error 400: No enum constant com.hellopublic.trading.core.symbology.Index.VIX1D"
+      },
+      "VIX9D": {
+        "yes": false,
+        "last_present": false,
+        "error": "ValidationError: API Error 400: No enum constant com.hellopublic.trading.core.symbology.Index.VIX9D"
+      }
+    },
+    "0.6_quote_polling": {
+      "yes": true,
+      "result": {
+        "duration_seconds": 300.0,
+        "batch_samples": {
+          "50": [
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            },
+            {
+              "requested": 50,
+              "returned": 50
+            }
+          ],
+          "100": [
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            },
+            {
+              "requested": 100,
+              "returned": 100
+            }
+          ],
+          "250": [
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            },
+            {
+              "requested": 250,
+              "returned": 250
+            }
+          ]
+        },
+        "changed_between_polls": {
+          "volume": 5621,
+          "last_timestamp": 5574
+        }
+      }
+    },
+    "0.7_open_interest": {
+      "yes": true,
+      "readings": [
+        {
+          "scheduled_et": "09:25",
+          "observed_et": "2026-11-11T09:25:00.000740-05:00",
+          "yes": true,
+          "open_interest": {
+            "SPXW261111C07520000": 916,
+            "SPXW261111P07520000": 5840,
+            "SPXW261111C07525000": 964,
+            "SPXW261111P07525000": 1105,
+            "SPXW261111C07515000": 1063,
+            "SPXW261111P07515000": 964,
+            "SPXW261111C07530000": 897,
+            "SPXW261111P07530000": 717,
+            "SPXW261111C07510000": 1483,
+            "SPXW261111P07510000": 6411,
+            "SPXW261111C07535000": 465,
+            "SPXW261111P07535000": 396,
+            "SPXW261111C07505000": 509,
+            "SPXW261111P07505000": 571,
+            "SPXW261111C07540000": 684,
+            "SPXW261111P07540000": 416,
+            "SPXW261111C07500000": 1328,
+            "SPXW261111P07500000": 3432,
+            "SPXW261111C07545000": 776,
+            "SPXW261111P07545000": 277
+          },
+          "error": null
+        },
+        {
+          "scheduled_et": "09:35",
+          "observed_et": "2026-11-11T09:35:00.000790-05:00",
+          "yes": true,
+          "open_interest": {
+            "SPXW261111C07520000": 916,
+            "SPXW261111P07520000": 5840,
+            "SPXW261111C07525000": 964,
+            "SPXW261111P07525000": 1105,
+            "SPXW261111C07515000": 1063,
+            "SPXW261111P07515000": 964,
+            "SPXW261111C07530000": 897,
+            "SPXW261111P07530000": 717,
+            "SPXW261111C07510000": 1483,
+            "SPXW261111P07510000": 6411,
+            "SPXW261111C07535000": 465,
+            "SPXW261111P07535000": 396,
+            "SPXW261111C07505000": 509,
+            "SPXW261111P07505000": 571,
+            "SPXW261111C07540000": 684,
+            "SPXW261111P07540000": 416,
+            "SPXW261111C07500000": 1328,
+            "SPXW261111P07500000": 3432,
+            "SPXW261111C07545000": 776,
+            "SPXW261111P07545000": 277
+          },
+          "error": null
+        },
+        {
+          "scheduled_et": "12:00",
+          "observed_et": "2026-11-11T12:00:00.000529-05:00",
+          "yes": true,
+          "open_interest": {
+            "SPXW261111C07520000": 916,
+            "SPXW261111P07520000": 5840,
+            "SPXW261111C07525000": 964,
+            "SPXW261111P07525000": 1105,
+            "SPXW261111C07515000": 1063,
+            "SPXW261111P07515000": 964,
+            "SPXW261111C07530000": 897,
+            "SPXW261111P07530000": 717,
+            "SPXW261111C07510000": 1483,
+            "SPXW261111P07510000": 6411,
+            "SPXW261111C07535000": 465,
+            "SPXW261111P07535000": 396,
+            "SPXW261111C07505000": 509,
+            "SPXW261111P07505000": 571,
+            "SPXW261111C07540000": 684,
+            "SPXW261111P07540000": 416,
+            "SPXW261111C07500000": 1328,
+            "SPXW261111P07500000": 3432,
+            "SPXW261111C07545000": 776,
+            "SPXW261111P07545000": 277
+          },
+          "error": null
+        }
+      ]
+    }
+  },
+  "run_finished_et": "2026-11-11T12:00:00.749609-05:00",
+  "requests": 171,
+  "http_429_responses": 0
+}

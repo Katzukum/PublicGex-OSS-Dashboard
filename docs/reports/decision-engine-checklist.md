@@ -7,15 +7,15 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Rebuild frontend (`npm run build`) and Python sidecar (`npm run build:sidecar`); frozen live and demo sidecar smoke tests pass.
 - [x] Launch the updated live development app with its own ignored `data/` workspace; collector saved all five symbols, recorded vote/v1/v2 signals, and NinjaTrader listened on port 5010.
 - [x] Fix the collector's first-cycle stall by loading the numerical workspace before starting its lifetime thread; verify the next cycle completed and `npm run test:backend` passed (229 tests).
-- [ ] Compile and launch the native desktop executable. `npm run native:check` still fails because `cl.exe` is unavailable; the existing native executable is older than the current source.
-- [ ] Finish the 09:25, 09:35, and noon ET Public.com probe, assess field coverage and HTTP 429 count, and record supported collection flags.
+- [x] Compile the native desktop executable and installer with the installed Visual Studio 2019 Build Tools; the packaged demo UI smoke passes. A live native UI check remains open while the browser app owns NinjaTrader port 5010.
+- [x] Finish the 09:25, 09:35, and noon ET Public.com probe: 171 requests, zero HTTP 429 responses. Multiple expirations, SPX/NDX day-period minute bars, option bars, VIX, and quote polling work; VIX1D/VIX9D and week/month period minute bars do not. OI was present but unchanged across all three readings, so update timing remains unverified. Expanded collection flags remain off pending their own live smoke.
 - [ ] Complete the 30-minute live collector smoke report, including cycle time, rows per snapshot, database growth, and HTTP 429 count.
 
 ## Phase 0: Public.com capabilities
 
 - [x] Add a read-only, rate-limited probe that prints JSON and never opens the app database (`scripts/probe-public-api.py`).
-- [ ] Run the probe with this app's credentials during regular market hours; commit `docs/api-capabilities.json` with timestamp, numbers, yes/no for checks 0.1–0.6, and zero HTTP 429 responses.
-- [ ] **Deferred open-interest timing check 0.7:** compare the same 20 contracts around 09:25, 09:35, and 12:00 ET. If exact readings are unavailable, record the first reading after 09:35 and mark update timing unverified; do not infer an overnight change from missing observations.
+- [x] Run the probe with this app's credentials during regular market hours and save `docs/api-capabilities.json` with timestamps, coverage, check results, and zero HTTP 429 responses.
+- [x] **Open-interest timing check 0.7:** compare the same 20 contracts at 09:25, 09:35, and 12:00 ET. All readings were available and identical; update timing remains unverified.
 - [ ] Record which later steps are enabled, use fallbacks, or are skipped. The installed SDK is 0.1.25; the plan referenced 0.1.28, so the report must distinguish observed behavior from the plan's assumptions.
 
 ## Phase 1: Evidence loop
@@ -58,6 +58,6 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 ## Final verification and delivery
 
 - [x] Run offline suites after code changes: `npm run build`, `npm test` (85 passed), `npm run test:e2e` (17 passed), and `npm run test:backend` (229 passed). Repeat after market-hour activation tomorrow.
-- [ ] Run native compilation and smoke checks when desktop behavior changes. `npm run native:check` currently stops because MSVC C++ Build Tools (`cl.exe`) are not installed or discoverable; `vswhere` finds no installation with `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`.
+- [x] Run native compilation and packaged demo smoke. `vswhere` missed an installed Visual Studio 2019 Build Tools compiler, so `scripts/native-run.ps1` now discovers it directly; `npm run native:check` passes.
 - [ ] Confirm database, credentials, logs, and collector locks remain isolated from the original app; NinjaTrader schema-v2 keys and port 5010 remain compatible.
 - [x] Push `codex/decision-engine-improvements` after offline code checks. Live market-hour validation remains on this checklist.
