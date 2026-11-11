@@ -198,6 +198,10 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS, *
             is_pin = scenario_type in ("PIN", "PIN_MEAN_REVERSION")
             has_invalidation = invalidation is not None or (is_pin and pin_band_low is not None and pin_band_high is not None)
             is_opportunity = (bias != "WAIT" or is_pin) and (data_quality or 0) >= 0.45 and target is not None and has_invalidation
+            edge_probability = None
+            if engine == "scenario_v2":
+                from edge_model import predict
+                edge_probability, _ = predict(payload.get("model_features") or {}, scenario_type)
             event = SignalEvent(
                 engine=engine,
                 emitted_at=emitted_at,
@@ -208,7 +212,7 @@ def record_signal_payload(payload: dict, session=None, symbols=SIGNAL_SYMBOLS, *
                 bias_score=_float_or_none(dashboard.get("dashboard_bias_score")),
                 confidence=data_quality,
                 data_quality=data_quality,
-                edge_probability=None,
+                edge_probability=edge_probability,
                 target=target,
                 invalidation=invalidation,
                 pin_band_low=pin_band_low,
@@ -281,6 +285,9 @@ def record_scenario_workspace(workspace: dict, session=None, *, engine="scenario
         "spot_" + symbol.lower(): spot,
         "event_tags": tags,
     }
+    if engine == "scenario_v2":
+        from edge_model import signal_features
+        payload["model_features"] = signal_features(workspace)
     db, owns_session = _session_or_new(session)
     try:
         # The scenario ID includes a snapshot ID, so use the decision state for deduplication.
@@ -380,14 +387,21 @@ def _build_outcome(
         observed_spots.append(spot)
         if row_time:
             path_times.append(row_time)
-        hit_target = _target_hit(direction, spot, event.target)
-        hit_invalidation = _invalidation_hit(direction, spot, event.invalidation)
+        high = float(getattr(row, "high", spot) or spot)
+        low = float(getattr(row, "low", spot) or spot)
+        if high < low:
+            high = low = spot
+        if label_version == 2:
+            observed_spots.extend((low, high))
+        hit_target = _target_hit(direction, high if direction > 0 else low, event.target)
+        hit_invalidation = _invalidation_hit(direction, low if direction > 0 else high, event.invalidation)
         if label_version == 2 and direction and event.target is not None and event.invalidation is not None:
             low, high = sorted((previous_spot, spot))
             if low <= float(event.target) <= high and low <= float(event.invalidation) <= high:
                 hit_target = hit_invalidation = True  # Intragap order is unknown; count invalidation first.
         if first_hit is None and (hit_target or hit_invalidation):
-            first_hit = ("invalidation_first" if hit_invalidation else "target_first", row_time)
+            exit_time = row_time + timedelta(minutes=1) if row_time and hasattr(row, "high") else row_time
+            first_hit = ("invalidation_first" if hit_invalidation else "target_first", exit_time)
         if not target_hit_at and hit_target:
             target_hit_at = row_time
         if not invalidation_hit_at and hit_invalidation:
@@ -472,6 +486,7 @@ def _build_outcome(
         r_multiple=r_multiple,
         path_resolution_seconds=path_resolution_seconds if label_version == 2 else None,
         pin_held=pin_held,
+        option_exit_at=first_hit[1] if label_version == 2 and first_hit else horizon_at if label_version == 2 else None,
     )
 
 
@@ -500,6 +515,10 @@ def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: i
             .all()
         )
         labeled = 0
+        from app_settings import read_settings
+        settings = read_settings()
+        use_minute_bars = bool(settings.get("index_minute_bars_enabled", False))
+        fees_per_contract = float(settings.get("fees_per_contract", 0))
         events_by_symbol = defaultdict(list)
         for event in events:
             events_by_symbol[event.symbol].append(event)
@@ -521,6 +540,12 @@ def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: i
             snapshot_times = [parse_datetime(row.timestamp) for row in snapshot_rows]
             if not snapshot_rows:
                 continue
+            from models import IndexMinuteBar
+            bar_rows = (db.query(IndexMinuteBar)
+                        .filter(IndexMinuteBar.symbol == symbol,
+                                IndexMinuteBar.timestamp > min(emitted_times))
+                        .order_by(IndexMinuteBar.timestamp.asc()).all()) if use_minute_bars and symbol in {"SPX", "NDX"} else []
+            bar_times = [parse_datetime(row.timestamp) for row in bar_rows]
 
             latest_time = snapshot_times[-1]
             for event in symbol_events:
@@ -533,8 +558,17 @@ def label_due_outcomes(session=None, horizons=OUTCOME_HORIZONS_MINUTES, limit: i
                     if horizon in existing or latest_time < emitted_at + timedelta(minutes=horizon):
                         continue
 
-                    outcome = _build_outcome(event, horizon, snapshot_rows, snapshot_times)
+                    outcome = None
+                    if bar_rows and bar_times[-1] >= emitted_at + timedelta(minutes=horizon):
+                        candidate = _build_outcome(event, horizon, bar_rows, bar_times)
+                        if candidate and candidate.path_resolution_seconds is not None and candidate.path_resolution_seconds <= 90:
+                            outcome = candidate
+                    if outcome is None:
+                        outcome = _build_outcome(event, horizon, snapshot_rows, snapshot_times)
                     if outcome:
+                        if outcome.label_version == 2:
+                            from option_pnl import score_outcome
+                            score_outcome(db, event, outcome, fees_per_contract)
                         db.add(outcome)
                         labeled += 1
 
@@ -607,7 +641,8 @@ def _stats_from_rows(rows, fallback_label: str, horizon_minutes: int) -> dict:
         }
 
     wins = sum(1 for row in rows if row.is_win is True)
-    win_denominator = sum(1 for row in rows if row.is_win is not None)
+    # A version-2 timeout is a non-target outcome in the displayed probability.
+    win_denominator = sum(1 for row in rows if row.is_win is not None or row.label_version == 2)
     win_rate = wins / win_denominator if win_denominator else None
     move_values = [
         row.directional_move_points
@@ -617,23 +652,37 @@ def _stats_from_rows(rows, fallback_label: str, horizon_minutes: int) -> dict:
     ]
     favorable_values = [row.max_favorable_points for row in rows if row.max_favorable_points is not None]
     adverse_values = [row.max_adverse_points for row in rows if row.max_adverse_points is not None]
-    after_cost_values = [value - 0.10 for value in move_values if value is not None]
+    option_values = [row.option_pnl_r for row in rows if getattr(row, "option_pnl_r", None) is not None]
     median_move = median(move_values) if move_values else None
     median_favorable = median(favorable_values) if favorable_values else None
     median_adverse = median(adverse_values) if adverse_values else None
     win_text = "--" if win_rate is None else f"{round(win_rate * 100)}%"
     move_text = "--" if median_move is None else f"{median_move:+.0f}"
     unique_days = len({row.signal.session_date or parse_datetime(row.signal.emitted_at).date() for row in rows})
-    holdout_count = max(1, sample_size // 5)
-    holdout = after_cost_values[-holdout_count:]
+    sessions = sorted({row.signal.session_date or parse_datetime(row.signal.emitted_at).date() for row in rows})
+    held_out_sessions = set(sessions[max(1, int(len(sessions) * 0.8)):])
+    holdout = [row.option_pnl_r for row in rows if getattr(row, "option_pnl_r", None) is not None
+               and (row.signal.session_date or parse_datetime(row.signal.emitted_at).date()) in held_out_sessions]
+    holdout_rows = [row for row in rows
+                    if (row.signal.session_date or parse_datetime(row.signal.emitted_at).date()) in held_out_sessions]
+    random_difference = _clustered_interval(
+        holdout_rows,
+        lambda row: row.option_pnl_r - row.random_baseline_pnl_r
+        if getattr(row, "option_pnl_r", None) is not None and getattr(row, "random_baseline_pnl_r", None) is not None else None)
+    momentum_difference = _clustered_interval(
+        holdout_rows,
+        lambda row: row.option_pnl_r - row.momentum_baseline_pnl_r
+        if getattr(row, "option_pnl_r", None) is not None and getattr(row, "momentum_baseline_pnl_r", None) is not None else None)
     holdout_expectancy = sum(holdout) / len(holdout) if holdout else None
-    after_cost_expectancy = sum(after_cost_values) / len(after_cost_values) if after_cost_values else None
+    after_cost_expectancy = sum(option_values) / len(option_values) if option_values else None
     if sample_size < 20 or unique_days < 10:
         evidence_status = "INSUFFICIENT"
     elif sample_size < 50 or unique_days < 20 or not (holdout_expectancy is not None and holdout_expectancy > 0):
         evidence_status = "EMERGING"
-    else:
+    elif random_difference and momentum_difference and random_difference[0] > 0 and momentum_difference[0] > 0:
         evidence_status = "CALIBRATED"
+    else:
+        evidence_status = "EMERGING"
 
     return {
         "horizon_minutes": horizon_minutes,
@@ -646,9 +695,19 @@ def _stats_from_rows(rows, fallback_label: str, horizon_minutes: int) -> dict:
         "median_move_points": median_move,
         "median_favorable_points": median_favorable,
         "median_adverse_points": median_adverse,
-        "after_cost_expectancy": after_cost_expectancy,
-        "holdout_expectancy": holdout_expectancy,
-        "win_rate_interval": _clustered_interval(rows, lambda row: 1 if row.is_win else 0 if row.is_win is False else None),
+        "after_cost_expectancy": None,
+        "holdout_expectancy": None,
+        "option_expectancy_r": after_cost_expectancy,
+        "holdout_option_expectancy_r": holdout_expectancy,
+        "option_scored": len(option_values),
+        "option_excluded": sum(getattr(row, "option_exclusion", None) is not None for row in rows),
+        "holdout_sessions": len(held_out_sessions),
+        "option_pnl_r_interval": _clustered_interval(rows, lambda row: getattr(row, "option_pnl_r", None)),
+        "random_baseline_difference_interval": random_difference,
+        "momentum_baseline_difference_interval": momentum_difference,
+        "random_baseline_samples": sum(getattr(row, "random_baseline_pnl_r", None) is not None for row in holdout_rows),
+        "momentum_baseline_samples": sum(getattr(row, "momentum_baseline_pnl_r", None) is not None for row in holdout_rows),
+        "win_rate_interval": _clustered_interval(rows, lambda row: 1 if row.is_win else 0 if row.is_win is False or row.label_version == 2 else None),
         "target_first_rate": sum(1 for row in rows if row.target_first) / sample_size,
         "invalidation_first_rate": sum(1 for row in rows if row.invalidation_first) / sample_size,
         "sample_label": fallback_label,

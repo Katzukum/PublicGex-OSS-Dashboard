@@ -101,6 +101,78 @@ class RawOptionGreek(Base):
     )
 
 
+class GexTermSnapshot(Base):
+    """Observational expiration totals; never changes legacy 0DTE snapshots."""
+
+    __tablename__ = "gex_term_snapshots"
+    id = Column(Integer, primary_key=True)
+    snapshot_id = Column(Integer, ForeignKey("gex_snapshots.id"), nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    captured_at = Column(DateTime, nullable=False, index=True)
+    expiration_date = Column(Date, nullable=True)
+    is_combined = Column(Boolean, default=False, nullable=False)
+    call_gex = Column(Float)
+    put_gex = Column(Float)
+    net_gex = Column(Float)
+    atm_straddle = Column(Float, nullable=True)
+    contract_count = Column(Integer, default=0)
+
+
+class GexTermContract(Base):
+    __tablename__ = "gex_term_contracts"
+    id = Column(Integer, primary_key=True)
+    term_snapshot_id = Column(Integer, ForeignKey("gex_term_snapshots.id"), nullable=False, index=True)
+    osi_symbol = Column(String, nullable=False, index=True)
+    strike_price = Column(Float, nullable=False)
+    option_type = Column(String, nullable=False)
+    gex_value = Column(Float, nullable=False)
+    open_interest = Column(Integer)
+    volume = Column(Integer)
+    delta = Column(Float)
+    bid = Column(Float)
+    ask = Column(Float)
+    last_price = Column(Float)
+
+
+class OiDaily(Base):
+    __tablename__ = "oi_daily"
+    id = Column(Integer, primary_key=True)
+    session_date = Column(Date, nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    osi_symbol = Column(String, nullable=False, index=True)
+    strike_price = Column(Float)
+    option_type = Column(String)
+    open_interest = Column(Integer)
+    volume = Column(Integer)
+    captured_at = Column(DateTime)
+    __table_args__ = (UniqueConstraint("session_date", "osi_symbol", name="uq_oi_daily_contract"),)
+
+
+class EstimatedFlowPoll(Base):
+    __tablename__ = "estimated_flow_polls"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False, index=True)
+    session_date = Column(Date, nullable=False, index=True)
+    captured_at = Column(DateTime, nullable=False, index=True)
+    estimated_flow = Column(Float, nullable=True)
+    classified_volume = Column(Integer, default=0)
+    observed_volume = Column(Integer, default=0)
+    coverage = Column(Float, nullable=True)
+    label = Column(String, default="estimated flow, low confidence")
+
+
+class IndexMinuteBar(Base):
+    __tablename__ = "index_minute_bars"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    spot_price = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    volume = Column(Float, nullable=True)
+    __table_args__ = (UniqueConstraint("symbol", "timestamp", name="uq_index_minute_bar"),)
+
+
 class SignalEvent(Base):
     """One emitted dashboard/NinjaTrader signal payload for one symbol."""
 
@@ -173,6 +245,12 @@ class SignalOutcome(Base):
     r_multiple = Column(Float, nullable=True)
     path_resolution_seconds = Column(Float, nullable=True)
     pin_held = Column(Boolean, nullable=True)
+    option_pnl = Column(Float, nullable=True)
+    option_pnl_r = Column(Float, nullable=True)
+    option_exclusion = Column(String, nullable=True)
+    option_exit_at = Column(DateTime, nullable=True)
+    random_baseline_pnl_r = Column(Float, nullable=True)
+    momentum_baseline_pnl_r = Column(Float, nullable=True)
 
     signal = relationship("SignalEvent", back_populates="outcomes")
 

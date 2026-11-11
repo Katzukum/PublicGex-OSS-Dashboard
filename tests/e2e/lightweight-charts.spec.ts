@@ -51,7 +51,7 @@ test('native chart families render their data and TRACE retains wall-clock times
   const evidence = page.locator('[data-view-panel="edge"]');
   await renderedChart(
     evidence.getByRole('img', {
-      name: 'Distribution of after-cost opportunity results',
+    name: 'Distribution of option profit and loss divided by maximum risk',
       exact: true,
     }),
   );

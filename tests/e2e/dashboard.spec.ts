@@ -31,6 +31,10 @@ test('all seven views render real analytics with Lightweight Charts and no runti
   await expect(
     page.getByRole('heading', { name: 'Manual execution journal', exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Underlying R' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Option P&L' })).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Random R' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Probability calibration' })).toBeVisible();
   await view(page, 'Regime');
   await expect(page.getByRole('heading', { name: 'Traders', exact: true })).toBeVisible();
   await renderedChart(visibleChart(page));

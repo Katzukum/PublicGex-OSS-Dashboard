@@ -33,6 +33,11 @@ DEFAULT_SETTINGS = {
     "symbols": DEFAULT_SYMBOLS,
     "api_rate_limit_per_second": 10.0,
     "api_rate_limit_utilization": 0.6,
+    "expirations_ahead": 4,
+    "multi_expiration_enabled": False,
+    "estimated_flow_enabled": False,
+    "index_minute_bars_enabled": False,
+    "chain_fields_confirmed": False,
     "min_poll_interval_seconds": 15,
     "max_poll_interval_seconds": 120,
     "raw_retention_days": 30,
@@ -145,6 +150,18 @@ def validate_settings(settings: dict) -> dict:
     if utilization > 1:
         raise ValueError("api_rate_limit_utilization must be between 0.1 and 1")
     result["api_rate_limit_utilization"] = utilization
+    ahead = _number(result["expirations_ahead"], "expirations_ahead")
+    if not ahead.is_integer() or ahead > 12:
+        raise ValueError("expirations_ahead must be a whole number from 0 to 12")
+    result["expirations_ahead"] = int(ahead)
+    if not isinstance(result["multi_expiration_enabled"], bool):
+        raise ValueError("multi_expiration_enabled must be a boolean")
+    if not isinstance(result["estimated_flow_enabled"], bool):
+        raise ValueError("estimated_flow_enabled must be a boolean")
+    if not isinstance(result["index_minute_bars_enabled"], bool):
+        raise ValueError("index_minute_bars_enabled must be a boolean")
+    if not isinstance(result["chain_fields_confirmed"], bool):
+        raise ValueError("chain_fields_confirmed must be a boolean")
     if result["max_poll_interval_seconds"] < result["min_poll_interval_seconds"]:
         raise ValueError("Maximum poll seconds must be at least minimum poll seconds")
     result["maximum_risk_dollars"] = _number(result["maximum_risk_dollars"], "maximum_risk_dollars", strict=True)

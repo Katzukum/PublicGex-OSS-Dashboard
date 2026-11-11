@@ -529,16 +529,22 @@ export default function EdgeLab({
           />
           <Metric label="Unique sessions" value={number(data?.stats.unique_days, 0)} />
           <Metric
-            label="After-cost expectancy"
-            value={number(data?.stats.after_cost_expectancy)}
-            detail="points per opportunity"
+            label="Option expectancy"
+            value={number(data?.stats.option_expectancy_r)}
+            detail="P&L / maximum risk; scored quotes only"
           />
           <Metric
             label="Holdout expectancy"
-            value={number(data?.stats.holdout_expectancy)}
-            detail="walk-forward tail"
+            value={number(data?.stats.holdout_option_expectancy_r)}
+            detail={`${data?.stats.holdout_sessions ?? 0} held-out sessions`}
           />
         </div>
+        <p className="source-note">
+          Option outcomes scored: {data?.stats.option_scored ?? 0}; excluded for missing quotes or structure: {data?.stats.option_excluded ?? 0}.
+          Held-out difference versus random baseline: {number(data?.stats.random_baseline_difference_interval?.[0])} to {number(data?.stats.random_baseline_difference_interval?.[1])} R
+          ({data?.stats.random_baseline_samples ?? 0} matched). Versus momentum: {number(data?.stats.momentum_baseline_difference_interval?.[0])} to {number(data?.stats.momentum_baseline_difference_interval?.[1])} R
+          ({data?.stats.momentum_baseline_samples ?? 0} matched).
+        </p>
         <div className="evidence-detail-grid">
           <Metric
             label="Win rate"
@@ -569,7 +575,7 @@ export default function EdgeLab({
         </p>
       </Panel>
       <div className="two-col">
-        <Panel title="Outcome distribution" eyebrow="After transaction-cost estimate">
+        <Panel title="Outcome distribution" eyebrow="Option P&L / maximum risk">
           {data?.expectancy_distribution.length ? (
             <DistributionChart theme={theme} values={data.expectancy_distribution} />
           ) : (
@@ -604,6 +610,23 @@ export default function EdgeLab({
           )}
         </Panel>
       </div>
+      <Panel title="Probability calibration" eyebrow="Ten reliability bins, completed version-2 opportunities">
+        <div className="table-scroll compact-table">
+          <table>
+            <thead><tr><th>Forecast bin</th><th>Count</th><th>Observed target rate</th></tr></thead>
+            <tbody>
+              {data?.reliability_bins?.map((bin) => (
+                <tr key={bin.lower}>
+                  <td>{percent(bin.lower)}–{percent(bin.upper)}</td>
+                  <td>{bin.count}</td>
+                  <td>{percent(bin.observed_rate)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!data?.calibration?.length && <p className="source-note">No approved, scored probabilities yet.</p>}
+      </Panel>
       <Panel title="Independent opportunities" eyebrow={`${horizon}-minute outcomes`}>
         <div className="table-scroll compact-table">
           <table>
@@ -613,7 +636,11 @@ export default function EdgeLab({
                 <th>Scenario</th>
                 <th>Regime / liquidity</th>
                 <th>Outcome</th>
-                <th>After cost</th>
+                <th>Underlying R</th>
+                <th>Option P&L</th>
+                <th>Option R</th>
+                <th>Random R</th>
+                <th>Momentum R</th>
                 <th>MFE</th>
                 <th>MAE</th>
               </tr>
@@ -637,13 +664,11 @@ export default function EdgeLab({
                   <td>
                     <Badge>{pretty(row.outcome)}</Badge>
                   </td>
-                  <td
-                    className={
-                      (row.after_cost_points ?? 0) >= 0 ? 'positive-text' : 'negative-text'
-                    }
-                  >
-                    {number(row.after_cost_points)}
-                  </td>
+                  <td>{number(row.r_multiple)}</td>
+                  <td>{row.option_exclusion ? `Excluded: ${row.option_exclusion}` : number(row.option_pnl)}</td>
+                  <td>{number(row.option_pnl_r)}</td>
+                  <td>{number(row.random_baseline_pnl_r)}</td>
+                  <td>{number(row.momentum_baseline_pnl_r)}</td>
                   <td>{number(row.mfe)}</td>
                   <td>{number(row.mae)}</td>
                 </tr>

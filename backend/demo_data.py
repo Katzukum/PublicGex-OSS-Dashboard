@@ -25,6 +25,12 @@ def _upgrade_synthetic_evidence(session):
             risk = abs(float(event.spot_price) - float(event.invalidation)) if event.spot_price is not None and event.invalidation is not None else 0
             outcome.r_multiple = ((float(event.target) - float(event.spot_price)) * (1 if event.bias == "CALL" else -1) / risk) if outcome.target_first and risk else -1.0 if outcome.invalidation_first else None
             outcome.path_resolution_seconds = 60
+            if outcome.option_pnl is None:
+                outcome.option_pnl = 60.0 if outcome.is_win else -35.0
+                outcome.option_pnl_r = 0.6 if outcome.is_win else -0.35
+                outcome.random_baseline_pnl_r = 0.1 if outcome.is_win else -0.2
+                outcome.momentum_baseline_pnl_r = 0.2 if outcome.is_win else -0.25
+                outcome.option_exit_at = outcome.horizon_at
 
 
 def seed_demo(engine):
@@ -140,7 +146,11 @@ def seed_demo(engine):
                         hit_target=win if bias != "WAIT" else False, hit_invalidation=not win if bias != "WAIT" else False,
                         target_first=win if bias != "WAIT" else False, invalidation_first=not win if bias != "WAIT" else False, is_win=win,
                         outcome_label=label, pin_held=win if bias == "WAIT" else None,
-                        r_multiple=None if bias == "WAIT" else 1.5 if win else -1.0, path_resolution_seconds=60))
+                        r_multiple=None if bias == "WAIT" else 1.5 if win else -1.0, path_resolution_seconds=60,
+                        option_pnl=60.0 if win else -35.0, option_pnl_r=0.6 if win else -0.35,
+                        random_baseline_pnl_r=0.1 if win else -0.2,
+                        momentum_baseline_pnl_r=0.2 if win else -0.25,
+                        option_exit_at=timestamp+timedelta(minutes=horizon)))
         session.add(TradeJournalEntry(created_at=now, updated_at=now, symbol="SPX", session_date=now.date(),
             scenario_type="UPSIDE_EXPANSION", regime="SYNTHETIC DEMO", event_tags_json='["SYNTHETIC_DEMO"]',
             liquidity_grade="A", contracts=1, entry_price=1.2, exit_price=1.7, entry_time=now-timedelta(minutes=45),

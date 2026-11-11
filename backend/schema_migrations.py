@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 10
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -173,12 +173,72 @@ def _migration_5_pin_bands(connection: sqlite3.Connection) -> None:
     })
 
 
+def _migration_6_option_evidence(connection: sqlite3.Connection) -> None:
+    _add_columns(connection, "signal_outcomes", {
+        "option_pnl": "REAL", "option_pnl_r": "REAL",
+        "option_exclusion": "TEXT", "option_exit_at": "DATETIME",
+    })
+
+
+def _migration_7_term_book(connection: sqlite3.Connection) -> None:
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS gex_term_snapshots (
+            id INTEGER PRIMARY KEY, snapshot_id INTEGER NOT NULL, symbol TEXT NOT NULL,
+            captured_at DATETIME NOT NULL, expiration_date DATE, is_combined BOOLEAN NOT NULL DEFAULT 0,
+            call_gex REAL, put_gex REAL, net_gex REAL, atm_straddle REAL, contract_count INTEGER DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS idx_term_snapshot ON gex_term_snapshots(snapshot_id, expiration_date);
+        CREATE TABLE IF NOT EXISTS gex_term_contracts (
+            id INTEGER PRIMARY KEY, term_snapshot_id INTEGER NOT NULL, osi_symbol TEXT NOT NULL,
+            strike_price REAL NOT NULL, option_type TEXT NOT NULL, gex_value REAL NOT NULL,
+            open_interest INTEGER, volume INTEGER, delta REAL, bid REAL, ask REAL, last_price REAL);
+        CREATE INDEX IF NOT EXISTS idx_term_contract ON gex_term_contracts(term_snapshot_id, strike_price);
+        CREATE TABLE IF NOT EXISTS oi_daily (
+            id INTEGER PRIMARY KEY, session_date DATE NOT NULL, symbol TEXT NOT NULL,
+            osi_symbol TEXT NOT NULL, strike_price REAL, option_type TEXT, open_interest INTEGER,
+            volume INTEGER, captured_at DATETIME,
+            CONSTRAINT uq_oi_daily_contract UNIQUE(session_date, osi_symbol));
+        CREATE INDEX IF NOT EXISTS idx_oi_daily_symbol_date ON oi_daily(symbol, session_date);
+    """)
+
+
+def _migration_8_option_baselines(connection: sqlite3.Connection) -> None:
+    _add_columns(connection, "signal_outcomes", {
+        "random_baseline_pnl_r": "REAL", "momentum_baseline_pnl_r": "REAL",
+    })
+
+
+def _migration_9_estimated_flow(connection: sqlite3.Connection) -> None:
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS estimated_flow_polls (
+            id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, session_date DATE NOT NULL,
+            captured_at DATETIME NOT NULL, estimated_flow REAL, classified_volume INTEGER DEFAULT 0,
+            observed_volume INTEGER DEFAULT 0, coverage REAL,
+            label TEXT DEFAULT 'estimated flow, low confidence');
+        CREATE INDEX IF NOT EXISTS idx_estimated_flow_session ON estimated_flow_polls(symbol, session_date, captured_at);
+    """)
+
+
+def _migration_10_index_bars(connection: sqlite3.Connection) -> None:
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS index_minute_bars (
+            id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, timestamp DATETIME NOT NULL,
+            spot_price REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, volume REAL,
+            CONSTRAINT uq_index_minute_bar UNIQUE(symbol, timestamp));
+        CREATE INDEX IF NOT EXISTS idx_index_bar_symbol_time ON index_minute_bars(symbol, timestamp);
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, Callable[[sqlite3.Connection], None]], ...] = (
     (1, _migration_1_quotes),
     (2, _migration_2_signal_evidence),
     (3, _migration_3_decision_tables),
     (4, _migration_4_versioned_signal_evidence),
     (5, _migration_5_pin_bands),
+    (6, _migration_6_option_evidence),
+    (7, _migration_7_term_book),
+    (8, _migration_8_option_baselines),
+    (9, _migration_9_estimated_flow),
+    (10, _migration_10_index_bars),
 )
 
 

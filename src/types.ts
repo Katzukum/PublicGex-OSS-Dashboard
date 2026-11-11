@@ -392,6 +392,8 @@ export interface EdgeHorizon {
   evidence_status?: string;
   after_cost_expectancy?: NullableNumber;
   holdout_expectancy?: NullableNumber;
+  option_expectancy_r?: NullableNumber;
+  holdout_option_expectancy_r?: NullableNumber;
   win_rate_interval?: [number, number] | null;
   target_first_rate?: NullableNumber;
   invalidation_first_rate?: NullableNumber;
@@ -412,6 +414,18 @@ export interface Workspace {
   historical_edge?: { symbol?: string; horizons?: EdgeHorizon[]; primary?: EdgeHorizon } | null;
   execution_candidates?: { ideas?: Record<string, Candidate>; error?: string };
   alerts?: BackendEvent[];
+  term_book?: {
+    status: string;
+    decision_source?: string;
+    zero_to_next_straddle_ratio?: NullableNumber;
+    zero_day_levels?: { zero_gamma?: NullableNumber; call_wall?: NullableNumber; put_wall?: NullableNumber; pin_strike?: NullableNumber };
+    combined_levels?: { zero_gamma?: NullableNumber; call_wall?: NullableNumber; put_wall?: NullableNumber; pin_strike?: NullableNumber };
+    merged_index_etf_strikes?: { strike_price: number; gex_value: number }[] | null;
+    merged_etf_symbol?: string | null;
+    expirations?: Record<string, { net_gex?: NullableNumber; atm_straddle?: NullableNumber; contracts?: number }>;
+    oi_change_estimate_by_strike?: Record<string, { change: number; contracts: number; prior_volume: number }>;
+    estimated_flow?: { label: string; estimated_flow?: NullableNumber; coverage?: NullableNumber; classified_volume?: number; observed_volume?: number };
+  };
 }
 export interface Overview {
   compass_traders?: Compass;
@@ -496,6 +510,15 @@ export interface EdgeData {
     unique_days?: number;
     after_cost_expectancy?: NullableNumber;
     holdout_expectancy?: NullableNumber;
+    option_expectancy_r?: NullableNumber;
+    holdout_option_expectancy_r?: NullableNumber;
+    option_scored?: number;
+    option_excluded?: number;
+    holdout_sessions?: number;
+    random_baseline_difference_interval?: [number, number] | null;
+    momentum_baseline_difference_interval?: [number, number] | null;
+    random_baseline_samples?: number;
+    momentum_baseline_samples?: number;
     win_rate?: NullableNumber;
   };
   warning?: string | null;
@@ -511,10 +534,17 @@ export interface EdgeData {
     liquidity_grade?: string | null;
     outcome: string;
     after_cost_points?: NullableNumber;
+    option_pnl?: NullableNumber;
+    option_pnl_r?: NullableNumber;
+    option_exclusion?: string | null;
+    random_baseline_pnl_r?: NullableNumber;
+    momentum_baseline_pnl_r?: NullableNumber;
+    r_multiple?: NullableNumber;
     mfe?: NullableNumber;
     mae?: NullableNumber;
   }[];
   calibration?: { forecast: number; outcome: number }[];
+  reliability_bins?: { lower: number; upper: number; count: number; observed_rate: NullableNumber }[];
 }
 export interface JournalInput {
   symbol: string;

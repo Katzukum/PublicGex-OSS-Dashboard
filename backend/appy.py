@@ -688,8 +688,16 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
         "dashboard": dashboard,
         "compatibility": {"version_1_aliases": True, "removal_after": "one verified release"},
     }
-    from decision_alerts import evaluate_workspace_alerts, recent_alerts
+    from term_book import term_view
+    from levels import build_levels
     from models import get_session_factory
+    Session = get_session_factory(engine)
+    with Session() as session:
+        zero_levels = build_levels(snapshot, dashboard.get("profile", []),
+                                   dashboard.get("gamma_sweep"), market_context.get("implied_move"))
+        workspace["term_book"] = term_view(session, snapshot["id"], symbol,
+                                            float(snapshot.get("spot_price") or 0), zero_levels)
+    from decision_alerts import evaluate_workspace_alerts, recent_alerts
 
     Session = get_session_factory(engine)
     with Session.begin() as session:

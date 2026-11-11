@@ -214,7 +214,7 @@ export function DistributionChart({ values, theme }: { values: number[]; theme: 
         tooltip: (event) => {
           const bin = bins.find((item) => item.center === event.time);
           return bin
-            ? [`${number(bin.low)} to ${number(bin.high)} points`, `${bin.count} opportunities`]
+            ? [`${number(bin.low)} to ${number(bin.high)} R`, `${bin.count} opportunities`]
             : [];
         },
       };
@@ -224,11 +224,11 @@ export function DistributionChart({ values, theme }: { values: number[]; theme: 
   return (
     <LightweightChart
       theme={theme}
-      label="Distribution of after-cost opportunity results"
+      label="Distribution of option profit and loss divided by maximum risk"
       height={300}
       build={build}
       legend={false}
-      xTitle="After-cost points"
+      xTitle="Option P&L / maximum risk"
       yTitle="Independent opportunities"
     />
   );

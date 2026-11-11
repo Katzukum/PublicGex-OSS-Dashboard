@@ -23,6 +23,42 @@ from typing import Any, Callable, Iterable
 
 
 METHODS = ("oi_concentration", "recent_activity", "abs_net_oi_proxy", "nearest_strike")
+TERM_DISTANCE_BUCKET_PCT = 0.25
+
+
+def validate_term_level_sources(records: list[dict]) -> dict:
+    """Matched-distance, chronological session holdout for observational level sources.
+
+    Each record contains session_date, source, distance_pct and touched. A source
+    cannot enter decisions until its held-out touch rate meets the 0DTE control.
+    """
+    sessions = sorted({str(row["session_date"]) for row in records})
+    held_out = set(sessions[max(1, int(len(sessions) * .8)):])
+    buckets = defaultdict(lambda: defaultdict(list))
+    for row in records:
+        if str(row["session_date"]) not in held_out:
+            continue
+        distance = _finite(row.get("distance_pct"))
+        if distance is None or distance < 0:
+            continue
+        bucket = int(distance / TERM_DISTANCE_BUCKET_PCT)
+        buckets[(str(row["session_date"]), bucket)][str(row["source"])].append(bool(row["touched"]))
+    report = {"holdout_sessions": len(held_out), "sources": {}}
+    for source in ("combined_expirations", "merged_index_etf"):
+        control = []
+        candidate = []
+        for group in buckets.values():
+            if "0dte" in group and source in group:
+                control.extend(group["0dte"])
+                candidate.extend(group[source])
+        baseline_rate = sum(control) / len(control) if control else None
+        candidate_rate = sum(candidate) / len(candidate) if candidate else None
+        report["sources"][source] = {
+            "matched_control_levels": len(control), "matched_candidate_levels": len(candidate),
+            "zero_day_touch_rate": baseline_rate, "candidate_touch_rate": candidate_rate,
+            "may_feed_v2": bool(control and candidate and candidate_rate >= baseline_rate),
+        }
+    return report
 DISTANCE_BUCKETS = ((0.0, 0.25), (0.25, 0.5), (0.5, 1.0))
 RESEARCH_FAMILIES = (
     "envelope_touch", "pressure_direction", "pressure_divergence", "exhaustion_reversal",

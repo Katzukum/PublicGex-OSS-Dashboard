@@ -22,6 +22,17 @@ def _time_bucket(value) -> str:
     return "close"
 
 
+def _reliability_bins(calibration: list[dict]) -> list[dict]:
+    bins = []
+    for index in range(10):
+        members = [item["outcome"] for item in calibration
+                   if min(9, int(item["forecast"] * 10)) == index]
+        bins.append({"lower": index / 10, "upper": (index + 1) / 10,
+                     "count": len(members),
+                     "observed_rate": sum(members) / len(members) if members else None})
+    return bins
+
+
 def query_edge_lab(session, filters: dict | None = None) -> dict:
     filters = filters or {}
     symbol = str(filters.get("symbol") or "SPX").upper()
@@ -61,11 +72,11 @@ def query_edge_lab(session, filters: dict | None = None) -> dict:
     for row in independent:
         event = row.signal
         directional = row.directional_move_points if row.directional_move_points is not None else row.move_points
-        after_cost = directional - 0.10 if directional is not None else None
-        if after_cost is not None:
-            distribution.append(after_cost)
+        option_pnl_r = row.option_pnl_r
+        if option_pnl_r is not None:
+            distribution.append(option_pnl_r)
         breakdown[row.outcome_label if row.outcome_label in breakdown else "against"] += 1
-        if event.edge_probability is not None and row.is_win is not None:
+        if event.edge_probability is not None and (row.is_win is not None or row.label_version == 2):
             calibration.append({"forecast": event.edge_probability, "outcome": 1 if row.is_win else 0})
         opportunities.append(
             {
@@ -81,7 +92,13 @@ def query_edge_lab(session, filters: dict | None = None) -> dict:
                 "r_multiple": row.r_multiple,
                 "path_resolution_seconds": row.path_resolution_seconds,
                 "pin_held": row.pin_held,
-                "after_cost_points": after_cost,
+                "after_cost_points": None,
+                "option_pnl": row.option_pnl,
+                "option_pnl_r": option_pnl_r,
+                "option_exclusion": row.option_exclusion,
+                "random_baseline_pnl_r": row.random_baseline_pnl_r,
+                "momentum_baseline_pnl_r": row.momentum_baseline_pnl_r,
+                "underlying_move_points": directional,
                 "mfe": row.max_favorable_points,
                 "mae": row.max_adverse_points,
             }
@@ -95,6 +112,7 @@ def query_edge_lab(session, filters: dict | None = None) -> dict:
         "status": stats["evidence_status"],
         "stats": stats,
         "calibration": calibration,
+        "reliability_bins": _reliability_bins(calibration),
         "expectancy_distribution": distribution,
         "outcome_breakdown": breakdown,
         "opportunities": opportunities,

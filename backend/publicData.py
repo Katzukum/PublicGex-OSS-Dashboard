@@ -228,7 +228,7 @@ def load_runtime_config() -> dict:
         "symbols": [str(s).upper() for s in settings["symbols"]],
         "api_key": (local_env.get("PUBLIC_API_KEY") or "").strip(),
         "account_id": (local_env.get("PUBLIC_ACCOUNT_ID") or "").strip(),
-        "api_rate_limit_per_second": max(0.1, api_rate_limit),
+        "api_rate_limit_per_second": min(5.0, max(0.1, api_rate_limit)),
     }
 
     if not config["api_key"]:
@@ -513,6 +513,127 @@ def get_option_quotes_batch(client, osi_symbols: list[str], account_id: str, rat
     return results
 
 
+def collect_index_minute_bars(client, session, symbol, rate_limiter):
+    """Persist new Public.com one-minute index bars after capability confirmation."""
+    if symbol not in {"SPX", "NDX"}:
+        return 0
+    from public_api_sdk.models.historic_data import BarAggregation, BarPeriod
+    from models import IndexMinuteBar
+    rate_limiter.wait()
+    response = client.get_bars(symbol, BarPeriod.DAY, instrument_type=InstrumentType.INDEX,
+                               aggregation=BarAggregation.ONE_MINUTE)
+    market = get_val(response, ["regular_market", "regularMarket"], {}) or {}
+    bars = get_val(market, ["bars"], []) or []
+    latest = (session.query(func.max(IndexMinuteBar.timestamp))
+              .filter(IndexMinuteBar.symbol == symbol).scalar())
+    fresh = []
+    for bar in bars:
+        raw_time = get_val(bar, ["timestamp"])
+        try:
+            timestamp = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+            if timestamp.tzinfo is not None:
+                timestamp = timestamp.astimezone().replace(tzinfo=None)
+            close = float(get_val(bar, ["close"]))
+            high = float(get_val(bar, ["high"]))
+            low = float(get_val(bar, ["low"]))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if latest is not None and timestamp <= latest:
+            continue
+        if not all(math.isfinite(value) and value > 0 for value in (close, high, low)) or not low <= close <= high:
+            continue
+        fresh.append(IndexMinuteBar(symbol=symbol, timestamp=timestamp,
+                                    spot_price=close, high=high, low=low,
+                                    volume=get_val(bar, ["volume"])))
+    session.bulk_save_objects(fresh)
+    session.commit()
+    return len(fresh)
+
+
+def collect_term_book(client, session, snapshot, zero_day_rows, config, rate_limiter):
+    """Collect optional observational expirations after the legacy snapshot is durable."""
+    from market_context import stored_timestamp_to_eastern
+    from term_book import contract_gex, persist_daily_oi, persist_term, select_expirations
+    from models import GexTermSnapshot
+
+    symbol = snapshot.symbol
+    itype = get_instrument_type(symbol)
+    rate_limiter.wait()
+    listed = extract_all_options(client.get_option_expirations(
+        OptionExpirationsRequest(instrument=OrderInstrument(symbol=symbol, type=itype))))
+    dates = []
+    for item in listed:
+        raw = item if isinstance(item, str) else get_val(item, ["expirationDate", "date", "expiration_date"])
+        try:
+            dates.append(date.fromisoformat(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    selected = select_expirations(dates, stored_timestamp_to_eastern(snapshot.timestamp).date(),
+                                  int(config["settings"]["expirations_ahead"]))
+    zero_day = zero_day_rows[0]["expiration_date"] if zero_day_rows else None
+    all_rows = []
+    for expiration in selected:
+        if expiration == zero_day:
+            source = zero_day_rows
+        else:
+            rate_limiter.wait()
+            chain = extract_all_options(client.get_option_chain(OptionChainRequest(
+                instrument=OrderInstrument(symbol=symbol, type=itype),
+                expiration_date=expiration.isoformat())))
+            parsed = []
+            for option in chain:
+                instrument = get_val(option, ["instrument"])
+                osi = get_val(instrument, ["symbol", "ticker", "osi_symbol"])
+                strike = get_val(instrument, ["strike_price", "strikePrice", "strike"])
+                if osi and strike is not None:
+                    parsed.append((option, float(strike), osi))
+            osi_symbols = [osi for _, _, osi in parsed]
+            chain_complete = config["settings"].get("chain_fields_confirmed", False)
+            greeks = ({} if chain_complete else
+                      get_option_greeks_batch(client, osi_symbols, config["account_id"], rate_limiter))
+            quotes = ({} if chain_complete else
+                      get_option_quotes_batch(client, osi_symbols, config["account_id"], rate_limiter))
+            source = []
+            for option, strike, osi in parsed:
+                instrument = get_val(option, ["instrument"])
+                side = str(get_val(instrument, ["option_type", "optionType"], "")).upper()
+                if side not in {"CALL", "PUT"}:
+                    _, side = parse_osi_from_symbol(osi)
+                if side not in {"CALL", "PUT"}:
+                    continue
+                quote = quotes.get(osi, option)
+                details = get_val(option, ["option_details", "optionDetails"], {})
+                chain_greeks = get_val(details, ["greeks"], {})
+                gamma = get_val(chain_greeks, ["gamma"])
+                if gamma is None:
+                    gamma = greeks.get(osi, {}).get("gamma")
+                oi = get_val(option, ["open_interest", "openInterest"])
+                gex = contract_gex(gamma, oi, snapshot.spot_price, side)
+                if gex is None:
+                    continue
+                source.append({"osi_symbol": osi, "strike_price": strike, "option_type": side,
+                               "gex_value": gex, "open_interest": int(oi),
+                               "volume": get_val(quote, ["volume"]),
+                               "delta": get_val(chain_greeks, ["delta"], greeks.get(osi, {}).get("delta")),
+                               "bid": get_val(quote, ["bid"]), "ask": get_val(quote, ["ask"]),
+                               "last_price": get_val(quote, ["last"])})
+        normalized = [{key: row.get(key) for key in ("osi_symbol", "strike_price", "option_type",
+                      "gex_value", "open_interest", "volume", "delta", "bid", "ask", "last_price")}
+                      for row in source]
+        if not normalized:
+            continue
+        persist_term(session, snapshot, expiration, normalized)
+        persist_daily_oi(session, snapshot, normalized, stored_timestamp_to_eastern(snapshot.timestamp))
+        all_rows.extend(normalized)
+    if all_rows:
+        calls = sum(row["gex_value"] for row in all_rows if row["option_type"] == "CALL")
+        puts = sum(row["gex_value"] for row in all_rows if row["option_type"] == "PUT")
+        session.add(GexTermSnapshot(snapshot_id=snapshot.id, symbol=symbol, captured_at=snapshot.timestamp,
+                                    expiration_date=None, is_combined=True, call_gex=calls, put_gex=puts,
+                                    net_gex=calls + puts, contract_count=len(all_rows)))
+    session.commit()
+
+
 def process_symbol(
     client,
     session: Session,
@@ -598,8 +719,13 @@ def process_symbol(
 
         all_osi = [osi for (_, _, osi) in relevant_options if osi]
         logger.info("Fetching Greeks for %s contracts using batch API...", len(all_osi))
-        greeks_map = get_option_greeks_batch(client, all_osi, config["account_id"], rate_limiter)
-        quotes_map = get_option_quotes_batch(client, all_osi, config["account_id"], rate_limiter)
+        if config.get("settings", {}).get("chain_fields_confirmed", False):
+            greeks_map = {osi: get_val(get_val(opt, ["option_details", "optionDetails"], {}), ["greeks"], {})
+                          for opt, _, osi in relevant_options}
+            quotes_map = {osi: opt for opt, _, osi in relevant_options}
+        else:
+            greeks_map = get_option_greeks_batch(client, all_osi, config["account_id"], rate_limiter)
+            quotes_map = get_option_quotes_batch(client, all_osi, config["account_id"], rate_limiter)
 
         # The snapshot becomes observable only after every quote batch returns.
         # Dating it at request start makes later batches appear to come from
@@ -753,6 +879,19 @@ def process_symbol(
 
         session.bulk_save_objects([RawOptionGreek(snapshot_id=snapshot.id, **row) for row in raw_rows])
         session.commit()
+
+        if target_expiration is None and config.get("settings", {}).get("multi_expiration_enabled"):
+            try:
+                collect_term_book(client, session, snapshot, raw_rows, config, rate_limiter)
+            except Exception:
+                session.rollback()
+                logger.exception("Observational term collection failed for %s", symbol)
+        if target_expiration is None and config.get("settings", {}).get("index_minute_bars_enabled") and symbol in {"SPX", "NDX"}:
+            try:
+                collect_index_minute_bars(client, session, symbol, rate_limiter)
+            except Exception:
+                session.rollback()
+                logger.exception("Minute index bars unavailable for %s; snapshot labels remain the fallback", symbol)
 
         logger.info("Saved %s records for %s. Net GEX: $%s", len(raw_rows), symbol, f"{total_net_gex:,.2f}")
 
@@ -1308,8 +1447,13 @@ def main_once() -> dict:
 
 def run_loop(stop_event=None):
     logger.info("Starting polling collector. Press Ctrl+C to stop.")
+    flow_poller = None
+    flow_client = None
+    flow_config = None
+    flow_limiter = None
     while stop_event is None or not stop_event.is_set():
         result = main_once()
+        settings = DEFAULT_SETTINGS
         try:
             settings = load_settings()
             delay = calculate_poll_delay(
@@ -1325,10 +1469,38 @@ def run_loop(stop_event=None):
             result.get("request_count", 0),
             delay,
         )
-        if stop_event is None:
-            time.sleep(delay)
-        elif stop_event.wait(delay):
-            break
+        if not settings.get("estimated_flow_enabled", False):
+            if stop_event is None:
+                time.sleep(delay)
+            elif stop_event.wait(delay):
+                break
+            continue
+        from estimated_flow import FlowPoller
+        if flow_poller is None:
+            flow_poller = FlowPoller()
+        deadline = time.monotonic() + delay
+        while (remaining := deadline - time.monotonic()) > 0:
+            pause = min(FlowPoller.POLL_SECONDS, remaining)
+            if stop_event is None:
+                time.sleep(pause)
+            elif stop_event.wait(pause):
+                return
+            if deadline - time.monotonic() <= 0:
+                break
+            try:
+                if flow_config is None:
+                    flow_config = load_runtime_config()
+                    flow_client = get_client(flow_config)
+                    flow_limiter = RateLimiter(flow_config["api_rate_limit_per_second"])
+                with collector_lock() as acquired:
+                    if not acquired:
+                        continue
+                    Session = get_session_factory()
+                    with Session() as flow_session:
+                        flow_poller.poll(flow_client, flow_session, flow_config["symbols"],
+                                         flow_config["account_id"], flow_limiter)
+            except Exception as exc:
+                logger.warning("Estimated flow poll unavailable: %s", exc)
 
 
 def parse_args(argv: list[str]):
