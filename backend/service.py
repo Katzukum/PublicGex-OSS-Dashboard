@@ -53,6 +53,10 @@ def main(argv=None):
     sys.stdout = sys.stderr
 
     if args.collector:
+        # Load numerical extensions before the lifetime reader thread starts.
+        # Delayed import during decision logging can stall native DLL loading.
+        import appy  # noqa: F401
+        from publicData import run_loop
         collector_stopped = threading.Event()
 
         def collector_lifetime():
@@ -69,7 +73,6 @@ def main(argv=None):
             os._exit(0)
 
         threading.Thread(target=collector_lifetime, name="collector-owner", daemon=True).start()
-        from publicData import run_loop
         run_loop(stop_event=collector_stopped)
         return
 

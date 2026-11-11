@@ -2,6 +2,15 @@
 
 This checklist tracks the improvement plan against the independent PublicGexDashboard app. The plan's live-data gates are recorded here while offline work continues. The original legacy app, its runtime files, and its credentials remain untouched.
 
+## Market-open run, November 11, 2026
+
+- [x] Rebuild frontend (`npm run build`) and Python sidecar (`npm run build:sidecar`); frozen live and demo sidecar smoke tests pass.
+- [x] Launch the updated live development app with its own ignored `data/` workspace; collector saved all five symbols, recorded vote/v1/v2 signals, and NinjaTrader listened on port 5010.
+- [x] Fix the collector's first-cycle stall by loading the numerical workspace before starting its lifetime thread; verify the next cycle completed and `npm run test:backend` passed (229 tests).
+- [ ] Compile and launch the native desktop executable. `npm run native:check` still fails because `cl.exe` is unavailable; the existing native executable is older than the current source.
+- [ ] Finish the 09:25, 09:35, and noon ET Public.com probe, assess field coverage and HTTP 429 count, and record supported collection flags.
+- [ ] Complete the 30-minute live collector smoke report, including cycle time, rows per snapshot, database growth, and HTTP 429 count.
+
 ## Phase 0: Public.com capabilities
 
 - [x] Add a read-only, rate-limited probe that prints JSON and never opens the app database (`scripts/probe-public-api.py`).
