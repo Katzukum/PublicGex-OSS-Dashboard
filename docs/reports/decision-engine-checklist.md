@@ -51,4 +51,4 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Run offline suites after code changes: `npm run build`, `npm test` (85 passed), `npm run test:e2e` (17 passed), and `npm run test:backend` (229 passed). Repeat after market-hour activation tomorrow.
 - [ ] Run native compilation and smoke checks when desktop behavior changes. `npm run native:check` currently stops because MSVC C++ Build Tools (`cl.exe`) are not installed or discoverable; `vswhere` finds no installation with `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`.
 - [ ] Confirm database, credentials, logs, and collector locks remain isolated from the original app; NinjaTrader schema-v2 keys and port 5010 remain compatible.
-- [ ] Push the decision-engine branch after code checks finish; live market-hour validation remains on this checklist.
+- [x] Push `codex/decision-engine-improvements` after offline code checks. Live market-hour validation remains on this checklist.
