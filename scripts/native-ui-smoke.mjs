@@ -89,6 +89,14 @@ try {
   const settings = await page.evaluate(() =>
     window.__TAURI_INTERNALS__.invoke('backend_request', { method: 'get_settings', args: [] }),
   );
+  expect(settings.decision_engine).toBe('scenario_v2');
+  const workspace = await page.evaluate(() =>
+    window.__TAURI_INTERNALS__.invoke('backend_request', {
+      method: 'get_decision_workspace',
+      args: ['SPX'],
+    }),
+  );
+  expect(workspace.decision_engine).toBe('scenario_v2');
   if (mode === 'demo') {
     expect(runtime.collector.running).toBe(false);
     expect(runtime.ninjatrader.running).toBe(false);

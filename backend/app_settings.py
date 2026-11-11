@@ -28,6 +28,7 @@ DEFAULT_OPTION_RESEARCH = {
     "observation_timezone": "America/New_York",
 }
 DEFAULT_SETTINGS = {
+    "decision_engine": "scenario_v2",
     "refresh_interval": 10,
     "theme": "dark",
     "symbols": DEFAULT_SYMBOLS,
@@ -58,6 +59,7 @@ DEFAULT_SETTINGS = {
 LEGACY_STARTER_SETTINGS = copy.deepcopy(DEFAULT_SETTINGS)
 LEGACY_STARTER_SETTINGS.update({"symbols": ["SPY"], "weights": {"SPY": 1.0}})
 LEGACY_STARTER_SETTINGS.pop("weights_index_basket")
+LEGACY_STARTER_SETTINGS.pop("decision_engine")
 for _startup_setting in ("auto_start_collector", "auto_start_ninjatrader", "ninjatrader_port"):
     LEGACY_STARTER_SETTINGS.pop(_startup_setting)
 PREFERENCES_NAME = ".publicgex-settings.json"
@@ -172,6 +174,8 @@ def validate_settings(settings: dict) -> dict:
     result["weights_whale"] = copy.deepcopy(basket)
     if result["theme"] not in {"dark", "light"}:
         raise ValueError("theme must be dark or light")
+    if result["decision_engine"] not in {"scenario_v1", "scenario_v2"}:
+        raise ValueError("decision_engine must be scenario_v1 or scenario_v2")
     for name in ("auto_start_collector", "auto_start_ninjatrader"):
         if not isinstance(result[name], bool):
             raise ValueError(f"{name} must be a boolean")

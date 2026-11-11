@@ -76,19 +76,20 @@ def evaluate_workspace_alerts(session, workspace: dict, now: datetime | None = N
         .first()
     )
     emitted = []
-    alert = emit_transition_alert(
-        session,
-        symbol=symbol,
-        alert_type="scenario",
-        state_from=previous.state_to if previous else None,
-        state_to=scenario_type,
-        scenario_id=scenario_id,
-        message=f"{symbol} scenario changed to {scenario_type}",
-        payload={"eligibility": workspace.get("eligibility")},
-        now=now,
-    )
-    if alert:
-        emitted.append(alert)
+    if previous is None or previous.state_to != scenario_type:
+        alert = emit_transition_alert(
+            session,
+            symbol=symbol,
+            alert_type="scenario",
+            state_from=previous.state_to if previous else None,
+            state_to=scenario_type,
+            scenario_id=scenario_id,
+            message=f"{symbol} scenario changed to {scenario_type}",
+            payload={"eligibility": workspace.get("eligibility")},
+            now=now,
+        )
+        if alert:
+            emitted.append(alert)
     event_state = workspace.get("market_context", {}).get("event_risk", {}).get("state")
     if event_state in {"CAUTION", "BLOCKED"}:
         alert = emit_transition_alert(

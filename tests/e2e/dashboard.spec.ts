@@ -118,6 +118,8 @@ test('settings survive reload and compact desktop layout stays within viewport',
 }) => {
   await open(page);
   await view(page, 'Settings');
+  await expect(page.getByLabel('Decision engine', { exact: true })).toHaveValue('scenario_v2');
+  await page.getByLabel('Decision engine', { exact: true }).selectOption('scenario_v1');
   await page.getByLabel('Appearance', { exact: true }).selectOption('light');
   await page.getByLabel('UI refresh interval (seconds)', { exact: true }).fill('18');
   await page.getByRole('button', { name: 'Save settings', exact: true }).click();
@@ -125,13 +127,16 @@ test('settings survive reload and compact desktop layout stays within viewport',
   await page.reload();
   await expect(page.getByTestId('demo-banner')).toBeVisible();
   await view(page, 'Settings');
+  await expect(page.getByLabel('Decision engine', { exact: true })).toHaveValue('scenario_v1');
   await expect(page.getByLabel('Appearance', { exact: true })).toHaveValue('light');
   await expect(page.getByLabel('UI refresh interval (seconds)', { exact: true })).toHaveValue('18');
   await page.getByLabel('Appearance', { exact: true }).selectOption('dark');
+  await page.getByLabel('Decision engine', { exact: true }).selectOption('scenario_v2');
   await page.getByLabel('UI refresh interval (seconds)', { exact: true }).fill('10');
   await page.getByRole('button', { name: 'Save settings', exact: true }).click();
   await expect(page.getByText('Settings saved.', { exact: true })).toBeVisible();
   await view(page, 'Cockpit');
+  await expect(page.getByText('Scenario v2 · snapshot-consistent decision')).toBeVisible();
   await page.setViewportSize({ width: 1024, height: 768 });
   await expect
     .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1))

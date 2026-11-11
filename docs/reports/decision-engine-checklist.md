@@ -26,16 +26,17 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Label target first, invalidation first, timeout, and pin held; preserve legacy outcomes.
 - [x] Record snapshot-path resolution, session date in Eastern Time, and scenario event tags.
 - [x] Add the gated Public.com index-minute-bar collector and bar-path labeler, with invalidation winning an ambiguous bar; snapshot paths remain the fallback until check 0.3 passes.
-- [ ] Verify demo, migration, Cockpit snapshot, NinjaTrader key superset, and backend suite; write `docs/reports/phase-1.md`.
+- [x] Verify demo, migration, version-1 scenario compatibility, NinjaTrader key superset, and backend suite; see `docs/reports/phase-1.md` for the exact source identity and functional selector comparison used in place of a screenshot fixture.
 
-## Phase 2: Shadow scenario engine
+## Phase 2: Scenario engine selection
 
 - [x] Add structural levels and scenario-v2 logic in shadow collection without changing the displayed version-1 decision.
 - [x] Add fixture, property, and modeled-zero fallback checks.
 - [x] Add a read-only replay for scenario-v1 and scenario-v2 over stored snapshots.
 - [x] Replay every snapshot and write the Gate 2 assessment in `docs/reports/phase-2.md`: 34,384 valid of 34,385 stored, one malformed timestamp, zero replay errors. All five symbol means exceed the planned 1–15 eligible state transitions per session.
 - [x] Investigate the failed frequency measure and correct the 15-minute volatility window. The full replay now reports level transitions, contiguous scenario episodes, and independent 30-minute opportunities separately, with zero processing errors.
-- [ ] Resolve excess contiguous v2 episodes for IWM, QQQ, SPX, and SPY on a fresh evaluation split and review the report before any Cockpit or broadcaster switch. Version 2 remains shadow-only; no thresholds were tuned to fit the result.
+- [x] Record the user's November 11 waiver of the Gate 2 frequency limit. Version 2 is the default selected engine in the Cockpit and existing NinjaTrader dashboard decision fields; version 1 remains selectable. Both engines remain separately recorded, and the failed frequency result remains in the report.
+- [ ] Assess excess contiguous v2 episodes for IWM, QQQ, SPX, and SPY on a fresh evaluation split. No thresholds were tuned to fit the replay.
 
 ## Phase 3: Public.com data expansion
 
@@ -66,3 +67,4 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Push `codex/decision-engine-improvements` after offline code checks. Live market-hour validation remains on this checklist.
 - [x] Build version 0.1.5 after the 15-minute volatility correction; packaged demo/live UI and frozen backend smoke checks pass, along with four Rust lifecycle tests. Frontend, browser, and Python suites pass (85, 17, and 236 tests).
 - [x] Launch the rebuilt native 0.1.5 executable against this app's isolated desktop data. Its backend owns port 5010; the first observed collector cycle saved all five configured symbols successfully.
+- [x] Build and launch version 0.1.6 with v2 selected by default. The native live and demo workspaces report v2; the existing NinjaTrader schema-v2 key set is preserved. Frontend, browser, Python, Rust, frozen-backend, and packaged UI checks pass (85, 17, 243, and 4 tests). The live backend owns port 5010 and completed a five-symbol cycle.

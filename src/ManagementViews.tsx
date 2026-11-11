@@ -404,6 +404,20 @@ export function SettingsView({
               mode keeps both integrations off.
             </p>
             <div className="form-grid">
+              <Field
+                label="Decision engine"
+                hint="Scenario v2 is the approved default; v1 remains available for comparison"
+              >
+                <select
+                  value={draft.decision_engine ?? 'scenario_v2'}
+                  onChange={(e) =>
+                    update('decision_engine', e.target.value as Settings['decision_engine'])
+                  }
+                >
+                  <option value="scenario_v2">Scenario v2</option>
+                  <option value="scenario_v1">Scenario v1</option>
+                </select>
+              </Field>
               <Field label="Instruments" hint="Comma-separated tickers">
                 <input value={symbols} required onChange={(e) => setSymbols(e.target.value)} />
               </Field>

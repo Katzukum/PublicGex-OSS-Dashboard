@@ -1045,7 +1045,6 @@ def record_collector_decisions(db_engine, symbols: list[str]) -> int:
     import appy
     from ninjatrader_broadcaster import build_regime_payload
     from signal_performance import label_due_outcomes, record_scenario_workspace
-    from scenario_engine_v2 import build_scenario_workspace_v2
 
     previous_engine = appy.engine
     previous_schema = appy.DB_SCHEMA_CURRENT
@@ -1057,22 +1056,23 @@ def record_collector_decisions(db_engine, symbols: list[str]) -> int:
         appy._clear_overview_cache()
         overview = appy.get_market_overview()
         workspaces = [appy.get_decision_workspace(symbol) for symbol in symbols]
-        shadow_workspaces = []
+        v1_workspaces = []
+        v2_workspaces = []
         for workspace in workspaces:
             dashboard = workspace.get("dashboard") or {}
             snapshot = dashboard.get("snapshot")
             if not snapshot:
                 continue
-            shadow_workspaces.append(build_scenario_workspace_v2(
-                snapshot, dashboard.get("profile") or [], workspace.get("market_context") or {},
-                workspace.get("data_quality") or {}, gamma_sweep=dashboard.get("gamma_sweep"),
-                spot_history=dashboard.get("history") or [],
-            ))
+            versions = workspace["scenario_versions"]
+            v1_workspaces.append({**workspace, **versions["scenario_v1"], "decision_engine": "scenario_v1"})
+            v2_workspaces.append({**workspace, **versions["scenario_v2"], "dashboard": dashboard,
+                                  "decision_engine": "scenario_v2"})
         SessionLocal = get_session_factory(db_engine)
         with SessionLocal.begin() as evidence_session:
-            build_regime_payload(overview, session=evidence_session)
-            created = sum(record_scenario_workspace(workspace, session=evidence_session) for workspace in workspaces)
-            created += sum(record_scenario_workspace(workspace, session=evidence_session, engine="scenario_v2") for workspace in shadow_workspaces)
+            selected = {workspace["symbol"]: workspace for workspace in workspaces if not workspace.get("error")}
+            build_regime_payload(overview, session=evidence_session, decision_workspaces=selected)
+            created = sum(record_scenario_workspace(workspace, session=evidence_session, engine="scenario_v1") for workspace in v1_workspaces)
+            created += sum(record_scenario_workspace(workspace, session=evidence_session, engine="scenario_v2") for workspace in v2_workspaces)
             label_due_outcomes(session=evidence_session)
         return created
     finally:

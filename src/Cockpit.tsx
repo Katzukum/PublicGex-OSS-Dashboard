@@ -351,27 +351,81 @@ export default function Cockpit({
       <Panel title="Term book" eyebrow="Observational Public.com positioning estimates">
         {workspace.term_book?.status === 'observational' ? (
           <>
-            <label className="source-note" htmlFor="term-source">Level view</label>
-            <select id="term-source" value={termSource} onChange={(event) => setTermSource(event.target.value as 'zero' | 'combined' | 'merged')}>
+            <label className="source-note" htmlFor="term-source">
+              Level view
+            </label>
+            <select
+              id="term-source"
+              value={termSource}
+              onChange={(event) =>
+                setTermSource(event.target.value as 'zero' | 'combined' | 'merged')
+              }
+            >
               <option value="zero">0DTE</option>
               <option value="combined">All collected expirations</option>
-              {workspace.term_book.merged_index_etf_strikes && <option value="merged">Index + {workspace.term_book.merged_etf_symbol}</option>}
+              {workspace.term_book.merged_index_etf_strikes && (
+                <option value="merged">Index + {workspace.term_book.merged_etf_symbol}</option>
+              )}
             </select>
             {termSource === 'merged' ? (
-              <p className="source-note">Mapped strike buckets: {workspace.term_book.merged_index_etf_strikes?.length ?? 0}. Dollar GEX is conserved. Dealer direction is unknown.</p>
+              <p className="source-note">
+                Mapped strike buckets: {workspace.term_book.merged_index_etf_strikes?.length ?? 0}.
+                Dollar GEX is conserved. Dealer direction is unknown.
+              </p>
             ) : (
               <div className="mini-metrics">
-                <Metric label="Zero gamma" value={number((termSource === 'zero' ? workspace.term_book.zero_day_levels : workspace.term_book.combined_levels)?.zero_gamma)} />
-                <Metric label="Call wall" value={number((termSource === 'zero' ? workspace.term_book.zero_day_levels : workspace.term_book.combined_levels)?.call_wall)} />
-                <Metric label="Put wall" value={number((termSource === 'zero' ? workspace.term_book.zero_day_levels : workspace.term_book.combined_levels)?.put_wall)} />
-                <Metric label="0DTE pin" value={number(workspace.term_book.zero_day_levels?.pin_strike)} />
+                <Metric
+                  label="Zero gamma"
+                  value={number(
+                    (termSource === 'zero'
+                      ? workspace.term_book.zero_day_levels
+                      : workspace.term_book.combined_levels
+                    )?.zero_gamma,
+                  )}
+                />
+                <Metric
+                  label="Call wall"
+                  value={number(
+                    (termSource === 'zero'
+                      ? workspace.term_book.zero_day_levels
+                      : workspace.term_book.combined_levels
+                    )?.call_wall,
+                  )}
+                />
+                <Metric
+                  label="Put wall"
+                  value={number(
+                    (termSource === 'zero'
+                      ? workspace.term_book.zero_day_levels
+                      : workspace.term_book.combined_levels
+                    )?.put_wall,
+                  )}
+                />
+                <Metric
+                  label="0DTE pin"
+                  value={number(workspace.term_book.zero_day_levels?.pin_strike)}
+                />
               </div>
             )}
-            <p className="source-note">0DTE / next straddle ratio: {number(workspace.term_book.zero_to_next_straddle_ratio)}. {workspace.term_book.decision_source}.</p>
-            <p className="source-note">OI change is an opened/closed estimate for contracts observed on both days; dealer direction is unknown.</p>
-            <p className="source-note">Estimated flow, low confidence: {number(workspace.term_book.estimated_flow?.estimated_flow)} · classified volume coverage {percent(workspace.term_book.estimated_flow?.coverage)}. Observational only.</p>
+            <p className="source-note">
+              0DTE / next straddle ratio: {number(workspace.term_book.zero_to_next_straddle_ratio)}.{' '}
+              {workspace.term_book.decision_source}.
+            </p>
+            <p className="source-note">
+              OI change is an opened/closed estimate for contracts observed on both days; dealer
+              direction is unknown.
+            </p>
+            <p className="source-note">
+              Estimated flow, low confidence:{' '}
+              {number(workspace.term_book.estimated_flow?.estimated_flow)} · classified volume
+              coverage {percent(workspace.term_book.estimated_flow?.coverage)}. Observational only.
+            </p>
           </>
-        ) : <Empty title="Term book pending">Enable multi-expiration collection after the market-hour API capability check.</Empty>}
+        ) : (
+          <Empty title="Term book pending">
+            Enable multi-expiration collection after the market-hour API capability check.
+          </Empty>
+        )}
       </Panel>
       <EnvelopePanel
         envelopes={dashboard.envelopes}
@@ -502,7 +556,7 @@ export default function Cockpit({
         </div>
         <Panel
           title="Current scenario"
-          eyebrow="Snapshot-consistent decision"
+          eyebrow={`${workspace.decision_engine === 'scenario_v2' ? 'Scenario v2' : 'Scenario v1'} · snapshot-consistent decision`}
           className="scenario-panel"
         >
           <div className="scenario-label">
@@ -512,12 +566,24 @@ export default function Cockpit({
           <p className="scenario-copy">{decision?.context || 'Waiting for eligible conditions.'}</p>
           <div className="scenario-levels">
             <Metric
-              label="Bias score"
+              label={
+                workspace.decision_engine === 'scenario_v2' ? 'Market vote score' : 'Bias score'
+              }
               value={percent(decision?.score)}
-              detail="directional score, not probability"
+              detail={
+                workspace.decision_engine === 'scenario_v2'
+                  ? 'Context vote; v2 direction comes from the scenario rules'
+                  : 'directional score, not probability'
+              }
             />
             <Metric label="Target" value={number(decision?.target)} />
             <Metric label="Invalidation" value={number(decision?.invalidation)} />
+            {scenario?.scenario_type === 'PIN' && (
+              <Metric
+                label="Pin band"
+                value={`${number(scenario.pin_band_low)} – ${number(scenario.pin_band_high)}`}
+              />
+            )}
           </div>
           <div className="votes">
             {[

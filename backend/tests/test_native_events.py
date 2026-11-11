@@ -5,7 +5,7 @@ import time
 from sqlalchemy import select
 
 
-def test_market_events_record_opportunities_and_alerts_with_ninjatrader_off(monkeypatch):
+def test_market_events_record_safe_wait_and_alerts_with_ninjatrader_off(monkeypatch):
     import appy
     from models import DecisionAlert, SignalEvent, get_session_factory
     from native_runtime import NativeRuntime, RPC_LOCK
@@ -41,7 +41,10 @@ def test_market_events_record_opportunities_and_alerts_with_ninjatrader_off(monk
         with Session() as session:
             recorded = session.scalars(select(SignalEvent).where(SignalEvent.symbol == "SPX")).all()
             assert recorded
-            assert recorded[-1].is_opportunity
+            # The fixture has a vote but no saved option snapshot. V2 must not
+            # turn that vote into an eligible scenario.
+            assert recorded[-1].is_opportunity is False
+            assert "Scenario v2 unavailable" in json.loads(recorded[-1].payload_json)["dashboard_context_spx"]
         assert runtime.ninjatrader_port is None
         assert broadcaster.running is False
     finally:

@@ -3,6 +3,7 @@ export type Theme = 'dark' | 'light';
 export type View = 'cockpit' | 'edge' | 'regime' | 'trace' | 'matrix' | 'oneoff' | 'settings';
 
 export interface Settings {
+  decision_engine?: 'scenario_v1' | 'scenario_v2';
   refresh_interval: number;
   theme: Theme;
   symbols: string[];
@@ -320,6 +321,7 @@ export interface Vote {
   detail?: string;
 }
 export interface Decision {
+  engine?: 'scenario_v1' | 'scenario_v2';
   bias?: string;
   score?: number;
   context?: string;
@@ -335,6 +337,8 @@ export interface Scenario {
   scenario_type?: string;
   eligible?: boolean;
   bias?: string;
+  pin_band_low?: NullableNumber;
+  pin_band_high?: NullableNumber;
   reasons?: string[];
   warnings?: string[];
   trigger_zone?: { low: number; high: number } | null;
@@ -399,6 +403,7 @@ export interface EdgeHorizon {
   invalidation_first_rate?: NullableNumber;
 }
 export interface Workspace {
+  decision_engine?: 'scenario_v1' | 'scenario_v2';
   schema_version: number;
   symbol: string;
   snapshot_id: number;
@@ -418,13 +423,35 @@ export interface Workspace {
     status: string;
     decision_source?: string;
     zero_to_next_straddle_ratio?: NullableNumber;
-    zero_day_levels?: { zero_gamma?: NullableNumber; call_wall?: NullableNumber; put_wall?: NullableNumber; pin_strike?: NullableNumber };
-    combined_levels?: { zero_gamma?: NullableNumber; call_wall?: NullableNumber; put_wall?: NullableNumber; pin_strike?: NullableNumber };
+    zero_day_levels?: {
+      zero_gamma?: NullableNumber;
+      call_wall?: NullableNumber;
+      put_wall?: NullableNumber;
+      pin_strike?: NullableNumber;
+    };
+    combined_levels?: {
+      zero_gamma?: NullableNumber;
+      call_wall?: NullableNumber;
+      put_wall?: NullableNumber;
+      pin_strike?: NullableNumber;
+    };
     merged_index_etf_strikes?: { strike_price: number; gex_value: number }[] | null;
     merged_etf_symbol?: string | null;
-    expirations?: Record<string, { net_gex?: NullableNumber; atm_straddle?: NullableNumber; contracts?: number }>;
-    oi_change_estimate_by_strike?: Record<string, { change: number; contracts: number; prior_volume: number }>;
-    estimated_flow?: { label: string; estimated_flow?: NullableNumber; coverage?: NullableNumber; classified_volume?: number; observed_volume?: number };
+    expirations?: Record<
+      string,
+      { net_gex?: NullableNumber; atm_straddle?: NullableNumber; contracts?: number }
+    >;
+    oi_change_estimate_by_strike?: Record<
+      string,
+      { change: number; contracts: number; prior_volume: number }
+    >;
+    estimated_flow?: {
+      label: string;
+      estimated_flow?: NullableNumber;
+      coverage?: NullableNumber;
+      classified_volume?: number;
+      observed_volume?: number;
+    };
   };
 }
 export interface Overview {
@@ -544,7 +571,12 @@ export interface EdgeData {
     mae?: NullableNumber;
   }[];
   calibration?: { forecast: number; outcome: number }[];
-  reliability_bins?: { lower: number; upper: number; count: number; observed_rate: NullableNumber }[];
+  reliability_bins?: {
+    lower: number;
+    upper: number;
+    count: number;
+    observed_rate: NullableNumber;
+  }[];
 }
 export interface JournalInput {
   symbol: string;

@@ -573,7 +573,7 @@ def _dashboard_payload_for_symbol(symbol: str, overview_data: dict) -> dict:
         "dashboard_liquidity_detail": liquidity_vote["detail"],
     }
 
-def build_regime_payload(overview_data: dict, *, session=None) -> dict | None:
+def build_regime_payload(overview_data: dict, *, session=None, decision_workspaces: dict | None = None) -> dict | None:
     """Build and record a market update independently from network broadcasting.
 
     Transforms the internal 'overview_data' structure into a flat, parseable
@@ -604,6 +604,18 @@ def build_regime_payload(overview_data: dict, *, session=None) -> dict | None:
 
         ndx_dashboard = _dashboard_payload_for_symbol("NDX", overview_data)
         spx_dashboard = _dashboard_payload_for_symbol("SPX", overview_data)
+        from app_settings import read_settings
+        selected_engine = read_settings().get("decision_engine")
+        if selected_engine == "scenario_v2":
+            from decision_selection import dashboard_from_scenario
+            if decision_workspaces is None:
+                import appy
+                decision_workspaces = ({symbol: appy.get_decision_workspace(symbol) for symbol in ("NDX", "SPX")}
+                                       if appy.engine is not None else {})
+            if "NDX" in decision_workspaces:
+                ndx_dashboard = dashboard_from_scenario(ndx_dashboard, {**decision_workspaces["NDX"], "decision_engine": "scenario_v2"})
+            if "SPX" in decision_workspaces:
+                spx_dashboard = dashboard_from_scenario(spx_dashboard, {**decision_workspaces["SPX"], "decision_engine": "scenario_v2"})
         generic_dashboard = ndx_dashboard if ndx_data else spx_dashboard
         modeled_zero_ndx = _modeled_zero_gex_for_symbol(overview_data, "NDX")
         modeled_zero_spx = _modeled_zero_gex_for_symbol(overview_data, "SPX")
@@ -653,7 +665,11 @@ def build_regime_payload(overview_data: dict, *, session=None) -> dict | None:
 
         try:
             from signal_performance import update_signal_performance_for_payload
-            payload = update_signal_performance_for_payload(payload, session=session)
+            scenario_types = ({symbol: workspace.get("active_scenario", {}).get("scenario_type")
+                               for symbol, workspace in (decision_workspaces or {}).items()
+                               if workspace.get("active_scenario")}
+                              if selected_engine == "scenario_v2" else None)
+            payload = update_signal_performance_for_payload(payload, session=session, scenario_types=scenario_types)
         except Exception as e:
             logger.warning(f"Signal performance update failed: {e}")
         

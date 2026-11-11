@@ -134,6 +134,8 @@ The packaged 0.1.4 release passed fresh live and demo backend checks, including 
 
 Version 0.1.5 corrects the elapsed-time window used for 15-minute realized volatility and adds separate historical counts for eligible scenario episodes and independent 30-minute opportunities. The full replay still fails the version-2 scenario frequency gate for four of five symbols; version 2 remains observational and the Cockpit and NinjaTrader continue to use the established decision. See `docs/reports/phase-2.md` for counts and limits.
 
+Version 0.1.6 uses scenario version 2 by default after the user explicitly waived the Gate 2 frequency limit. Settings can return the Cockpit and NinjaTrader dashboard decision fields to version 1 with the single `decision_engine` selector. Both versions continue to be recorded separately; NinjaTrader payload keys stay the same. This switch does not approve the observational combined or merged levels, or publish a calibrated probability. Those still depend on the later data and review gates in `docs/reports/decision-engine-checklist.md`.
+
 After a native build, `node scripts/native-ui-smoke.mjs` exercises the packaged demo through its actual WebView and Rust IPC. `python scripts/native-smoke.py` checks the frozen backend's automatic startup and shutdown using fresh temporary workspaces without credentials. Adding `--live` to the UI smoke checks the actual separate live workspace and honors its automatic startup preferences.
 
 ## Optional historical import

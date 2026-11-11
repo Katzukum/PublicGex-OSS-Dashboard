@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from decision_alerts import emit_transition_alert
+from decision_alerts import emit_transition_alert, evaluate_workspace_alerts
 from models import Base, DecisionAlert, get_engine, get_session_factory
 
 
@@ -20,4 +20,20 @@ def test_alerts_dedupe_with_opposite_and_critical_overrides(tmp_path):
         assert critical is not None
     with Session() as session:
         assert session.query(DecisionAlert).count() == 3
+    engine.dispose()
+
+
+def test_scenario_alert_requires_a_type_transition_even_after_cooldown(tmp_path):
+    engine = get_engine(tmp_path / "scenario-alerts.db")
+    Base.metadata.create_all(engine)
+    Session = get_session_factory(engine)
+    now = datetime(2026, 11, 11, 10, 0)
+    workspace = {"symbol": "SPX", "active_scenario": {"scenario_id": "snapshot-1", "scenario_type": "PIN"},
+                 "market_context": {"event_risk": {"state": "NORMAL"}}}
+    with Session.begin() as session:
+        assert len(evaluate_workspace_alerts(session, workspace, now)) == 1
+        workspace["active_scenario"]["scenario_id"] = "snapshot-2"
+        assert evaluate_workspace_alerts(session, workspace, now + timedelta(minutes=11)) == []
+        workspace["active_scenario"]["scenario_type"] = "NO_TRADE"
+        assert len(evaluate_workspace_alerts(session, workspace, now + timedelta(minutes=12))) == 1
     engine.dispose()

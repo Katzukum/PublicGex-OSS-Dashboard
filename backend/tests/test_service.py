@@ -146,7 +146,15 @@ def test_demo_serves_all_analytical_views_and_blocks_live_outputs(tmp_path):
         assert trace["envelope_history"]
         assert trace["exhaustion_events"]
         assert trace["research_config"]["fingerprint"]
-        assert client.call("get_decision_workspace", ["SPX"])["schema_version"] == 2
+        selected = client.call("get_decision_workspace", ["SPX"])
+        assert selected["schema_version"] == 2
+        assert selected["decision_engine"] == "scenario_v2"
+        assert selected["decision"]["engine"] == "scenario_v2"
+        assert client.call("save_settings", [{"decision_engine": "scenario_v1"}])["ok"] is True
+        old = client.call("get_decision_workspace", ["SPX"])
+        assert old["decision_engine"] == "scenario_v1"
+        assert old["decision"]["engine"] == "scenario_v1"
+        assert client.call("save_settings", [{"decision_engine": "scenario_v2"}])["ok"] is True
         assert len(client.call("get_edge_lab", [{"symbol": "SPX"}])["opportunities"]) > 20
         profile = client.call("get_one_off_profiles")[0]
         one_off = client.call("get_one_off_profile", [profile["snapshot_id"]])

@@ -22,6 +22,7 @@ def test_shared_live_defaults_match_original_configured_universe(settings_direct
     assert DEFAULT_SETTINGS["weights_index_basket"] == {"SPX": .45, "NDX": .35, "IWM": .2}
     assert DEFAULT_SETTINGS["weights_whale"] == DEFAULT_SETTINGS["weights_index_basket"]
     assert DEFAULT_SETTINGS["ninjatrader_port"] == 5010
+    assert DEFAULT_SETTINGS["decision_engine"] == "scenario_v2"
     assert initialize_settings()["status"] == "initialized"
     assert json.loads((settings_directory / "settings.json").read_text()) == DEFAULT_SETTINGS
     # The collector and dashboard import the identical shared preset.
@@ -148,6 +149,7 @@ def test_either_basket_alias_updates_both_without_masking_custom_weights(setting
     {"weights_index_basket": {"SPX": float("inf")}}, {"weights_whale": {"SPX": "bad"}},
     {"symbols": []}, {"symbols": ["../outside"]},
     {"feature_flags": {"trace_replay": "false"}}, {"max_poll_interval_seconds": 1},
+    {"decision_engine": "unknown"},
 ])
 def test_invalid_financial_and_instrument_settings_leave_disk_unchanged(settings_directory, patch):
     initialize_settings()

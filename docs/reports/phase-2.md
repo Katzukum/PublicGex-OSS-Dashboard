@@ -1,4 +1,4 @@
-FAILED — after correcting the frequency measure and a 15-minute volatility timing bug, four of five symbols still exceed the planned 1–15 contiguous eligible version-2 scenarios per session. Version 2 remains in shadow.
+GATE 2 FREQUENCY LIMIT WAIVED BY USER — four of five symbols exceed the planned 1–15 contiguous eligible version-2 scenarios per session. The user explicitly directed the app to proceed with version 2 on November 11, 2026. The replay result remains recorded below.
 
 # Phase 2 checkpoint
 
@@ -46,7 +46,15 @@ The investigation also found that `realized_volatility_15m` used the last 16 raw
 | SPX | 19.91 | 53.55 | 4.64 | 1–15 |
 | SPY | 20.91 | 58.73 | 5.27 | 1–15 |
 
-The 30-minute count uses the already established primary outcome horizon and the same greedy nonoverlap rule as offline probability fitting. It is a useful measure of independent labeled opportunities, but it does not erase the excess candidate episodes visible in four symbols. Gate 2 therefore remains failed. The code keeps v2 in shadow, and the release does not claim the Cockpit or broadcaster has switched. The next engine revision must address the observed candidate churn on a fresh evaluation split rather than tune a threshold against this replay.
+The 30-minute count uses the already established primary outcome horizon and the same greedy nonoverlap rule as offline probability fitting. It is a useful measure of independent labeled opportunities, but it does not erase the excess candidate episodes visible in four symbols. The frequency criterion failed. Version 0.1.5 kept v2 in shadow; version 0.1.6 proceeds only because the user explicitly waived that criterion. A later engine revision can address candidate churn on a fresh evaluation split without tuning against this replay.
+
+## User decision and version 2 switch
+
+On November 11, 2026, after reviewing the failed frequency result, the user said: “Ignore Gate 2's limit and finish.” This waives only the frequency limit. Version 2 is now the default `decision_engine` for the Cockpit and the existing NinjaTrader dashboard decision fields; Settings can select version 1. Both engines continue to be recorded with separate tags. No version-2 threshold was tuned, and the historical replay is unchanged. Version 2 may issue more candidate episodes than planned, particularly for IWM. The broadcaster preserves its schema-v2 keys and uses WAIT with null target/invalidation when a saved version-2 snapshot is unavailable. The PIN band is shown in the Cockpit and described in the broadcaster context, while its single invalidation field remains null.
+
+The other gates remain independent: combined and merged levels are observational pending ten expanded-data sessions and matched-distance holdout, and `edge_probability` remains null pending the regime study, at least forty sessions and two hundred independent labeled opportunities, and an approved coefficient artifact.
+
+Version 0.1.6 verification: `npm run build`, all 85 frontend tests, all 17 browser workflows (including v1/v2 setting persistence), and all 243 Python tests passed. The sidecar and native installer were rebuilt after the final backend fix; their packaged live and demo smoke checks passed, as did four Rust tests. Packaged UI checks confirmed that both demo and live workspaces select v2. A native live launch owned port 5010 and completed a five-symbol collector cycle. Installer: `src-tauri/target/release/bundle/nsis/PublicGex Dashboard_0.1.6_x64-setup.exe`, SHA-256 `54B929E0AA86DFE0DFDED2EEB4B4549E03E317992F3C349B7069B3D4F7C598BE`. The packaged sidecar hash matches the freshly built source sidecar.
 
 After the timing fix, `npm run build` passed, `npm test` passed 85 tests, `npm run test:e2e` passed 17 workflows on isolated demo port 1430, and `python -m pytest backend/tests -q` passed 236 tests. Version 0.1.5 then built its native executable, frozen Python sidecar, and NSIS installer. Packaged demo and live UI smoke checks, frozen demo and live backend smoke checks, and all four Rust lifecycle tests passed. The installer is available at `src-tauri/target/release/bundle/nsis/PublicGex Dashboard_0.1.5_x64-setup.exe` (SHA-256 `D6987C62D8EDF63CC7684E93CD2235E56FC6F328F457871DB8158317915F0B0E`). A real NinjaTrader chart session and additional expanded-data market sessions remain unverified.
 

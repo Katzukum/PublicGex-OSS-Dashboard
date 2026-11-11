@@ -600,13 +600,14 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
 def get_decision_workspace(symbol: str = "SPX") -> dict:
     """Return the schema-v2 decision contract from one selected snapshot."""
     symbol = str(symbol or "SPX").strip().upper()
+    decision_engine = _load_settings()["decision_engine"]
     with engine.connect() as conn:
         latest_id = conn.execute(
             text("SELECT id FROM gex_snapshots WHERE symbol = :symbol ORDER BY timestamp DESC, id DESC LIMIT 1"),
             {"symbol": symbol},
         ).scalar()
         market_revision = conn.execute(text("SELECT MAX(id) FROM gex_snapshots")).scalar()
-    cache_key = (str(engine.url), symbol, latest_id, market_revision)
+    cache_key = (str(engine.url), symbol, latest_id, market_revision, decision_engine)
     with _decision_workspace_cache_lock:
         cached = _decision_workspace_cache.get(cache_key)
     if cached is not None and time.monotonic() - cached[0] < 15:
@@ -643,6 +644,8 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
 
     from market_context import build_market_context, load_public_calendar_events
     from scenario_engine import build_scenario_workspace
+    from scenario_engine_v2 import build_scenario_workspace_v2
+    from decision_selection import selected_scenario
 
     calendar = ({"events": None, "warnings": [], "sources": {}}
                 if data_path("SYNTHETIC_DEMO.json").exists()
@@ -659,7 +662,7 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
     market_context["calendar_sources"] = calendar["sources"]
     if calendar["warnings"]:
         market_context["status"] = "partial"
-    scenario = build_scenario_workspace(
+    scenario_v1 = build_scenario_workspace(
         snapshot,
         dashboard.get("profile", []),
         market_context,
@@ -667,6 +670,19 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
         market_score=market_score,
         index_basket=index_basket,
     )
+    scenario_v2 = build_scenario_workspace_v2(
+        snapshot, dashboard.get("profile", []), market_context, data_quality,
+        gamma_sweep=dashboard.get("gamma_sweep"), spot_history=dashboard.get("history", []),
+    )
+    scenario = selected_scenario(scenario_v1, scenario_v2, decision_engine)
+    historical_edge = overview.get("edge_stats", {}).get(symbol)
+    if decision_engine == "scenario_v2":
+        from signal_performance import edge_stats_for_scenario
+        from models import get_session_factory
+        Session = get_session_factory(engine)
+        with Session() as evidence_session:
+            historical_edge = edge_stats_for_scenario(
+                symbol, scenario_v2["active_scenario"]["scenario_type"], session=evidence_session)
     candidates = build_execution_candidates(symbol, snapshot_id=snapshot.get("id"))
     for idea in (candidates.get("ideas") or {}).values():
         if idea.get("status") == "ready":
@@ -675,15 +691,17 @@ def get_decision_workspace(symbol: str = "SPX") -> dict:
 
     workspace = {
         "schema_version": 2,
+        "decision_engine": decision_engine,
         "symbol": symbol,
         "snapshot_id": snapshot.get("id"),
         "as_of": snapshot.get("timestamp"),
         "data_quality": data_quality,
-        "historical_edge": overview.get("edge_stats", {}).get(symbol),
+        "historical_edge": historical_edge,
         "market_context": market_context,
         "regime": {"traders": traders, "index_basket": index_basket},
         "components": overview.get("components", []),
         **scenario,
+        "scenario_versions": {"scenario_v1": scenario_v1, "scenario_v2": scenario_v2},
         "execution_candidates": candidates,
         "dashboard": dashboard,
         "compatibility": {"version_1_aliases": True, "removal_after": "one verified release"},

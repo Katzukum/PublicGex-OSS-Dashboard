@@ -767,6 +767,25 @@ def edge_stats_for_dashboard(dashboard: dict, regime: str = "", session=None) ->
             db.close()
 
 
+def edge_stats_for_scenario(symbol: str, scenario_type: str, session=None) -> dict:
+    """Use only version-2 outcomes for the selected version-2 setup."""
+    db, owns_session = _session_or_new(session)
+    try:
+        horizons = []
+        for horizon in OUTCOME_HORIZONS_MINUTES:
+            rows = (db.query(SignalOutcome).join(SignalEvent)
+                    .filter(SignalEvent.symbol == symbol, SignalEvent.engine == "scenario_v2",
+                            SignalEvent.scenario_type == scenario_type, SignalEvent.is_opportunity.is_(True),
+                            SignalOutcome.horizon_minutes == horizon, SignalOutcome.label_version == 2)
+                    .order_by(SignalOutcome.observed_at.desc()).limit(500).all())
+            horizons.append(_stats_from_rows(rows, "scenario v2", horizon))
+        return {"symbol": symbol, "scenario_type": scenario_type, "horizons": horizons,
+                "primary": next(item for item in horizons if item["horizon_minutes"] == PRIMARY_HORIZON_MINUTES)}
+    finally:
+        if owns_session:
+            db.close()
+
+
 def flatten_primary_edge_stats(stats: dict) -> dict:
     primary = stats.get("primary") or {}
     return {
@@ -781,7 +800,7 @@ def flatten_primary_edge_stats(stats: dict) -> dict:
     }
 
 
-def update_signal_performance_for_payload(payload: dict, session=None) -> dict:
+def update_signal_performance_for_payload(payload: dict, session=None, *, scenario_types: dict | None = None) -> dict:
     """Attach edge stats and record the broadcast within one session boundary."""
 
     db, owns_session = _session_or_new(session)
@@ -791,11 +810,9 @@ def update_signal_performance_for_payload(payload: dict, session=None) -> dict:
             dashboard = dashboard_from_payload(payload, symbol)
             if not dashboard:
                 continue
-            stats = edge_stats_for_dashboard(
-                dashboard,
-                payload.get("regime", ""),
-                session=db,
-            )
+            stats = (edge_stats_for_scenario(symbol, scenario_types[symbol], session=db)
+                     if scenario_types and symbol in scenario_types else
+                     edge_stats_for_dashboard(dashboard, payload.get("regime", ""), session=db))
             edge_by_symbol[symbol] = stats
 
             flattened = flatten_primary_edge_stats(stats)
