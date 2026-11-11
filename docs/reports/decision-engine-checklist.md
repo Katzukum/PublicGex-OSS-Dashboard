@@ -7,16 +7,16 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Rebuild frontend (`npm run build`) and Python sidecar (`npm run build:sidecar`); frozen live and demo sidecar smoke tests pass.
 - [x] Launch the updated live development app with its own ignored `data/` workspace; collector saved all five symbols, recorded vote/v1/v2 signals, and NinjaTrader listened on port 5010.
 - [x] Fix the collector's first-cycle stall by loading the numerical workspace before starting its lifetime thread; verify the next cycle completed and `npm run test:backend` passed (229 tests).
-- [x] Compile the native desktop executable and installer with the installed Visual Studio 2019 Build Tools; the packaged demo UI smoke passes. A live native UI check remains open while the browser app owns NinjaTrader port 5010.
+- [x] Compile the native desktop executable and installer with Visual Studio 2019 Build Tools; packaged demo/live UI smoke passes. The rebuilt native app is launched against its own desktop workspace and owns NinjaTrader port 5010.
 - [x] Finish the 09:25, 09:35, and noon ET Public.com probe: 171 requests, zero HTTP 429 responses. Multiple expirations, SPX/NDX day-period minute bars, option bars, VIX, and quote polling work; VIX1D/VIX9D and week/month period minute bars do not. OI was present but unchanged across all three readings, so update timing remains unverified. Expanded collection flags remain off pending their own live smoke.
-- [ ] Complete the 30-minute live collector smoke report, including cycle time, rows per snapshot, database growth, and HTTP 429 count.
+- [x] Complete the 30-minute expanded live smoke in `docs/reports/phase-3.md`: 21 successful cycles, 24.15-second median, 2,595 term rows per snapshot on average, zero HTTP 429, and 87.37 MiB/hour main-database growth over a separate 30.33-minute size interval.
 
 ## Phase 0: Public.com capabilities
 
 - [x] Add a read-only, rate-limited probe that prints JSON and never opens the app database (`scripts/probe-public-api.py`).
 - [x] Run the probe with this app's credentials during regular market hours and save `docs/api-capabilities.json` with timestamps, coverage, check results, and zero HTTP 429 responses.
 - [x] **Open-interest timing check 0.7:** compare the same 20 contracts at 09:25, 09:35, and 12:00 ET. All readings were available and identical; update timing remains unverified.
-- [ ] Record which later steps are enabled, use fallbacks, or are skipped. The installed SDK is 0.1.25; the plan referenced 0.1.28, so the report must distinguish observed behavior from the plan's assumptions.
+- [x] Record enabled, fallback, and skipped paths in `docs/reports/phase-0.md`, distinguishing observed SDK 0.1.25 behavior from the plan's 0.1.28 assumptions.
 
 ## Phase 1: Evidence loop
 
@@ -33,14 +33,15 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Add structural levels and scenario-v2 logic in shadow collection without changing the displayed version-1 decision.
 - [x] Add fixture, property, and modeled-zero fallback checks.
 - [x] Add a read-only replay for scenario-v1 and scenario-v2 over stored snapshots.
-- [ ] Run the replay with `--stride-minutes 0` over every snapshot, review malformed timestamps, and write the final Gate 2 frequency assessment. The current `docs/reports/replay-exploratory.json` is an hourly sample only.
-- [ ] Review the replay report before switching the Cockpit or broadcaster to version 2.
+- [x] Replay every snapshot and write the Gate 2 assessment in `docs/reports/phase-2.md`: 34,384 valid of 34,385 stored, one malformed timestamp, zero replay errors. All five symbol means exceed the planned 1–15 eligible state transitions per session.
+- [ ] Resolve the failed Gate 2 frequency measure and review the report before any Cockpit or broadcaster switch. Version 2 remains shadow-only; no thresholds were tuned to fit the result.
 
 ## Phase 3: Public.com data expansion
 
 - [x] Add isolated term snapshots/contracts, combined and mapped views, first-after-09:35 OI, estimated-flow poller, and straddle ratios. Live collection flags remain off until Phase 0 confirms capability.
 - [x] Add matched-distance chronological holdout validation. New levels stay observational until it passes on stored sessions.
-- [ ] Complete a 30-minute live smoke run with zero HTTP 429 responses and collect ten sessions of new data; write `docs/reports/phase-3.md`.
+- [x] Complete a 30-minute expanded live smoke with zero HTTP 429 responses and write `docs/reports/phase-3.md`.
+- [ ] Collect ten independent expanded-data sessions and pass the chronological matched-distance holdout before any new level source feeds version 2.
 
 ## Phase 4: Option-term scoring
 
@@ -59,5 +60,6 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 
 - [x] Run offline suites after code changes: `npm run build`, `npm test` (85 passed), `npm run test:e2e` (17 passed), and `npm run test:backend` (229 passed). Repeat after market-hour activation tomorrow.
 - [x] Run native compilation and packaged demo smoke. `vswhere` missed an installed Visual Studio 2019 Build Tools compiler, so `scripts/native-run.ps1` now discovers it directly; `npm run native:check` passes.
-- [ ] Confirm database, credentials, logs, and collector locks remain isolated from the original app; NinjaTrader schema-v2 keys and port 5010 remain compatible.
+- [x] Confirm the browser and native data directories, credentials, logs, and collector locks stay within this independent app; the native bridge owns original externally compatible port 5010.
+- [x] Compare NinjaTrader schema-v2 constructor key sets against baseline `8bb4e75`: all 18 dashboard keys and 26 top-level payload keys remain present with zero removals or additions.
 - [x] Push `codex/decision-engine-improvements` after offline code checks. Live market-hour validation remains on this checklist.

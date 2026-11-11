@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta
 import json
 from math import exp
 from types import SimpleNamespace
+from decimal import Decimal
 
 from edge_model import FEATURES, predict, signal_features
 from estimated_flow import classify_interval, summarize_intervals
@@ -13,10 +14,54 @@ from term_book import merged_strike_book, oi_change, persist_daily_oi, select_ex
 from positioning_validation import validate_term_level_sources
 from signal_performance import _build_outcome
 from models import Base, OiDaily, SignalEvent
+from models import CollectionRun, EstimatedFlowPoll, GexSnapshot, GexTermContract, GexTermSnapshot, IndexMinuteBar, RawOptionGreek
+from publicData import apply_retention, option_strike
 
 
 def row(osi, strike, side, bid, ask):
     return SimpleNamespace(osi_symbol=osi, strike_price=strike, option_type=side, bid=bid, ask=ask)
+
+
+def test_term_chain_strike_uses_sdk_option_details():
+    quote = SimpleNamespace(
+        instrument=SimpleNamespace(symbol="SPXW261112C07600000"),
+        option_details=SimpleNamespace(strike_price=Decimal("7600")),
+    )
+    assert option_strike(quote, quote.instrument.symbol) == 7600
+    assert option_strike(SimpleNamespace(instrument=quote.instrument), quote.instrument.symbol) == 7600
+
+
+def test_expanded_retention_removes_child_rows_and_keeps_recent_data(tmp_path):
+    from sqlalchemy import create_engine, func, select
+    from sqlalchemy.orm import Session
+
+    engine = create_engine("sqlite:///" + str(tmp_path / "retention.db"))
+    Base.metadata.create_all(engine)
+    now = datetime.now()
+    with Session(engine) as session:
+        for age in (31, 1):
+            captured = now - timedelta(days=age)
+            run = CollectionRun(started_at=captured)
+            session.add(run)
+            session.flush()
+            snapshot = GexSnapshot(collection_run_id=run.id, timestamp=captured, symbol="SPX", spot_price=5000)
+            session.add(snapshot)
+            session.flush()
+            session.add(RawOptionGreek(snapshot_id=snapshot.id, symbol="SPX", timestamp=captured))
+            term = GexTermSnapshot(snapshot_id=snapshot.id, symbol="SPX", captured_at=captured,
+                                   expiration_date=captured.date(), is_combined=False, contract_count=1)
+            session.add(term)
+            session.flush()
+            session.add(GexTermContract(term_snapshot_id=term.id, osi_symbol=f"SPX{age}",
+                                        strike_price=5000, option_type="CALL", gex_value=1))
+            session.add(IndexMinuteBar(symbol="SPX", timestamp=captured, spot_price=5000, high=5001, low=4999))
+            session.add(EstimatedFlowPoll(symbol="SPX", session_date=captured.date(), captured_at=captured))
+            session.add(OiDaily(session_date=captured.date(), symbol="SPX", osi_symbol=f"SPX{age}"))
+        session.commit()
+        apply_retention(session, 30)
+        for model in (CollectionRun, GexSnapshot, RawOptionGreek, GexTermSnapshot,
+                      GexTermContract, IndexMinuteBar, EstimatedFlowPoll, OiDaily):
+            assert session.scalar(select(func.count()).select_from(model)) == 1
 
 
 def test_spread_and_butterfly_cross_both_spreads_and_fees():
@@ -171,3 +216,37 @@ def test_regime_study_recovers_planted_volatility_sign():
     report, observations = study["study_series"](points)
     assert report["regimes"]["positive"]["30"]["mean_forward_realized_volatility"] < report["regimes"]["negative"]["30"]["mean_forward_realized_volatility"]
     assert study["difference_interval"](observations)[1] < 0
+
+
+def test_regime_study_accepts_observation_near_horizon_without_exact_timestamp():
+    import runpy
+    from pathlib import Path
+    study = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "regime-study.py"))
+    points = [(datetime(2026, 11, 11, 10) + timedelta(minutes=minute,
+              seconds=10 if minute % 2 == 0 else 20), 101 + minute * .01, 1, 100)
+              for minute in range(32)]
+    report, _ = study["study_series"](points)
+    assert report["regimes"]["positive"]["30"]["samples"] > 0
+
+
+def test_term_validation_uses_nearby_horizon_observation():
+    import runpy
+    import sqlite3
+    from pathlib import Path
+    validator = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts" / "validate-term-levels.py"))
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript("""
+            CREATE TABLE gex_snapshots (id INTEGER, symbol TEXT, timestamp TEXT, spot_price REAL);
+            CREATE TABLE gex_term_snapshots (id INTEGER, snapshot_id INTEGER, expiration_date TEXT, is_combined INTEGER);
+            CREATE TABLE gex_term_contracts (term_snapshot_id INTEGER, strike_price REAL, option_type TEXT, gex_value REAL);
+            INSERT INTO gex_term_snapshots VALUES (1, 1, '2026-11-11', 0);
+            INSERT INTO gex_term_contracts VALUES (1, 101, 'CALL', 10), (1, 99, 'PUT', -10);
+        """)
+        for minute in range(17):
+            stamp = datetime(2026, 11, 11, 10) + timedelta(minutes=minute,
+                    seconds=10 if minute % 2 == 0 else 20)
+            connection.execute("INSERT INTO gex_snapshots VALUES (?,?,?,?)",
+                               (minute + 1, "IWM", stamp.isoformat(), 100))
+        records = validator["build_records"](connection)
+    assert len(records) == 4
+    assert {row["source"] for row in records} == {"0dte", "combined_expirations"}

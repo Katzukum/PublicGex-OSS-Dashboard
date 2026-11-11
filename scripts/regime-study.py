@@ -47,12 +47,14 @@ def study_series(points):
         for row in rows:
             minute_rows[row[0].replace(second=0, microsecond=0)] = row
         ordered = [minute_rows[key] for key in sorted(minute_rows)]
+        times = [row[0] for row in ordered]
         for index, (timestamp, spot, net, flip) in enumerate(ordered):
             regime = "positive" if spot > flip > 0 and net > 0 else "negative" if 0 < spot < flip and net < 0 else "transition"
             for horizon in HORIZONS:
-                future = [row for row in ordered[index + 1:]
-                          if row[0] <= timestamp + timedelta(minutes=horizon)]
-                if not future or future[-1][0] < timestamp + timedelta(minutes=horizon):
+                target = timestamp + timedelta(minutes=horizon)
+                end = bisect_right(times, target, index + 1)
+                future = ordered[index + 1:end]
+                if not future or (target - future[-1][0]).total_seconds() > MAX_GAP_SECONDS:
                     continue
                 path = [(timestamp, spot), *[(row[0], row[1]) for row in future]]
                 if any((right[0] - left[0]).total_seconds() > MAX_GAP_SECONDS
@@ -101,20 +103,29 @@ def difference_interval(observations, horizon=30):
 
 def main():
     db = data_path("gex_data.db")
-    report = {"status": "exploratory; API one-minute bars unverified", "symbols": {}}
+    report = {"status": "exploratory; Gate 4 requires ten expanded-data sessions", "symbols": {},
+              "skipped_invalid_timestamps": 0}
     with sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True) as connection:
         has_bars = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='index_minute_bars'").fetchone() is not None
         for symbol in ("SPX", "NDX", "SPY", "QQQ", "IWM"):
-            rows = [(datetime.fromisoformat(time), spot, net, flip)
-                    for time, spot, net, flip in connection.execute(
-                        "SELECT timestamp, spot_price, total_net_gex, flip_strike FROM gex_snapshots "
-                        "WHERE symbol = ? ORDER BY timestamp", (symbol,))]
+            rows = []
+            for time, spot, net, flip in connection.execute(
+                    "SELECT timestamp, spot_price, total_net_gex, flip_strike FROM gex_snapshots "
+                    "WHERE symbol = ? ORDER BY timestamp", (symbol,)):
+                try:
+                    rows.append((datetime.fromisoformat(time), spot, net, flip))
+                except (TypeError, ValueError):
+                    report["skipped_invalid_timestamps"] += 1
             source = "collector minute-resampled proxy"
             if has_bars and symbol in {"SPX", "NDX"} and rows:
-                bar_rows = [(datetime.fromisoformat(time), close)
-                            for time, close in connection.execute(
-                                "SELECT timestamp, spot_price FROM index_minute_bars WHERE symbol = ? ORDER BY timestamp", (symbol,))]
+                bar_rows = []
+                for time, close in connection.execute(
+                        "SELECT timestamp, spot_price FROM index_minute_bars WHERE symbol = ? ORDER BY timestamp", (symbol,)):
+                    try:
+                        bar_rows.append((datetime.fromisoformat(time), close))
+                    except (TypeError, ValueError):
+                        report["skipped_invalid_timestamps"] += 1
                 snapshot_times = [row[0] for row in rows]
                 observed = []
                 for timestamp, close in bar_rows:

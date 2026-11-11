@@ -8,6 +8,40 @@ from sqlalchemy.orm import Session
 from models import Base, CollectionRun, GexSnapshot, RawOptionGreek
 
 
+def test_chain_native_greeks_accept_sdk_attribute_objects(monkeypatch):
+    import publicData as collector
+
+    osi = "SPXW261111C07600000"
+    option = SimpleNamespace(
+        instrument=SimpleNamespace(symbol=osi), open_interest=10, volume=3,
+        bid=10, ask=11, last=10.5,
+        option_details=SimpleNamespace(strike_price=7600,
+                                       greeks=SimpleNamespace(gamma=0.02, delta=0.5, theta=-0.1)),
+    )
+    monkeypatch.setattr(collector, "get_instrument_type", lambda _: "INDEX")
+    monkeypatch.setattr(collector, "OrderInstrument", SimpleNamespace)
+    monkeypatch.setattr(collector, "OptionChainRequest", SimpleNamespace)
+    monkeypatch.setattr(collector, "get_0dte_expiration", lambda *_: "2026-11-11")
+    monkeypatch.setattr(collector, "get_option_greeks_batch", lambda *_: pytest.fail("extra Greeks call"))
+    monkeypatch.setattr(collector, "get_option_quotes_batch", lambda *_: pytest.fail("extra quotes call"))
+    client = SimpleNamespace(get_quotes=lambda _: [{"last": 7600}],
+                             get_option_chain=lambda _: [option])
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        run = CollectionRun(status="running")
+        session.add(run)
+        session.flush()
+        result = collector.process_symbol(client, session, run, "SPX",
+                                          {"account_id": "fixture", "settings": {"chain_fields_confirmed": True}},
+                                          SimpleNamespace(wait=lambda: None), emit_events=False)
+        assert result["status"] == "saved", result
+        row = session.scalar(select(RawOptionGreek))
+        assert row.gamma == 0.02
+        assert row.bid == 10 and row.ask == 11
+    engine.dispose()
+
+
 def test_slow_collection_uses_response_time_for_pressure_and_replay(monkeypatch):
     import publicData as collector
     from flow_pressure import build_estimated_pressure

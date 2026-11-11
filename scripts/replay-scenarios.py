@@ -75,6 +75,7 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=default_database())
     parser.add_argument("--stride-minutes", type=int, default=5, help="0 replays every snapshot")
     parser.add_argument("--max-snapshots", type=int, default=0, help="0 means no limit")
+    parser.add_argument("--session", help="Replay only snapshots with this stored YYYY-MM-DD session date")
     args = parser.parse_args()
     if args.stride_minutes < 0 or args.max_snapshots < 0:
         parser.error("stride and maximum must be nonnegative")
@@ -95,6 +96,12 @@ def main() -> int:
             "SELECT id, symbol, timestamp FROM gex_snapshots ORDER BY timestamp, id"
         )).fetchall()
     rows, invalid_timestamps = sample_rows(all_rows, args.stride_minutes, args.max_snapshots)
+    if args.session:
+        try:
+            datetime.strptime(args.session, "%Y-%m-%d")
+        except ValueError:
+            parser.error("session must be YYYY-MM-DD")
+        rows = [row for row in rows if str(row.timestamp).startswith(args.session)]
     counts = defaultdict(Counter)
     eligible_transitions = defaultdict(Counter)
     previous_state = {}
@@ -149,6 +156,7 @@ def main() -> int:
         for (engine_name, symbol, session), kinds in sorted(counts.items())
     ]
     output = {"database": db_path.name, "data_scope": "isolated_app_directory", "read_only": True, "stride_minutes": args.stride_minutes,
+              "session_filter": args.session,
               "max_snapshots": args.max_snapshots, "available_snapshots": len(all_rows),
               "selected_snapshots": len(rows), "processed_snapshots": sum(item["snapshots"] for item in groups) // 2,
               "groups": groups, "errors": errors, "invalid_timestamps": invalid_timestamps[:20],

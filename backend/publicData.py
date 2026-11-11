@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from dotenv import dotenv_values
 from runtime_paths import data_path, require_data_path
-from sqlalchemy import delete, func, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from gex_levels import aggregate_gamma_levels
@@ -293,6 +293,20 @@ def parse_osi_from_symbol(osi_str: str):
     except Exception:
         pass
     return 0.0, None
+
+
+def option_strike(option, osi: str) -> float:
+    """Read the strike from SDK chain quotes, then fall back to the OSI symbol."""
+    instrument = get_val(option, ["instrument"])
+    details = get_val(option, ["option_details", "optionDetails"])
+    raw = get_val(instrument, ["strike_price", "strikePrice", "strike"])
+    if raw is None:
+        raw = get_val(details, ["strike_price", "strikePrice", "strike"])
+    try:
+        strike = float(raw)
+    except (TypeError, ValueError):
+        strike = 0.0
+    return strike if math.isfinite(strike) and strike > 0 else parse_osi_from_symbol(osi)[0]
 
 
 def extract_all_options(response_obj) -> list:
@@ -584,9 +598,10 @@ def collect_term_book(client, session, snapshot, zero_day_rows, config, rate_lim
             for option in chain:
                 instrument = get_val(option, ["instrument"])
                 osi = get_val(instrument, ["symbol", "ticker", "osi_symbol"])
-                strike = get_val(instrument, ["strike_price", "strikePrice", "strike"])
-                if osi and strike is not None:
-                    parsed.append((option, float(strike), osi))
+                if osi:
+                    strike = option_strike(option, osi)
+                    if strike > 0:
+                        parsed.append((option, strike, osi))
             osi_symbols = [osi for _, _, osi in parsed]
             chain_complete = config["settings"].get("chain_fields_confirmed", False)
             greeks = ({} if chain_complete else
@@ -718,12 +733,13 @@ def process_symbol(
             return {"symbol": symbol, "status": "failed", "message": "No valid near-the-money contracts"}
 
         all_osi = [osi for (_, _, osi) in relevant_options if osi]
-        logger.info("Fetching Greeks for %s contracts using batch API...", len(all_osi))
         if config.get("settings", {}).get("chain_fields_confirmed", False):
+            logger.info("Using chain-native Greeks and quotes for %s contracts", len(all_osi))
             greeks_map = {osi: get_val(get_val(opt, ["option_details", "optionDetails"], {}), ["greeks"], {})
                           for opt, _, osi in relevant_options}
             quotes_map = {osi: opt for opt, _, osi in relevant_options}
         else:
+            logger.info("Fetching Greeks for %s contracts using batch API...", len(all_osi))
             greeks_map = get_option_greeks_batch(client, all_osi, config["account_id"], rate_limiter)
             quotes_map = get_option_quotes_batch(client, all_osi, config["account_id"], rate_limiter)
 
@@ -759,12 +775,12 @@ def process_symbol(
                     otype = "UNKNOWN"
 
                 greek_data = greeks_map.get(osi, {})
-                gamma_value = greek_data.get("gamma")
+                gamma_value = get_val(greek_data, ["gamma"])
                 gamma = float(gamma_value or 0)
                 gamma_available = gamma_value is not None and math.isfinite(gamma) and gamma >= 0
                 gamma = gamma if gamma_available else 0.0
-                delta = float(greek_data.get("delta") or 0)
-                theta = float(greek_data.get("theta") or 0)
+                delta = float(get_val(greek_data, ["delta"]) or 0)
+                theta = float(get_val(greek_data, ["theta"]) or 0)
                 quote = quotes_map.get(osi)
                 volume_value = get_val(quote, ["volume"])
                 volume = int(volume_value) if volume_value is not None else None
@@ -1066,11 +1082,18 @@ def record_collector_decisions(db_engine, symbols: list[str]) -> int:
 
 
 def apply_retention(session: Session, retention_days: int):
+    from models import EstimatedFlowPoll, GexTermContract, GexTermSnapshot, IndexMinuteBar, OiDaily
+
     cutoff = datetime.now() - timedelta(days=retention_days)
-    old_snapshot_ids = [row[0] for row in session.query(GexSnapshot.id).filter(GexSnapshot.timestamp < cutoff).all()]
-    if old_snapshot_ids:
-        session.execute(delete(RawOptionGreek).where(RawOptionGreek.snapshot_id.in_(old_snapshot_ids)))
-        session.execute(delete(GexSnapshot).where(GexSnapshot.id.in_(old_snapshot_ids)))
+    old_snapshot_ids = select(GexSnapshot.id).where(GexSnapshot.timestamp < cutoff)
+    old_term_ids = select(GexTermSnapshot.id).where(GexTermSnapshot.snapshot_id.in_(old_snapshot_ids))
+    session.execute(delete(GexTermContract).where(GexTermContract.term_snapshot_id.in_(old_term_ids)))
+    session.execute(delete(GexTermSnapshot).where(GexTermSnapshot.snapshot_id.in_(old_snapshot_ids)))
+    session.execute(delete(RawOptionGreek).where(RawOptionGreek.snapshot_id.in_(old_snapshot_ids)))
+    session.execute(delete(GexSnapshot).where(GexSnapshot.timestamp < cutoff))
+    session.execute(delete(IndexMinuteBar).where(IndexMinuteBar.timestamp < cutoff))
+    session.execute(delete(EstimatedFlowPoll).where(EstimatedFlowPoll.captured_at < cutoff))
+    session.execute(delete(OiDaily).where(OiDaily.session_date < cutoff.date()))
     session.execute(delete(CollectionRun).where(CollectionRun.started_at < cutoff))
     session.commit()
 

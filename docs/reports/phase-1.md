@@ -1,8 +1,8 @@
-IN PROGRESS — offline evidence-loop implementation is verified; the Phase 0 bar capability and final Gate 1 checks remain open.
+IN PROGRESS — evidence-loop code, live index-bar labeling, and the schema-v2 key comparison are verified; the before/after demo snapshot remains open.
 
 # Phase 1 checkpoint
 
-Branch: `codex/decision-engine-improvements`, based on pushed baseline `8bb4e75`. No pull request or new push yet, per user direction.
+Branch: `codex/decision-engine-improvements`, based on pushed baseline `8bb4e75`. No PR, per the user's direction.
 
 ## Changes
 
@@ -16,15 +16,17 @@ Branch: `codex/decision-engine-improvements`, based on pushed baseline `8bb4e75`
 
 Baseline before Phase 1: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed; `npm run test:backend` 203 passed.
 
-Current: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed; `npm run test:backend` 219 passed. Focused collector, calendar, signal, migration, Edge Lab, and historical replay tests passed. An initial browser run exposed two existing-demo upgrade cases: version-1 synthetic outcomes and a database already at schema version 4 before pin bands were added. The synthetic evidence upgrade and version-5 migration fixed both; the full suite passed on rerun. A focused dashboard browser test passed again after the replay cutoff refactor.
+Current after live activation fixes: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed on an isolated demo port; `python -m pytest backend/tests -q` 234 passed. Focused collector, calendar, signal, migration, Edge Lab, and historical replay tests passed. An initial browser run exposed two existing-demo upgrade cases: version-1 synthetic outcomes and a database already at schema version 4 before pin bands were added. The synthetic evidence upgrade and version-5 migration fixed both; the full suite passed on rerun.
 
-`npm run native:check` did not reach this code: the machine lacks a discoverable MSVC C++ Build Tools installation (`cl.exe`). This remains a final native verification item.
+The Visual Studio 2019 compiler was found despite an empty `vswhere` inventory. The native executable and installer built; packaged demo and frozen live/demo sidecar smoke checks passed, and `npm run native:test` passed four Rust tests.
 
 ## Remaining Gate 1 evidence
 
-- Capture a before/after Cockpit scenario fixture and compare NinjaTrader payload key sets.
-- Use minute index bars if Phase 0 check 0.3 succeeds; otherwise document snapshot resolution.
+- Capture a before/after Cockpit scenario fixture.
+- Confirmed SPX/NDX DAY-period minute bars now supply 60-second outcome paths; other symbols and missing periods use recorded snapshot resolution.
 - Record final suite counts and write the gate result.
+
+The schema-v2 constructor key comparison against baseline `8bb4e75` is complete: the 18 dashboard keys and 26 top-level payload keys are identical, with no removals or additions. The broadcaster payload constructor itself is unchanged; only its optional evidence-session argument changed.
 
 ## Deviations and limits
 

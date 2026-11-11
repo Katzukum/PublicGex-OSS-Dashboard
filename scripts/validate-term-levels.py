@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from bisect import bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -52,16 +53,26 @@ def build_records(connection):
         contracts[row["term_snapshot_id"]].append(dict(row))
     records = []
     for symbol, symbol_snaps in snapshots.items():
+        valid = []
+        for row in symbol_snaps:
+            try:
+                valid.append((datetime.fromisoformat(row["timestamp"]), row))
+            except (TypeError, ValueError):
+                continue
+        symbol_snaps = [row for _, row in valid]
+        times = [timestamp for timestamp, _ in valid]
         for index, snapshot in enumerate(symbol_snaps):
             selected = terms.get(snapshot["id"], [])
             if not selected or not snapshot["spot_price"]:
                 continue
-            timestamp = datetime.fromisoformat(snapshot["timestamp"])
+            timestamp = times[index]
             end = timestamp + timedelta(minutes=HORIZON_MINUTES)
-            forward = [row for row in symbol_snaps[index + 1:] if datetime.fromisoformat(row["timestamp"]) <= end]
-            if not forward or datetime.fromisoformat(forward[-1]["timestamp"]) < end:
+            right = bisect_right(times, end, index + 1)
+            forward = symbol_snaps[index + 1:right]
+            if not forward or (end - times[right - 1]).total_seconds() > MAX_GAP_SECONDS:
                 continue
-            path = [(timestamp, snapshot["spot_price"]), *[(datetime.fromisoformat(row["timestamp"]), row["spot_price"]) for row in forward]]
+            path = [(timestamp, snapshot["spot_price"]),
+                    *[(times[i], symbol_snaps[i]["spot_price"]) for i in range(index + 1, right)]]
             if any((right[0] - left[0]).total_seconds() > MAX_GAP_SECONDS for left, right in zip(path, path[1:])):
                 continue
             zero_rows = contracts[selected[0]["id"]]
