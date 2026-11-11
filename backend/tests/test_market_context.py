@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from market_context import EASTERN, CachedIcsProvider, atm_straddle_implied_move, build_market_context, classify_event_window, load_public_calendar_events, parse_ics_events, persist_market_context, stored_timestamp_to_eastern
+from market_context import EASTERN, CachedIcsProvider, atm_straddle_implied_move, build_market_context, classify_event_window, load_public_calendar_events, parse_ics_events, persist_market_context, realized_volatility_15m, stored_timestamp_to_eastern
 from models import Base, MarketContextSnapshot, get_engine, get_session_factory
 
 
@@ -80,6 +80,19 @@ def test_atm_straddle_and_range_consumed():
     context = build_market_context("SPX", 6000, rows, history, [])
     assert context["implied_move"] == 22
     assert context["range_consumed"] == 1
+
+
+def test_realized_volatility_uses_fifteen_elapsed_minutes_at_subminute_cadence():
+    start = datetime(2026, 11, 10, 10, 0, tzinfo=EASTERN)
+    history = [
+        {"timestamp": (start + timedelta(seconds=30 * i)).isoformat(),
+         "spot_price": 100 + (i // 2) * 0.1 + (0.03 if i % 2 else 0)}
+        for i in range(32)
+    ]
+    context = build_market_context("SPX", 101.53, [], history, [], now=start + timedelta(minutes=15, seconds=30))
+    minute_closes = [history[2 * minute + 1]["spot_price"] for minute in range(16)]
+    assert context["realized_volatility_15m"] == realized_volatility_15m(minute_closes)
+    assert context["realized_volatility_15m"] != realized_volatility_15m([row["spot_price"] for row in history[-16:]])
 
 
 def test_context_persists_to_temporary_database(tmp_path):

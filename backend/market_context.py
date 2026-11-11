@@ -168,6 +168,28 @@ def realized_volatility_15m(prices: list[float]) -> float | None:
     return round(pstdev(returns) * math.sqrt(len(returns)), 6)
 
 
+def _minute_closes_for_15m(spot_history: list[dict], now: datetime | None) -> list[float]:
+    """Use sixteen consecutive minute closes, ending at the snapshot minute."""
+    closes: dict[datetime, tuple[datetime, float]] = {}
+    for row in spot_history:
+        try:
+            stamp = stored_timestamp_to_eastern(datetime.fromisoformat(str(row["timestamp"])))
+            price = float(row["spot_price"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not math.isfinite(price) or price <= 0:
+            continue
+        minute = stamp.replace(second=0, microsecond=0)
+        if minute not in closes or stamp > closes[minute][0]:
+            closes[minute] = (stamp, price)
+    if not closes:
+        return []
+    end = (now.astimezone(EASTERN) if now and now.tzinfo else
+           stored_timestamp_to_eastern(now) if now else max(closes)).replace(second=0, microsecond=0)
+    minutes = [end - timedelta(minutes=offset) for offset in range(15, -1, -1)]
+    return [closes[minute][1] for minute in minutes] if all(minute in closes for minute in minutes) else []
+
+
 def build_market_context(symbol: str, spot: float, option_rows: list[dict], spot_history: list[dict], events: list[dict] | None, *, now=None, volatility_quotes=None, cross_asset_state=None) -> dict:
     prices = [row.get("spot_price") for row in spot_history if row.get("spot_price") is not None]
     implied_move = atm_straddle_implied_move(option_rows, spot)
@@ -188,7 +210,7 @@ def build_market_context(symbol: str, spot: float, option_rows: list[dict], spot
         "event_risk": event_risk,
         "implied_move": implied_move,
         "range_consumed": round(range_consumed, 4) if range_consumed is not None else None,
-        "realized_volatility_15m": realized_volatility_15m(prices[-16:]),
+        "realized_volatility_15m": realized_volatility_15m(_minute_closes_for_15m(spot_history, now)),
         "cross_asset_state": cross_asset_state,
         "volatility_term": volatility_quotes,
         "warnings": warnings,

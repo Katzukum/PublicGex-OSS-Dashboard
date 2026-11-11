@@ -44,3 +44,16 @@ def test_replay_sampler_reports_malformed_timestamp_without_discarding_session()
     selected, invalid = module.sample_rows(rows, 5, 0)
     assert [row.id for row in selected] == [1, 4]
     assert invalid == [{"snapshot_id": 2, "symbol": "SPX", "reason": "invalid stored timestamp"}]
+
+
+def test_replay_episode_key_ignores_moving_levels_but_respects_setup_and_direction():
+    path = Path(__file__).resolve().parents[2] / "scripts" / "replay-scenarios.py"
+    spec = spec_from_file_location("replay_scenarios", path)
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    first = {"eligible": True, "scenario_type": "PIN", "bias": "NEUTRAL", "target": 6000}
+    moved = {**first, "target": 6005, "pin_band_low": 5990}
+    changed = {**first, "scenario_type": "FADE_CALL_WALL", "bias": "PUT"}
+    assert module.episode_key(first) == module.episode_key(moved)
+    assert module.episode_key(changed) != module.episode_key(first)
+    assert module.episode_key({"eligible": False, "scenario_type": "NO_TRADE", "bias": "WAIT"}) is None

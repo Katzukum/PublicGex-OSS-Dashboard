@@ -1,4 +1,4 @@
-FAILED — full historical replay exceeds the planned 1–15 eligible version-2 state transitions per symbol per session. Version 2 remains in shadow.
+FAILED — after correcting the frequency measure and a 15-minute volatility timing bug, four of five symbols still exceed the planned 1–15 contiguous eligible version-2 scenarios per session. Version 2 remains in shadow.
 
 # Phase 2 checkpoint
 
@@ -31,6 +31,24 @@ Project verification after these changes: `npm run build` passed; `npm test` 85 
 | SPY | 665 | 60.45 | 1–15 |
 
 All five symbol means exceed the planned range. This measure counts a new state when scenario, bias, target, invalidation, or pin band changes; moving structural levels can therefore produce many transitions within one broader trading episode. That counting definition was in the replay before the full result. It has not been changed or tuned after seeing the gate failure. The frequency and independence definition needs review before any v2 promotion. The Cockpit and NinjaTrader retain their established outputs, and no `decision_engine` switch was enabled.
+
+## Gate 2 investigation and corrected replay
+
+The first replay measured price-level changes rather than distinct setups. A follow-up read-only replay counted a contiguous eligible scenario episode when type or bias starts or changes, after an ineligible interval. It ignored moving target, invalidation, and pin-band values. That replay still exceeded 15 for IWM, QQQ, SPX, and SPY. The result is preserved in [replay-full-episodes.json](replay-full-episodes.json).
+
+The investigation also found that `realized_volatility_15m` used the last 16 raw snapshots, despite subminute collection. The engine's 15-minute momentum comparison therefore used a shorter volatility window. The implementation now uses sixteen consecutive one-minute closes. No scenario threshold was changed. The second full replay, [replay-full-corrected.json](replay-full-corrected.json), processed the same 34,384 valid snapshots across 11 sessions with zero errors.
+
+| Symbol | Corrected contiguous episodes/session | Corrected level transitions/session | Independent 30-minute opportunities/session | Gate range |
+| --- | ---: | ---: | ---: | ---: |
+| IWM | 29.82 | 66.27 | 6.91 | 1–15 |
+| NDX | 11.91 | 22.27 | 3.91 | 1–15 |
+| QQQ | 18.64 | 41.09 | 5.55 | 1–15 |
+| SPX | 19.91 | 53.55 | 4.64 | 1–15 |
+| SPY | 20.91 | 58.73 | 5.27 | 1–15 |
+
+The 30-minute count uses the already established primary outcome horizon and the same greedy nonoverlap rule as offline probability fitting. It is a useful measure of independent labeled opportunities, but it does not erase the excess candidate episodes visible in four symbols. Gate 2 therefore remains failed. The code keeps v2 in shadow, and the release does not claim the Cockpit or broadcaster has switched. The next engine revision must address the observed candidate churn on a fresh evaluation split rather than tune a threshold against this replay.
+
+After the timing fix, `npm run build` passed, `npm test` passed 85 tests, `npm run test:e2e` passed 17 workflows on isolated demo port 1430, and `python -m pytest backend/tests -q` passed 236 tests. Version 0.1.5 then built its native executable, frozen Python sidecar, and NSIS installer. Packaged demo and live UI smoke checks, frozen demo and live backend smoke checks, and all four Rust lifecycle tests passed. The installer is available at `src-tauri/target/release/bundle/nsis/PublicGex Dashboard_0.1.5_x64-setup.exe` (SHA-256 `D6987C62D8EDF63CC7684E93CD2235E56FC6F328F457871DB8158317915F0B0E`). A real NinjaTrader chart session and additional expanded-data market sessions remain unverified.
 
 The pin scenario uses an explicit low/high invalidation band. The directional reward-to-risk filter does not apply to the pin because a pin's measured event is staying inside the band over the horizon, rather than hitting a directional target before a single invalidation price.
 

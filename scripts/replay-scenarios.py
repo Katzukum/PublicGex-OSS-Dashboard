@@ -13,7 +13,7 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -70,6 +70,17 @@ def market_score_for_symbol(overview: dict) -> float:
              + (basket.get("y_score", 0) or 0) * basket_quality) / total) if total else 0.0
 
 
+def episode_key(active: dict) -> tuple[str, str] | None:
+    """A contiguous eligible setup, independent of its moving price levels.
+
+    An ineligible snapshot ends the episode. A change of type or direction starts
+    another one; target, invalidation, and pin-band updates do not.
+    """
+    if not active.get("eligible"):
+        return None
+    return str(active["scenario_type"]), str(active["bias"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", type=Path, default=default_database())
@@ -87,6 +98,7 @@ def main() -> int:
     from market_context import build_market_context, stored_timestamp_to_eastern
     from scenario_engine import build_scenario_workspace
     from scenario_engine_v2 import build_scenario_workspace_v2
+    from signal_performance import PRIMARY_HORIZON_MINUTES
 
     db_engine = create_engine("sqlite:///file:" + db_path.as_posix() + "?mode=ro&uri=true")
     appy.engine = db_engine
@@ -104,7 +116,11 @@ def main() -> int:
         rows = [row for row in rows if str(row.timestamp).startswith(args.session)]
     counts = defaultdict(Counter)
     eligible_transitions = defaultdict(Counter)
+    eligible_episodes = defaultdict(Counter)
+    independent_opportunities = defaultdict(Counter)
     previous_state = {}
+    previous_episode = {}
+    next_opportunity_at = {}
     errors = []
     try:
         for row in rows:
@@ -141,6 +157,13 @@ def main() -> int:
                     if active.get("eligible") and previous_state.get(group) != state:
                         eligible_transitions[group][kind] += 1
                     previous_state[group] = state
+                    episode = episode_key(active)
+                    if episode is not None and previous_episode.get(group) != episode:
+                        eligible_episodes[group][kind] += 1
+                    previous_episode[group] = episode
+                    if episode is not None and at >= next_opportunity_at.get(group, at):
+                        independent_opportunities[group][kind] += 1
+                        next_opportunity_at[group] = at + timedelta(minutes=PRIMARY_HORIZON_MINUTES)
             except Exception as exc:
                 errors.append({"snapshot_id": row.id, "symbol": row.symbol, "error": f"{type(exc).__name__}: {str(exc)[:160]}"})
                 if len(errors) >= 20:
@@ -152,7 +175,9 @@ def main() -> int:
     groups = [
         {"engine": engine_name, "symbol": symbol, "session": session,
          "snapshots": sum(kinds.values()), "scenario_counts": dict(kinds),
-         "eligible_state_transitions": dict(eligible_transitions.get((engine_name, symbol, session), {}))}
+         "eligible_state_transitions": dict(eligible_transitions.get((engine_name, symbol, session), {})),
+         "eligible_scenario_episodes": dict(eligible_episodes.get((engine_name, symbol, session), {})),
+         "independent_30m_opportunities": dict(independent_opportunities.get((engine_name, symbol, session), {}))}
         for (engine_name, symbol, session), kinds in sorted(counts.items())
     ]
     output = {"database": db_path.name, "data_scope": "isolated_app_directory", "read_only": True, "stride_minutes": args.stride_minutes,

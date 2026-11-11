@@ -132,6 +132,8 @@ Version 0.1.4 passed 202 Python tests, 85 TypeScript/API tests, seventeen browse
 
 The packaged 0.1.4 release passed fresh live and demo backend checks, including the new positioning payload, automatic bridge startup and shutdown. Its native demo WebView passed Rust IPC, the new positioning chart, existing chart families, decision overlays, retained tab state, and Settings under the production content security policy. The native live WebView's automatic Collector/NinjaTrader startup and workspace-isolation checks were last run on 0.1.3. The 0.1.4 executable and NSIS installer were built; the installer was not installed. An actual NinjaTrader chart session and live market-data accuracy remain outside these checks.
 
+Version 0.1.5 corrects the elapsed-time window used for 15-minute realized volatility and adds separate historical counts for eligible scenario episodes and independent 30-minute opportunities. The full replay still fails the version-2 scenario frequency gate for four of five symbols; version 2 remains observational and the Cockpit and NinjaTrader continue to use the established decision. See `docs/reports/phase-2.md` for counts and limits.
+
 After a native build, `node scripts/native-ui-smoke.mjs` exercises the packaged demo through its actual WebView and Rust IPC. `python scripts/native-smoke.py` checks the frozen backend's automatic startup and shutdown using fresh temporary workspaces without credentials. Adding `--live` to the UI smoke checks the actual separate live workspace and honors its automatic startup preferences.
 
 ## Optional historical import

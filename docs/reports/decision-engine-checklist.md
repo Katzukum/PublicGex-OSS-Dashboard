@@ -34,7 +34,8 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Add fixture, property, and modeled-zero fallback checks.
 - [x] Add a read-only replay for scenario-v1 and scenario-v2 over stored snapshots.
 - [x] Replay every snapshot and write the Gate 2 assessment in `docs/reports/phase-2.md`: 34,384 valid of 34,385 stored, one malformed timestamp, zero replay errors. All five symbol means exceed the planned 1–15 eligible state transitions per session.
-- [ ] Resolve the failed Gate 2 frequency measure and review the report before any Cockpit or broadcaster switch. Version 2 remains shadow-only; no thresholds were tuned to fit the result.
+- [x] Investigate the failed frequency measure and correct the 15-minute volatility window. The full replay now reports level transitions, contiguous scenario episodes, and independent 30-minute opportunities separately, with zero processing errors.
+- [ ] Resolve excess contiguous v2 episodes for IWM, QQQ, SPX, and SPY on a fresh evaluation split and review the report before any Cockpit or broadcaster switch. Version 2 remains shadow-only; no thresholds were tuned to fit the result.
 
 ## Phase 3: Public.com data expansion
 
@@ -63,3 +64,5 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 - [x] Confirm the browser and native data directories, credentials, logs, and collector locks stay within this independent app; the native bridge owns original externally compatible port 5010.
 - [x] Compare NinjaTrader schema-v2 constructor key sets against baseline `8bb4e75`: all 18 dashboard keys and 26 top-level payload keys remain present with zero removals or additions.
 - [x] Push `codex/decision-engine-improvements` after offline code checks. Live market-hour validation remains on this checklist.
+- [x] Build version 0.1.5 after the 15-minute volatility correction; packaged demo/live UI and frozen backend smoke checks pass, along with four Rust lifecycle tests. Frontend, browser, and Python suites pass (85, 17, and 236 tests).
+- [x] Launch the rebuilt native 0.1.5 executable against this app's isolated desktop data. Its backend owns port 5010; the first observed collector cycle saved all five configured symbols successfully.
