@@ -16,7 +16,7 @@ Branch: `codex/decision-engine-improvements`, based on pushed baseline `8bb4e75`
 
 Baseline before Phase 1: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed; `npm run test:backend` 203 passed.
 
-Current: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed; `npm run test:backend` 217 passed. Focused collector, calendar, signal, migration, and Edge Lab tests passed. An initial browser run exposed two existing-demo upgrade cases: version-1 synthetic outcomes and a database already at schema version 4 before pin bands were added. The synthetic evidence upgrade and version-5 migration fixed both; the full suite passed on rerun.
+Current: `npm run build` passed; `npm test` 85 passed; `npm run test:e2e` 17 passed; `npm run test:backend` 219 passed. Focused collector, calendar, signal, migration, Edge Lab, and historical replay tests passed. An initial browser run exposed two existing-demo upgrade cases: version-1 synthetic outcomes and a database already at schema version 4 before pin bands were added. The synthetic evidence upgrade and version-5 migration fixed both; the full suite passed on rerun. A focused dashboard browser test passed again after the replay cutoff refactor.
 
 `npm run native:check` did not reach this code: the machine lacks a discoverable MSVC C++ Build Tools installation (`cl.exe`). This remains a final native verification item.
 

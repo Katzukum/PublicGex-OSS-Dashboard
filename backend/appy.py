@@ -214,7 +214,7 @@ def calculate_gex_imbalance_score(net_gex, call_gex, put_gex):
     imbalance = clamp_score((net_gex or 0) / gross_gex)
     return math.tanh(2.0 * imbalance), imbalance
 
-def calculate_component_data_quality(row, profile_count, flip_state, gross_gex):
+def calculate_component_data_quality(row, profile_count, flip_state, gross_gex, *, observed_at=None):
     score = 1.0
     warnings = []
 
@@ -240,7 +240,7 @@ def calculate_component_data_quality(row, profile_count, flip_state, gross_gex):
     ts = parse_timestamp(getattr(row, 'timestamp', None))
     age_seconds = None
     if ts:
-        age_seconds = max(0, (datetime.now() - ts).total_seconds())
+        age_seconds = max(0, ((observed_at or datetime.now()) - ts).total_seconds())
         if age_seconds > 15 * 60:
             score -= 0.25
             warnings.append("stale snapshot")
@@ -486,7 +486,7 @@ def get_dashboard_data(symbol: str = "SPY") -> dict:
     return _dashboard_data_from_engine(engine, symbol, DB_SCHEMA_CURRENT)
 
 
-def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = True, snapshot_id: int | None = None) -> dict:
+def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = True, snapshot_id: int | None = None, *, include_research: bool = True) -> dict:
     symbol = str(symbol or "").strip().upper()
     try:
         with db_engine.connect() as conn:
@@ -564,19 +564,21 @@ def _dashboard_data_from_engine(db_engine, symbol: str, schema_current: bool = T
                 FROM (
                     SELECT timestamp, total_net_gex, spot_price
                     FROM gex_snapshots
-                    WHERE symbol = :symbol
+                    WHERE symbol = :symbol AND timestamp <= :cutoff
                     ORDER BY timestamp DESC
                     LIMIT 100
                 )
                 ORDER BY timestamp ASC
             """)
-            df_hist = pd.read_sql(query_history, conn, params={"symbol": symbol})
+            df_hist = pd.read_sql(query_history, conn, params={"symbol": symbol, "cutoff": latest_time})
             if "timestamp" in df_hist:
                 df_hist['timestamp'] = df_hist['timestamp'].apply(lambda x: str(x))
 
-            research = _option_research_for_snapshot(
-                conn, db_engine, snap_row, schema_current=schema_current,
-            )
+            research = (_option_research_for_snapshot(conn, db_engine, snap_row, schema_current=schema_current)
+                        if include_research else {
+                            "envelopes": None, "estimated_pressure": None, "exhaustion": None,
+                            "research_config": {}, "research_coverage": {},
+                        })
             return {
                 "snapshot": snapshot,
                 "profile": df_profile.to_dict(orient='records'),
@@ -1476,11 +1478,12 @@ def get_trade_setups(symbol: str = "SPX") -> dict:
     """Deprecated version-1 compatibility endpoint."""
     return build_execution_candidates(symbol)
 
-def _latest_overview_snapshots(conn, symbols):
+def _latest_overview_snapshots(conn, symbols, as_of=None):
     symbols = sorted({str(symbol).upper() for symbol in symbols if symbol})
     if not symbols:
         return {}
     params = {f"symbol_{index}": symbol for index, symbol in enumerate(symbols)}
+    params["as_of"] = as_of.strftime("%Y-%m-%d %H:%M:%S.%f") if isinstance(as_of, datetime) else as_of
     placeholders = ", ".join(f":symbol_{index}" for index in range(len(symbols)))
     rows = conn.execute(
         text(f"""
@@ -1492,7 +1495,7 @@ def _latest_overview_snapshots(conn, symbols):
                            ORDER BY timestamp DESC, id DESC
                        ) AS overview_rank
                 FROM gex_snapshots AS snapshots
-                WHERE symbol IN ({placeholders})
+                WHERE symbol IN ({placeholders}) AND (:as_of IS NULL OR timestamp <= :as_of)
             ) AS ranked
             WHERE overview_rank = 1
             ORDER BY symbol
@@ -1570,12 +1573,13 @@ def _attach_overview_edge_stats(core_overview):
     return overview_data
 
 
-def get_market_overview() -> dict:
+def get_market_overview(*, as_of=None, include_edge_stats=True, include_levels=True) -> dict:
     global _overview_cache_key, _overview_cache_value, _overview_cache_at
     try:
         import math
 
         settings = _load_settings()
+        replay_at = parse_timestamp(as_of) if as_of is not None else None
 
         # Defaults if keys missing in settings
         weights_traders = {
@@ -1589,11 +1593,12 @@ def get_market_overview() -> dict:
         overview_symbols = set(weights_traders) | set(weights_whale) | {"NDX", "SPX"}
 
         with engine.connect() as conn:
-            snapshots_by_symbol = _latest_overview_snapshots(conn, overview_symbols)
+            snapshots_by_symbol = _latest_overview_snapshots(conn, overview_symbols, replay_at)
 
         cache_key = (
             str(engine.url),
             bool(DB_SCHEMA_CURRENT),
+            bool(include_levels),
             _overview_weight_key(weights_traders),
             _overview_weight_key(weights_whale),
             tuple(
@@ -1608,7 +1613,7 @@ def get_market_overview() -> dict:
                 else None
             )
         if cached_core is not None:
-            return _attach_overview_edge_stats(cached_core)
+            return _attach_overview_edge_stats(cached_core) if include_edge_stats else copy.deepcopy(cached_core)
 
         with engine.connect() as conn:
             raw_rows_by_symbol = _overview_raw_rows(conn, snapshots_by_symbol)
@@ -1722,7 +1727,7 @@ def get_market_overview() -> dict:
                     # Net-vs-gross imbalance keeps tiny and massive one-sided
                     # profiles from receiving the same score.
                     vol_score, gex_imbalance = calculate_gex_imbalance_score(net_gex, call_gex, put_gex)
-                    quality = calculate_component_data_quality(row, len(profile_data), flip_state, gross_gex)
+                    quality = calculate_component_data_quality(row, len(profile_data), flip_state, gross_gex, observed_at=replay_at)
 
                     # Add to aggregates
                     x_score_sum += vol_score * weight
@@ -1887,17 +1892,18 @@ def get_market_overview() -> dict:
                     "net_gex": data.get('effective_gex', 0)
                 })
 
-            for idx_symbol in ["NDX", "SPX"]:
-                overview_data["gamma_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn)
-                overview_data["cockpit_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn, per_side=None)
-                overview_data["modeled_zero_gex"][idx_symbol] = _modeled_zero_gex_for_symbol(idx_symbol, conn)
+            if include_levels:
+                for idx_symbol in ["NDX", "SPX"]:
+                    overview_data["gamma_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn)
+                    overview_data["cockpit_levels"][idx_symbol] = _gamma_levels_for_symbol(idx_symbol, conn, per_side=None)
+                    overview_data["modeled_zero_gex"][idx_symbol] = _modeled_zero_gex_for_symbol(idx_symbol, conn)
 
         with _overview_cache_lock:
             _overview_cache_key = cache_key
             _overview_cache_value = copy.deepcopy(overview_data)
             _overview_cache_at = time.monotonic()
 
-        return _attach_overview_edge_stats(overview_data)
+        return _attach_overview_edge_stats(overview_data) if include_edge_stats else overview_data
 
     except Exception as e:
         print(f"Error in market overview: {e}")

@@ -1,0 +1,1396 @@
+{
+  "database": "gex_data.db",
+  "read_only": true,
+  "stride_minutes": 60,
+  "max_snapshots": 0,
+  "available_snapshots": 34385,
+  "selected_snapshots": 450,
+  "processed_snapshots": 450,
+  "groups": [
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 5
+      },
+      "eligible_state_transitions": {
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN_MEAN_REVERSION": 3,
+        "UPSIDE_EXPANSION": 3
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN_MEAN_REVERSION": 3,
+        "UPSIDE_EXPANSION": 3
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "PIN_MEAN_REVERSION": 2,
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 2,
+        "UPSIDE_EXPANSION": 5
+      },
+      "eligible_state_transitions": {
+        "PIN_MEAN_REVERSION": 2,
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 4
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 3,
+        "UPSIDE_EXPANSION": 5
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "PIN_MEAN_REVERSION": 4,
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 6
+      },
+      "eligible_state_transitions": {
+        "PIN_MEAN_REVERSION": 3,
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 6,
+        "PIN_MEAN_REVERSION": 2
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 6,
+        "PIN_MEAN_REVERSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "IWM",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 6,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 8
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 8
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 6
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 6
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 8
+      },
+      "eligible_state_transitions": {
+        "PIN_MEAN_REVERSION": 1,
+        "UPSIDE_EXPANSION": 8
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 3,
+        "UPSIDE_EXPANSION": 4,
+        "PIN_MEAN_REVERSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 4,
+        "PIN_MEAN_REVERSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 2,
+        "NO_TRADE": 7,
+        "UPSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 8
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 7
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "NDX",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "UPSIDE_EXPANSION": 7
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 7
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 4
+      },
+      "eligible_state_transitions": {
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 4
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 8,
+        "NO_TRADE": 2
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 8
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 1,
+        "NO_TRADE": 6
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 3,
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 9,
+        "UPSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 8
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 8
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "QQQ",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 7,
+        "PIN_MEAN_REVERSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 7,
+        "PIN_MEAN_REVERSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 5,
+        "PIN_MEAN_REVERSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 5,
+        "PIN_MEAN_REVERSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 8
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 8
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN_MEAN_REVERSION": 1,
+        "NO_TRADE": 1,
+        "UPSIDE_EXPANSION": 5
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN_MEAN_REVERSION": 1,
+        "UPSIDE_EXPANSION": 5
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 5,
+        "NO_TRADE": 3,
+        "PIN_MEAN_REVERSION": 3
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 4,
+        "PIN_MEAN_REVERSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 8
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 6
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPX",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 6,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "UPSIDE_EXPANSION": 6,
+        "PIN_MEAN_REVERSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 6,
+        "PIN_MEAN_REVERSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 7
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 7
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 9,
+        "PIN_MEAN_REVERSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 9,
+        "PIN_MEAN_REVERSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "UPSIDE_EXPANSION": 1,
+        "NO_TRADE": 6
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 4,
+        "DOWNSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 5
+      },
+      "eligible_state_transitions": {
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 5
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 4,
+        "PIN_MEAN_REVERSION": 2,
+        "NO_TRADE": 3,
+        "UPSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 3,
+        "PIN_MEAN_REVERSION": 2,
+        "UPSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 1,
+        "UPSIDE_EXPANSION": 7
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 6
+      }
+    },
+    {
+      "engine": "scenario_v1",
+      "symbol": "SPY",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "DOWNSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "NO_TRADE": 10
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 5,
+        "DOWNSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "DOWNSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "FADE_PUT_WALL": 1,
+        "UPSIDE_EXPANSION": 1,
+        "DOWNSIDE_EXPANSION": 2,
+        "FADE_CALL_WALL": 1
+      },
+      "eligible_state_transitions": {
+        "FADE_PUT_WALL": 1,
+        "UPSIDE_EXPANSION": 1,
+        "DOWNSIDE_EXPANSION": 2,
+        "FADE_CALL_WALL": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "PIN": 1
+      },
+      "eligible_state_transitions": {
+        "PIN": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "IWM",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "UPSIDE_EXPANSION": 2
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "NO_TRADE": 10
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 2,
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 4
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 10,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "NDX",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 5,
+        "FADE_PUT_WALL": 1,
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "FADE_PUT_WALL": 1,
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "FADE_CALL_WALL": 1
+      },
+      "eligible_state_transitions": {
+        "FADE_CALL_WALL": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 6
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN": 2
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "PIN": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 4
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 2,
+        "NO_TRADE": 8,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 2,
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 5,
+        "PIN": 3
+      },
+      "eligible_state_transitions": {
+        "PIN": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "QQQ",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "FADE_PUT_WALL": 1
+      },
+      "eligible_state_transitions": {
+        "FADE_PUT_WALL": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "PIN": 1
+      },
+      "eligible_state_transitions": {
+        "PIN": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "NO_TRADE": 9,
+        "PIN": 1
+      },
+      "eligible_state_transitions": {
+        "PIN": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "DOWNSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 5
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 5,
+        "PIN": 3
+      },
+      "eligible_state_transitions": {
+        "PIN": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPX",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "DOWNSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-09-30",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 11
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-01",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 7
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-02",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 8
+      },
+      "eligible_state_transitions": {}
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-05",
+      "snapshots": 7,
+      "scenario_counts": {
+        "DOWNSIDE_EXPANSION": 1,
+        "NO_TRADE": 4,
+        "FADE_CALL_WALL": 1,
+        "PIN": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1,
+        "FADE_CALL_WALL": 1,
+        "PIN": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-06",
+      "snapshots": 10,
+      "scenario_counts": {
+        "NO_TRADE": 9,
+        "PIN": 1
+      },
+      "eligible_state_transitions": {
+        "PIN": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-07",
+      "snapshots": 7,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "UPSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "UPSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-08",
+      "snapshots": 5,
+      "scenario_counts": {
+        "NO_TRADE": 4,
+        "DOWNSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 6,
+        "PIN": 1,
+        "FADE_CALL_WALL": 1
+      },
+      "eligible_state_transitions": {
+        "PIN": 1,
+        "FADE_CALL_WALL": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-10-13",
+      "snapshots": 11,
+      "scenario_counts": {
+        "NO_TRADE": 9,
+        "PIN": 2
+      },
+      "eligible_state_transitions": {
+        "PIN": 2
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-11-09",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "PIN": 1
+      },
+      "eligible_state_transitions": {
+        "PIN": 1
+      }
+    },
+    {
+      "engine": "scenario_v2",
+      "symbol": "SPY",
+      "session": "2026-11-10",
+      "snapshots": 8,
+      "scenario_counts": {
+        "NO_TRADE": 7,
+        "DOWNSIDE_EXPANSION": 1
+      },
+      "eligible_state_transitions": {
+        "DOWNSIDE_EXPANSION": 1
+      }
+    }
+  ],
+  "errors": [],
+  "invalid_timestamps": [
+    {
+      "snapshot_id": 6528,
+      "symbol": "NDX",
+      "reason": "invalid stored timestamp"
+    }
+  ],
+  "invalid_timestamp_count": 1,
+  "limitations": [
+    "Historical event calendars are not stored for all snapshots; replay uses UNAVAILABLE event state.",
+    "Historical decisions use the current saved composition weights.",
+    "Any nonzero stride samples snapshots and cannot establish the full frequency gate."
+  ],
+  "data_scope": "isolated_app_directory"
+}

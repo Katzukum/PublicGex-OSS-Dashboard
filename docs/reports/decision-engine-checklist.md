@@ -23,7 +23,8 @@ This checklist tracks the improvement plan against the independent PublicGexDash
 
 - [x] Add structural levels and scenario-v2 logic in shadow collection without changing the displayed version-1 decision.
 - [x] Add fixture, property, and modeled-zero fallback checks.
-- [ ] Add read-only scenario replay over stored snapshots; write `docs/reports/phase-2.md` with counts and gate assessment.
+- [x] Add a read-only replay for scenario-v1 and scenario-v2 over stored snapshots.
+- [ ] Run the replay with `--stride-minutes 0` over every snapshot, review malformed timestamps, and write the final Gate 2 frequency assessment. The current `docs/reports/replay-exploratory.json` is an hourly sample only.
 - [ ] Review the replay report before switching the Cockpit or broadcaster to version 2.
 
 ## Phase 3: Public.com data expansion
